@@ -58,8 +58,8 @@ describe('persona composition', () => {
         source: 'builder-default',
       });
       expect(python.claude).toEqual({
-        allow: ['Bash', 'Bash(pytest *)', 'Edit', 'Read'],
-        deny: ['Task'],
+        allow: ['Bash', 'Bash(pytest *)', 'Edit', 'Read', 'Write'],
+        deny: ['Agent'],
       });
     } finally {
       await repo.cleanup();
@@ -203,8 +203,8 @@ describe('persona composition', () => {
       expect(denyWins[0]?.severity).toBe('medium');
       expect(denyWins[0]?.message).toContain('builder-default');
       expect(denyWins[0]?.message).toContain('python-tools');
-      expect(python?.claude.deny).toContain('Task');
-      expect(python?.claude.allow).not.toContain('Task');
+      expect(python?.claude.deny).toContain('Agent');
+      expect(python?.claude.allow).not.toContain('Agent');
     } finally {
       await repo.cleanup();
     }

@@ -32,7 +32,8 @@ describe.skipIf(!rulesyncInstalled)('composed persona golden output', () => {
       expect(actual).toContain('FBS_RULE_PYTHON_5e3b');
       expect(actual).not.toContain('FBS_RULE_REVIEWER_8d2f');
       expect(actual).toContain('  - Bash\n');
-      expect(actual).toContain('  - Task\n');
+      expect(actual).toContain('  - Write\n');
+      expect(actual).toContain('  - Agent\n');
     } finally {
       await repo.cleanup();
     }
@@ -45,7 +46,8 @@ describe.skipIf(!rulesyncInstalled)('composed persona golden output', () => {
       const check = await runCheck(repo.root, new UpstreamRenderTarget());
       expect(check.ok).toBe(true);
       expect(check.exitCode).toBe(0);
-      expect(check.warnings.map((entry) => entry.code)).toContain('W112_PERMISSION_LOSSY');
+      expect(check.warnings.map((entry) => entry.code)).not.toContain('W112_PERMISSION_LOSSY');
+      expect(check.warnings.map((entry) => entry.code)).toContain('W106_DENY_WINS');
     } finally {
       await repo.cleanup();
     }
