@@ -130,7 +130,7 @@ describe('source loader', () => {
     try {
       await writeFile(
         join(repo.root, '.farna/personas/reviewer.yaml'),
-        'kind: persona\nid: reviewer\ndisplayName: Reviewer\npurpose: Reviews a change.\nresources:\n  - permission/review-only\n',
+        'kind: persona\nid: reviewer\ndisplayName: Reviewer\npurpose: Reviews a change.\nresources:\n  - skill/secure-review\n',
         'utf8',
       );
       const config = await loadConfig(repo.root);
@@ -148,9 +148,9 @@ describe('source loader', () => {
   it('rejects a resource directory this slice does not implement', async () => {
     const repo = await createTempRepo();
     try {
-      await mkdir(join(repo.root, '.farna/resources/permissions'), { recursive: true });
+      await mkdir(join(repo.root, '.farna/resources/skills'), { recursive: true });
       const error = await expectFarnaError(loadSource(repo.root), 'F001_INVALID_CONFIG');
-      expect(error.message).toContain('resource kind "permissions" is not implemented');
+      expect(error.message).toContain('resource kind "skills" is not implemented');
     } finally {
       await repo.cleanup();
     }

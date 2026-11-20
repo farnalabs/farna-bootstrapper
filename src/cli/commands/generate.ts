@@ -1,6 +1,7 @@
 import { commitFiles, type FileStatus } from '../../render/commit.js';
 import type { RenderTarget } from '../../render/port.js';
 import { prepareRender } from '../../render/prepare.js';
+import type { Warning } from '../../report/warnings.js';
 
 export type GenerateOptions = {
   cwd: string;
@@ -13,6 +14,7 @@ export type GenerateResult = {
   dryRun: boolean;
   personas: string[];
   files: Array<{ path: string; status: FileStatus | 'would-write' }>;
+  warnings: Warning[];
 };
 
 /**
@@ -33,6 +35,7 @@ export async function runGenerate(
       dryRun: true,
       personas,
       files: prepared.files.map((file) => ({ path: file.path, status: 'would-write' })),
+      warnings: prepared.source.warnings,
     };
   }
 
@@ -43,5 +46,6 @@ export async function runGenerate(
     dryRun: false,
     personas,
     files: committed.statuses,
+    warnings: prepared.source.warnings,
   };
 }

@@ -1,5 +1,11 @@
 import type { ResolvedSource } from '../compose/resolve.js';
-import { PRODUCT_NAME, PRODUCT_VERSION, SCHEMA_VERSION } from '../core/constants.js';
+import {
+  PRODUCT_NAME,
+  PRODUCT_VERSION,
+  SCHEMA_VERSION,
+  type Severity,
+  type WarningCode,
+} from '../core/constants.js';
 import { canonicalJsonFile, compareCodepoints, sha256Hex } from '../core/json.js';
 import type { RendererIdentity } from '../render/port.js';
 
@@ -9,10 +15,30 @@ export type LockFileEntry = {
   size: number;
 };
 
+export type LockResource = {
+  kind: 'rule' | 'permission';
+  id: string;
+  sha256: string;
+  /** The persona in the composition chain that contributed the resource. */
+  fromPersona: string;
+};
+
 export type LockPersona = {
   id: string;
+  /** Present when the persona composes a base persona. */
+  extends?: string;
   digest: string;
-  resources: Array<{ kind: 'rule'; id: string; sha256: string }>;
+  permissionDigest: string;
+  resources: LockResource[];
+};
+
+export type LockWarning = {
+  code: WarningCode;
+  severity: Severity;
+  persona: string;
+  target: string;
+  capability?: 'rule' | 'permission' | 'model';
+  message: string;
 };
 
 export type Lockfile = {
@@ -23,6 +49,7 @@ export type Lockfile = {
   renderer: RendererIdentity;
   personas: LockPersona[];
   files: LockFileEntry[];
+  warnings: LockWarning[];
 };
 
 export type RenderedFile = {
@@ -31,7 +58,11 @@ export type RenderedFile = {
   bytes: string;
 };
 
-/** Build the manifest of managed files. Every value is derived, never timestamped. */
+/**
+ * Build the manifest of managed files. The composed persona records its base,
+ * its resolved resource ids and its permission digest; every value is derived,
+ * never timestamped.
+ */
 export function buildLockfile(
   source: ResolvedSource,
   renderer: RendererIdentity,
@@ -40,11 +71,14 @@ export function buildLockfile(
   const personas = source.personas
     .map((persona) => ({
       id: persona.id,
+      ...(persona.extends === undefined ? {} : { extends: persona.extends }),
       digest: persona.digest,
-      resources: persona.rules.map((rule) => ({
-        kind: 'rule' as const,
-        id: rule.id,
-        sha256: rule.sha256,
+      permissionDigest: persona.permissionDigest,
+      resources: persona.resources.map((resource) => ({
+        kind: resource.kind,
+        id: resource.id,
+        sha256: resource.sha256,
+        fromPersona: resource.fromPersona,
       })),
     }))
     .sort((a, b) => compareCodepoints(a.id, b.id));
@@ -62,6 +96,14 @@ export function buildLockfile(
         size: Buffer.byteLength(file.bytes),
       }))
       .sort((a, b) => compareCodepoints(a.path, b.path)),
+    warnings: source.warnings.map((entry) => ({
+      code: entry.code,
+      severity: entry.severity,
+      persona: entry.persona,
+      target: entry.target,
+      ...(entry.capability === undefined ? {} : { capability: entry.capability }),
+      message: entry.message,
+    })),
   };
 }
 

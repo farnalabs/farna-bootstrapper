@@ -1,6 +1,13 @@
 import { mkdir, readFile, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { CONFIG_FILE, PERSONAS_DIR, RESOURCES_DIR, ROOT_DIR } from '../../core/constants.js';
+import {
+  CONFIG_FILE,
+  PERMISSIONS_DIR,
+  PERSONAS_DIR,
+  RESOURCES_DIR,
+  ROOT_DIR,
+  RULES_DIR,
+} from '../../core/constants.js';
 import { invalidConfig } from '../../core/errors.js';
 
 export type InitResult = {
@@ -64,7 +71,8 @@ export async function runInit(repoRoot: string): Promise<InitResult> {
   }
 
   await mkdir(join(repoRoot, ROOT_DIR, PERSONAS_DIR), { recursive: true });
-  await mkdir(join(repoRoot, ROOT_DIR, RESOURCES_DIR), { recursive: true });
+  await mkdir(join(repoRoot, ROOT_DIR, RESOURCES_DIR, RULES_DIR), { recursive: true });
+  await mkdir(join(repoRoot, ROOT_DIR, RESOURCES_DIR, PERMISSIONS_DIR), { recursive: true });
   await writeFile(configAbsolute, CONFIG_TEMPLATE, 'utf8');
   await updateGitignore(repoRoot);
 
@@ -72,8 +80,14 @@ export async function runInit(repoRoot: string): Promise<InitResult> {
     ok: true,
     root: rootRelative,
     configPath: configRelative,
-    created: [configRelative, `${ROOT_DIR}/${PERSONAS_DIR}/`, `${ROOT_DIR}/${RESOURCES_DIR}/`],
+    created: [
+      configRelative,
+      `${ROOT_DIR}/${PERSONAS_DIR}/`,
+      `${ROOT_DIR}/${RESOURCES_DIR}/`,
+      `${ROOT_DIR}/${RESOURCES_DIR}/${RULES_DIR}/`,
+      `${ROOT_DIR}/${RESOURCES_DIR}/${PERMISSIONS_DIR}/`,
+    ],
     nextStep:
-      'Add personas to .farna/personas/*.yaml and rules to .farna/resources/rules/, then run "farna-bootstrapper generate".',
+      'Add personas to .farna/personas/*.yaml, rules to .farna/resources/rules/ and permissions to .farna/resources/permissions/, then run "farna-bootstrapper generate".',
   };
 }

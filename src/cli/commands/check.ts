@@ -5,6 +5,7 @@ import { CLAUDE_AGENTS_DIR } from '../../core/constants.js';
 import { compareCodepoints } from '../../core/json.js';
 import type { RenderTarget } from '../../render/port.js';
 import { prepareRender } from '../../render/prepare.js';
+import type { Warning } from '../../report/warnings.js';
 
 export type DriftKind = 'missing' | 'modified' | 'unexpected';
 
@@ -21,6 +22,7 @@ export type CheckResult = {
   exitCode: 0 | 1;
   checked: string[];
   drift: DriftItem[];
+  warnings: Warning[];
 };
 
 async function readOptional(path: string): Promise<string | undefined> {
@@ -98,5 +100,6 @@ export async function runCheck(repoRoot: string, renderer: RenderTarget): Promis
     exitCode: drift.length === 0 ? 0 : 1,
     checked: prepared.files.map((file) => file.path),
     drift,
+    warnings: prepared.source.warnings,
   };
 }

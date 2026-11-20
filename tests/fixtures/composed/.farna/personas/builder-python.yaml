@@ -1,0 +1,8 @@
+kind: persona
+id: builder-python
+displayName: Python Builder
+purpose: Writes Python and runs the Python checks.
+extends: builder
+resources:
+  - rule/python-style
+  - permission/python-tools

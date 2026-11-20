@@ -1,0 +1,14 @@
+{
+  "kind": "permission",
+  "id": "python-tools",
+  "tools": {
+    "read": "allow",
+    "shell": "allow",
+    "task": "allow"
+  },
+  "patterns": {
+    "shell": {
+      "pytest *": "allow"
+    }
+  }
+}

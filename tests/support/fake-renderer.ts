@@ -40,11 +40,17 @@ async function readSources(sourceRoot: string): Promise<SourceDoc[]> {
 }
 
 function renderAgent(doc: SourceDoc): string {
-  const claudecode = doc.frontmatter['claudecode'] as { model?: string } | undefined;
+  const claudecode = doc.frontmatter['claudecode'] as
+    | { model?: string; tools?: string[]; disallowedTools?: string[] }
+    | undefined;
   const frontmatter: Record<string, unknown> = {
     name: doc.name,
     description: doc.frontmatter['description'],
     ...(claudecode?.model === undefined ? {} : { model: claudecode.model }),
+    ...(claudecode?.tools === undefined ? {} : { tools: claudecode.tools }),
+    ...(claudecode?.disallowedTools === undefined
+      ? {}
+      : { disallowedTools: claudecode.disallowedTools }),
   };
   return `---\n${stringify(frontmatter, { lineWidth: 0 })}---\n${doc.body}`;
 }

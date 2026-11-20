@@ -22,15 +22,30 @@ export type PersonaFrontmatter = {
   name: string;
   targets: string[];
   description: string;
-  claudecode?: { model: string };
+  claudecode?: { model?: string; tools?: string[]; disallowedTools?: string[] };
 };
 
+/**
+ * The renderer source form for the Claude Code per-agent block. `tools` and
+ * `disallowedTools` already hold the harness's own tool names (`Bash`, `Edit`,
+ * `Read`, `Task`, and `Bash(P)` for a pattern), never a product category.
+ */
 export function personaFrontmatter(persona: ResolvedPersona): PersonaFrontmatter {
+  const claudecode: NonNullable<PersonaFrontmatter['claudecode']> = {};
+  if (persona.model !== undefined) {
+    claudecode.model = persona.model;
+  }
+  if (persona.claude.allow.length > 0) {
+    claudecode.tools = persona.claude.allow;
+  }
+  if (persona.claude.deny.length > 0) {
+    claudecode.disallowedTools = persona.claude.deny;
+  }
   return {
     name: persona.id,
     targets: [DEFAULT_TARGET],
     description: persona.purpose,
-    ...(persona.model === undefined ? {} : { claudecode: { model: persona.model } }),
+    ...(Object.keys(claudecode).length === 0 ? {} : { claudecode }),
   };
 }
 

@@ -64,3 +64,7 @@ export function renderFailed(message: string, options: FarnaErrorOptions = {}): 
 export function rendererMismatch(message: string, options: FarnaErrorOptions = {}): FarnaError {
   return new FarnaError('F010_RENDERER_MISMATCH', message, options);
 }
+
+export function permissionUnmapped(message: string, options: FarnaErrorOptions = {}): FarnaError {
+  return new FarnaError('F011_PERMISSION_UNMAPPED', message, options);
+}
