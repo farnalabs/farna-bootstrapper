@@ -3,14 +3,15 @@
 Compile named agent personas and their resources into the configuration a coding harness
 actually reads, and prove that the committed output still matches the source.
 
-This repository is at **M1, the first vertical slice**. It implements one target
-(`claudecode`), two commands of the compiler loop (`generate`, `check`) plus `init`, and one
-resource kind per persona (`rule`). Everything else is deliberately deferred; see
+This repository is at **M2a: persona composition and permission validation**, on Claude Code
+only. It implements one target (`claudecode`), three commands of the compiler loop (`generate`,
+`check`) plus `init`, two resource kinds (`rule`, `permission`) plus a model class, and
+one base persona per composed persona (`extends`). Everything else is deliberately deferred; see
 [What this slice does not do](#what-this-slice-does-not-do).
 
 ## The loop
 
-1. You declare personas and their rules under `.farna/`.
+1. You declare personas, their rules and their permissions under `.farna/`.
 2. `farna-bootstrapper generate` renders the Claude Code agent files into `.claude/agents/` and
    records what it wrote in `.farna/lock.json`.
 3. `farna-bootstrapper check` renders the same input into a temporary directory and compares it
@@ -18,7 +19,9 @@ resource kind per persona (`rule`). Everything else is deliberately deferred; se
 
 `generate` never writes until every gate has passed. Each persona's body must contain its own
 rule text, and must not contain another persona's exclusive rule text. A renderer that drops
-content or mixes personas is refused before the first byte reaches the repository.
+content or mixes personas is refused before the first byte reaches the repository. Every
+permission category is validated before anything is materialised: a category the target cannot
+carry refuses the run (F011) rather than being emitted as an inert string.
 
 ## Requirements
 
@@ -30,6 +33,7 @@ content or mixes personas is refused before the first byte reaches the repositor
 ```sh
 npm ci
 npm run lint
+npm run typecheck
 npm test
 npm run build
 ```
@@ -37,8 +41,9 @@ npm run build
 `npm run build` compiles `src/` to `dist/`. After a build, run the CLI with
 `node dist/cli/main.js`, or link it with `npm link` to get the `farna-bootstrapper` binary.
 
-The integration test in `tests/integration/` drives the real, pinned renderer. It runs when the
-`rulesync` dependency is installed, which `npm ci` guarantees, and is skipped otherwise.
+The golden test in `tests/golden/` and the integration test in `tests/integration/` drive the
+real, pinned renderer. They run when the `rulesync` dependency is installed, which `npm ci`
+guarantees, and are skipped otherwise.
 
 ## Use
 
@@ -54,11 +59,14 @@ farna-bootstrapper init
   config.jsonc
   personas/
   resources/
+    rules/
+    permissions/
 .gitignore        # with .farna/local.jsonc and .farna/.journal.json
 ```
 
-Add one YAML file per persona under `.farna/personas/`, and one Markdown file per rule under
-`.farna/resources/rules/`:
+Add one YAML file per persona under `.farna/personas/`, one Markdown file per rule under
+`.farna/resources/rules/`, and one JSONC file per permission under
+`.farna/resources/permissions/`:
 
 ```yaml
 # .farna/personas/builder.yaml
@@ -69,6 +77,19 @@ purpose: Writes code, runs the tests, and follows the house conventions.
 model: standard
 resources:
   - rule/house-style
+  - permission/builder-default
+```
+
+```yaml
+# .farna/personas/builder-python.yaml
+kind: persona
+id: builder-python
+displayName: Python Builder
+purpose: Writes Python and runs the Python checks.
+extends: builder
+resources:
+  - rule/python-style
+  - permission/python-tools
 ```
 
 ```markdown
@@ -79,8 +100,21 @@ displayName: House style
 ---
 
 Write the smallest change that satisfies the ticket.
+```
 
-Run the tests before you report.
+```jsonc
+// .farna/resources/permissions/builder-default.jsonc
+{
+  "kind": "permission",
+  "id": "builder-default",
+  "tools": {
+    "read": "allow",
+    "write": "allow",
+    "edit": "allow",
+    "shell": "allow",
+    "task": "deny"
+  }
+}
 ```
 
 ```jsonc
@@ -107,28 +141,76 @@ farna-bootstrapper check             # prove the tree matches a fresh render
 A persona's rule text is joined into the body of its Claude Code subagent, in canonical rule-id
 order, under a `## displayName` heading. The rule body itself is never re-wrapped or re-indented.
 
+## Composition
+
+`extends` names at most one base persona. Resolution is:
+
+1. Resolve `extends` recursively, depth at most 32; a cycle, a self-extension or a missing base
+   is refused (F001) and the cycle message names the whole path.
+2. The base persona's rules and permissions are unioned into the child, by `(kind, id)`.
+3. The child's own `resources` are added in declaration order. Rule bodies are deduplicated by
+   id; permissions are merged by category, and the stricter value wins.
+4. The model is inherited from the base or set on the persona. Two different concrete models in
+   one composed set are a conflict (F005), never a silent override.
+5. The composed persona's body is both rule sets, and its permission entries are the union. In
+   the example above `builder-python` carries both rule markers and not the reviewer's, because
+   the reviewer's rules were never in its chain.
+
+A composed persona is one new name. There are no multi-parent unions and no per-target branches
+in the source.
+
+## Permissions
+
+The canonical categories are `read`, `write`, `edit`, `shell`, `network`, `mcp`, `task` and `*`.
+They are validated at plan time and mapped to the target's own form before anything is written:
+
+| Category | Claude Code entry | Note |
+|---|---|---|
+| `read` | `Read` / `Read(P)` | native |
+| `write` | `Edit` / `Edit(P)` | lossy on Claude Code here: an allow also permits modifying existing files (W112) |
+| `edit` | `Edit` / `Edit(P)` | native |
+| `shell` | `Bash` / `Bash(P)` | native |
+| `task` | `Task` / `Task(P)` | native |
+| `network` | none | refused (F011, exit 3): the target has no mapping |
+| `mcp` (bare) | none | refused (F011, exit 3): a bare category restricts nothing |
+| `*` | expands to every category | refused (F011), because it covers `network` |
+
+`ask` has no per-agent surface on Claude Code, so it is emitted as `deny` and reported (W111).
+Two categories that collapse onto one entry (`write` and `edit`) are merged with deny winning,
+and every disagreement is reported (W106). Both arrays are sorted alphabetically and every entry
+starts with the harness's capitalised tool name.
+
+Only the harness's own tool names reach the renderer source tree. A product category name is
+never written there; a test asserts it.
+
+Warnings are printed by `generate` and `check`, and recorded in `.farna/lock.json`.
+
 ## Layout
 
 ```text
 src/
   cli/            Commander wiring, the three commands, and the error boundary
   config/         strict JSONC config schema and loader
-  source/         YAML personas, markdown rules, strict frontmatter
-  compose/        resource reference resolution
+  source/         YAML personas, markdown rules, JSONC permissions, strict frontmatter
+  compose/        extends resolution, resource union, deny-wins merge, digests
+  permissions/    the canonical vocabulary and the Claude Code mapping
   materialise/    persona -> rulesync source tree
   render/         port.ts (the seam), upstream.ts (the only rulesync import), stage, commit
   verify/         containment and cross-persona isolation gates
   lock/           lockfile construction
-  report/         text and JSON output
+  report/         text and JSON output, warning records
 tests/
-  fixtures/demo/  one .farna tree with two personas and two distinct rules
-  unit/           fake-renderer tests, gates, loader, init, check, canonical JSON
-  integration/    the real pinned renderer
+  fixtures/demo/      the M1 fixture: two personas, two rules, no permissions
+  fixtures/composed/  builder, builder-python (extends builder) and reviewer, with permissions
+  golden/             the composed persona's pinned emitted bytes
+  unit/               composition, permissions, fake-renderer gates, loader, init, check
+  integration/        the real pinned renderer
 ```
 
-`.farna/lock.json` records the renderer identity, each persona's resolved resources, and the
-path, size and SHA-256 of every managed file. It contains no timestamps, hostnames or absolute
-paths.
+`.farna/lock.json` records the renderer identity, each persona's composition base, its resolved
+resource ids (each with the persona that contributed it), a persona digest, a permission digest,
+and the path, size and SHA-256 of every managed file. It contains no timestamps, hostnames or
+absolute paths.
 
 ## The renderer boundary
 
@@ -145,48 +227,74 @@ file.
 
 Deliberately out of scope, by milestone:
 
-- `doctor`; profile mode; composition and `extends`; union and conflict resolution
-- the `permission`, `mcp`, `skill`, `command`, `hook` and `model` resource kinds (a model is
-  expressed as the persona's `model` class in this slice)
+- `doctor`; profile mode; the OpenCode target and every other target; `agent with loss` and
+  `refuse` as plan outcomes; the full 71-target capability matrix and the capability report page
+- the `mcp`, `skill`, `command` and `hook` resource kinds; model resources (a model is the
+  persona's `model` class in this slice)
+- `patch` and `replaceWith` on a persona resource reference; `targets` filters on personas and
+  resources; `--strict`; `--accept-config` gating; `.farna/local.jsonc`
 - deletion or sweeping of orphaned managed files: `check` reports an unexpected path and
   `generate` never deletes a file it did not write in the current run
-- the OpenCode target and every other target; the full 71-target capability matrix
 - structured or region ownership; only whole files are owned
-- `--strict` and the warning table; `--accept-config` gating
 - the weekly renderer-sync bot and the two compiled binaries
 
 ## Deviations from `design/`
 
-This slice is intentionally narrower than the M1 described in the design documents. The
-differences, all deliberate:
+The M1 slice was intentionally narrower than the design documents, and M2a narrows or extends
+them further. The differences, all deliberate:
 
 1. **npm and Node, not Bun.** The design pins `bun` as the package manager and test runner. Bun is
    not installed on the delivery host, so this slice uses npm, `tsc` and Vitest. The package
    exposes the same ESM build and `bin`, and `engines.node` is unchanged at `>=22.22.0`.
-2. **Personas are YAML, not JSONC.** The brief for this slice specifies
-   `.farna/personas/*.yaml`. The design's JSONC persona format, with its parse-tree duplicate-key
-   rules, remains the M2 target. Config stays JSONC with duplicate keys rejected.
-3. **`init` creates two directories, not seven.** This slice creates `personas/` and `resources/`.
-   Empty `resources/<kind>/` directories for the other resource kinds are M2, because those kinds
-   do not exist yet and an empty directory that generates nothing is noise.
-4. **Only `rule` and a model class are resolvable.** A persona may reference `rule/<id>` and name a
-   `model` class. Any other resource kind is rejected with a clear error rather than accepted and
-   ignored. `targets.<t>.active` and `exclude` are also rejected: profile mode and per-target
-   filters are M2, and accepting them here would be a silent no-op. For the same reason
-   `ignoredFiles` is not accepted yet: its glob filtering is M2, and an unknown-key error is louder
-   than a setting that quietly does nothing.
-5. **`check` exits `1` on any drift.** `schema.md` §7 assigns `F007` exit `4`. The brief for this
-   slice requires `0` clean / `1` drift, so `check` returns `1` and reports the `F007` code in its
-   payload. `generate` keeps the design's per-code exits (`F008` is `4`).
-6. **No matrix snapshot or matrix digest.** The one-target, seven-cell snapshot, `probe`, and the
-   `matrixDigest` lockfile field are M2. The lockfile records the renderer identity, personas and
-   managed files only.
-7. **No `.farna/local.jsonc` reader.** `init` adds the path to `.gitignore`, but per-developer
-   selection is M2 with profile mode.
-8. **One recursive delete exists, in `src/render/stage.ts`.** It removes only the `mkdtemp`
-   directory the stage created, after proving it is inside the canonical temporary root. The
-   design's "no recursive delete in `src/`" rule is about never deleting user content; a
-   self-created temp stage is the one justified exception, and stage cleanup is required.
+2. **Personas are YAML, not JSONC.** The brief for M1 specified `.farna/personas/*.yaml`. The
+   design's JSONC persona format, with its parse-tree duplicate-key rules, remains a later target.
+   Config and permission resources are JSONC with duplicate keys rejected.
+3. **`write` maps to `Edit` on Claude Code and is reported as lossy (W112).** `schema.md` 4.5.1
+   records `write` as native `Write` on Claude Code. The M2a brief specifies `write` → `Edit` and
+   the W112 lossy report, so that is what ships. The consequence, printed in the warning, is that
+   an allow also permits modifying existing files.
+4. **`task` is emitted as `Task`, not `Agent`.** `schema.md` 4.5.1 and the M0 measurement record
+   rulesync translating its `agent` category to `Agent`. The brief names `Task` as the exact
+   Claude Code byte form. The materialiser authors the harness's per-agent tool list directly
+   (`claudecode.tools` / `claudecode.disallowedTools`), which is the renderer's source form for
+   that target, so `Task` is carried verbatim.
+5. **Permission resources may declare `patterns`.** `schema.md` 4.5 has no pattern field on a
+   permission resource. The brief requires the `Bash(P)` / `Edit(P)` byte form, so a resource may
+   add `patterns: { "<category>": { "<pattern>": "allow" | "ask" | "deny" } }`. Patterns are
+   emitted into the per-agent lists, which is the only array this slice writes. The design notes
+   that a per-agent *pattern* map is not a measured Claude Code surface; the workspace
+   `.claude/settings.json` is not written in agent mode, because a shared permission block would
+   leak one persona's deny onto every other persona.
+6. **A permission resource's identity is its declared `id`, not its file name.** This is the
+   design's rule (`schema.md` 1.2) and is what makes the duplicate-content conflict reachable: two
+   permission files may declare the same id, which is F005 (naming both paths) when their content
+   differs and a deduplication when it does not. Rules keep M1's file-name rule.
+7. **A model conflict is detected on the resolved concrete model id.** Two classes that map to the
+   same model id do not conflict; two classes that resolve to different ids do (F005).
+8. **Only `rule`, `permission` and a model class are resolvable.** A persona may reference
+   `rule/<id>` and `permission/<id>`, and name a `model` class. Any other resource kind is
+   rejected with a clear error rather than accepted and ignored. `targets.<t>.active` and
+   `exclude` are also rejected: profile mode and per-target filters are later work, and accepting
+   them here would be a silent no-op. For the same reason `ignoredFiles` is not accepted yet: an
+   unknown-key error is louder than a setting that quietly does nothing.
+9. **`check` exits `1` on any drift.** `schema.md` §7 assigns `F007` exit `4`. The brief for the
+   M1 slice requires `0` clean / `1` drift, so `check` returns `1` and reports the `F007` code in
+   its payload. `generate` keeps the design's per-code exits (`F008` is `4`, `F011` is `3`).
+10. **No matrix snapshot or matrix digest.** The one-target, seven-cell snapshot, `probe`, and the
+    `matrixDigest` lockfile field are later work. The lockfile records the renderer identity,
+    personas, resources, digests, managed files and warnings only.
+11. **The lockfile records warnings and two digests per persona.** `schema.md` 5.1 has a
+    `warnings[]` array; it is carried here together with a `permissionDigest`. The resolved
+    resource `rank` is not recorded; `fromPersona` is.
+12. **The permission digest covers the resolved product map** (category values and patterns), not
+    the emitted Claude Code entries. The target mapping is code, not source; the digest changes
+    when the source changes.
+13. **Only W106, W111 and W112 exist.** They are the warnings this milestone can produce. The
+    remaining W table, `--strict`, and severity promotion are deferred.
+14. **One recursive delete exists, in `src/render/stage.ts`.** It removes only the `mkdtemp`
+    directory the stage created, after proving it is inside the canonical temporary root. The
+    design's "no recursive delete in `src/`" rule is about never deleting user content; a
+    self-created temp stage is the one justified exception, and stage cleanup is required.
 
 ## Licence
 

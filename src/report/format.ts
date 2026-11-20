@@ -1,6 +1,18 @@
 import type { CheckResult } from '../cli/commands/check.js';
 import type { GenerateResult } from '../cli/commands/generate.js';
 import type { InitResult } from '../cli/commands/init.js';
+import type { Warning } from './warnings.js';
+
+function warningLines(warnings: readonly Warning[]): string[] {
+  if (warnings.length === 0) {
+    return [];
+  }
+  const lines = [`  warnings ${warnings.length}`];
+  for (const entry of warnings) {
+    lines.push(`  ${entry.code} ${entry.severity.padEnd(6)} ${entry.persona}: ${entry.message}`);
+  }
+  return lines;
+}
 
 export function formatInit(result: InitResult): string {
   const lines = ['farna-bootstrapper init', `  created ${result.configPath}`];
@@ -22,6 +34,7 @@ export function formatGenerate(result: GenerateResult): string {
   for (const file of result.files) {
     lines.push(`  ${file.status.padEnd(10)} ${file.path}`);
   }
+  lines.push(...warningLines(result.warnings));
   return `${lines.join('\n')}\n`;
 }
 
@@ -29,6 +42,7 @@ export function formatCheck(result: CheckResult): string {
   const lines = ['farna-bootstrapper check', `  target ${result.target} (agent mode)`];
   if (result.ok) {
     lines.push(`  ${result.checked.length} managed file(s) match a fresh render`);
+    lines.push(...warningLines(result.warnings));
     lines.push('', 'check: clean');
     return `${lines.join('\n')}\n`;
   }
@@ -36,6 +50,7 @@ export function formatCheck(result: CheckResult): string {
   for (const item of result.drift) {
     lines.push(`  ${item.kind.padEnd(10)} ${item.path} (${item.detail})`);
   }
+  lines.push(...warningLines(result.warnings));
   lines.push('', 'check: drift');
   return `${lines.join('\n')}\n`;
 }

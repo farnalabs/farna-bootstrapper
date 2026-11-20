@@ -10,13 +10,16 @@ export type TempRepo = {
   cleanup: () => Promise<void>;
 };
 
-const FIXTURE = fileURLToPath(new URL('../fixtures/demo', import.meta.url));
+const FIXTURES = fileURLToPath(new URL('../fixtures', import.meta.url));
 
-/** Copy the demo fixture into a fresh temporary directory. */
-export async function createTempRepo(): Promise<TempRepo> {
+/**
+ * Copy a fixture into a fresh temporary directory. `demo` is the M1 fixture;
+ * `composed` adds `extends`, permissions and the composed builder-python.
+ */
+export async function createTempRepo(fixture = 'demo'): Promise<TempRepo> {
   const base = await realpath(tmpdir());
   const root = await mkdtemp(join(base, 'fbs-test-'));
-  await cp(FIXTURE, root, { recursive: true });
+  await cp(join(FIXTURES, fixture), root, { recursive: true });
   return {
     root,
     cleanup: async () => {

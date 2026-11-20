@@ -2,12 +2,21 @@ import type { Dirent } from 'node:fs';
 import { readdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { ZodError } from 'zod';
-import { PERSONAS_DIR, RESOURCES_DIR, ROOT_DIR, RULES_DIR } from '../core/constants.js';
+import {
+  PERMISSIONS_DIR,
+  PERSONAS_DIR,
+  RESOURCES_DIR,
+  ROOT_DIR,
+  RULES_DIR,
+} from '../core/constants.js';
 import { conflict, invalidConfig, pathUnsafe } from '../core/errors.js';
-import { compareCodepoints } from '../core/json.js';
+import { compareCodepoints, parseJsonc } from '../core/json.js';
+import { permissionResourceDigest } from '../permissions/permissions.js';
 import { splitFrontmatter } from './frontmatter.js';
 import {
+  type PermissionDeclaration,
   type PersonaDeclaration,
+  permissionSchema,
   personaSchema,
   type RuleFrontmatter,
   ruleFrontmatterSchema,
@@ -23,6 +32,11 @@ export type RuleResource = {
   path: string;
 };
 
+export type PermissionResource = PermissionDeclaration & {
+  /** Repository-relative path, for messages. */
+  path: string;
+};
+
 export type LoadedPersona = PersonaDeclaration & {
   /** Repository-relative path, for messages. */
   path: string;
@@ -31,6 +45,7 @@ export type LoadedPersona = PersonaDeclaration & {
 export type SourceTree = {
   personas: LoadedPersona[];
   rules: RuleResource[];
+  permissions: PermissionResource[];
 };
 
 function relative(...segments: string[]): string {
@@ -46,11 +61,22 @@ function describeZodError(error: ZodError): string {
   return pointer === '' ? issue.message : `${pointer}: ${issue.message}`;
 }
 
-async function listEntries(path: string, subject: string): Promise<Dirent[]> {
+function isMissingFileError(error: unknown): boolean {
+  return error instanceof Error && 'code' in error && error.code === 'ENOENT';
+}
+
+async function listEntries(
+  path: string,
+  subject: string,
+  options: { optional?: boolean } = {},
+): Promise<Dirent[]> {
   let entries: Dirent[];
   try {
     entries = await readdir(path, { withFileTypes: true });
   } catch (error) {
+    if (options.optional === true && isMissingFileError(error)) {
+      return [];
+    }
     throw invalidConfig(`cannot read ${subject}`, {
       subject,
       action: 'run "farna-bootstrapper init" to create the source tree',
@@ -67,15 +93,17 @@ async function listEntries(path: string, subject: string): Promise<Dirent[]> {
   return entries.sort((a, b) => compareCodepoints(a.name, b.name));
 }
 
-/** Only `resources/rules/` exists in this slice; any other kind is a loud error. */
+/** Only the resource kinds this milestone implements may exist on disk. */
+const SUPPORTED_RESOURCE_DIRS: readonly string[] = [RULES_DIR, PERMISSIONS_DIR];
+
 async function assertSupportedResourceDirs(repoRoot: string): Promise<void> {
   const dirRelative = relative(RESOURCES_DIR);
   const entries = await listEntries(join(repoRoot, ROOT_DIR, RESOURCES_DIR), dirRelative);
   for (const entry of entries) {
-    if (!entry.isDirectory() || entry.name !== RULES_DIR) {
+    if (!entry.isDirectory() || !SUPPORTED_RESOURCE_DIRS.includes(entry.name)) {
       throw invalidConfig(`resource kind "${entry.name}" is not implemented in this slice`, {
         subject: `${dirRelative}/${entry.name}`,
-        action: 'this slice supports resource files under resources/rules/ only',
+        action: `this slice supports resource files under ${SUPPORTED_RESOURCE_DIRS.map((dir) => `resources/${dir}/`).join(' and ')}`,
       });
     }
   }
@@ -180,6 +208,72 @@ async function loadRules(repoRoot: string): Promise<RuleResource[]> {
   return rules;
 }
 
+async function loadPermissions(repoRoot: string): Promise<PermissionResource[]> {
+  const dirRelative = relative(RESOURCES_DIR, PERMISSIONS_DIR);
+  // A source tree with no permissions is valid: the directory is optional.
+  const entries = await listEntries(
+    join(repoRoot, ROOT_DIR, RESOURCES_DIR, PERMISSIONS_DIR),
+    dirRelative,
+    { optional: true },
+  );
+  const byId = new Map<string, PermissionResource & { contentDigest: string }>();
+  for (const entry of entries) {
+    const name = entry.name;
+    const path = `${dirRelative}/${name}`;
+    if (!entry.isFile()) {
+      throw invalidConfig('unexpected entry in resources/permissions/', {
+        subject: path,
+        action: 'a permission is one .jsonc file',
+      });
+    }
+    if (!name.endsWith('.jsonc')) {
+      throw invalidConfig('unexpected file in resources/permissions/', {
+        subject: path,
+        action: 'permission files use the .jsonc extension',
+      });
+    }
+    const text = await readFile(
+      join(repoRoot, ROOT_DIR, RESOURCES_DIR, PERMISSIONS_DIR, name),
+      'utf8',
+    );
+    const raw = parseJsonc(text, { subject: path });
+    let parsed: PermissionDeclaration;
+    try {
+      parsed = permissionSchema.parse(raw);
+    } catch (error) {
+      if (error instanceof ZodError) {
+        throw invalidConfig(describeZodError(error), { subject: path });
+      }
+      throw error;
+    }
+    const resource: PermissionResource = {
+      kind: 'permission',
+      id: parsed.id,
+      tools: parsed.tools,
+      ...(parsed.patterns === undefined ? {} : { patterns: parsed.patterns }),
+      path,
+    };
+    const contentDigest = permissionResourceDigest(resource.tools, resource.patterns);
+    const existing = byId.get(resource.id);
+    if (existing === undefined) {
+      byId.set(resource.id, { ...resource, contentDigest });
+      continue;
+    }
+    if (existing.contentDigest !== contentDigest) {
+      throw conflict(
+        `two permission resources share the id "${resource.id}" with different content`,
+        {
+          subject: path,
+          action: `the same (kind, id) also appears in ${existing.path}; give one of them a different id`,
+        },
+      );
+    }
+  }
+  return [...byId.values()]
+    .map(({ contentDigest: _contentDigest, ...resource }) => resource)
+    .sort((a, b) => compareCodepoints(a.id, b.id));
+}
+
 function assertUniqueIds(source: SourceTree): void {
   const personaIds = new Set<string>();
   for (const persona of source.personas) {
@@ -211,7 +305,8 @@ export async function loadSource(repoRoot: string): Promise<SourceTree> {
   await assertSupportedResourceDirs(repoRoot);
   const personas = (await loadPersonas(repoRoot)).sort((a, b) => compareCodepoints(a.id, b.id));
   const rules = (await loadRules(repoRoot)).sort((a, b) => compareCodepoints(a.id, b.id));
-  const source: SourceTree = { personas, rules };
+  const permissions = await loadPermissions(repoRoot);
+  const source: SourceTree = { personas, rules, permissions };
   assertUniqueIds(source);
   return source;
 }

@@ -1,0 +1,11 @@
+{
+  "kind": "permission",
+  "id": "builder-default",
+  "tools": {
+    "read": "allow",
+    "write": "allow",
+    "edit": "allow",
+    "shell": "allow",
+    "task": "deny"
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "kind": "permission",
+  "id": "review-only",
+  "tools": {
+    "read": "allow",
+    "write": "deny",
+    "edit": "deny",
+    "shell": "allow",
+    "task": "deny"
+  }
+}

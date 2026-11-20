@@ -1,0 +1,16 @@
+{
+  // One target, two model classes, three permission resources. The composed
+  // builder-python persona extends builder and adds Python resources by id.
+  "schemaVersion": 1,
+  "targets": {
+    "claudecode": {}
+  },
+  "models": {
+    "standard": {
+      "claudecode": "claude-sonnet-4-5"
+    },
+    "fast": {
+      "claudecode": "claude-haiku-4-5"
+    }
+  }
+}
