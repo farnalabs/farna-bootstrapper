@@ -1,0 +1,70 @@
+{
+  "name": "farna-bootstrapper",
+  "version": "0.1.0",
+  "description": "Compile named agent personas and resources into the configuration each coding harness reads, and prove that the output still matches the source.",
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "farna-bootstrapper": "./dist/cli/main.js"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "LICENSE",
+    "NOTICE",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=22.22.0"
+  },
+  "sideEffects": false,
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/farnalabs/farna-bootstrapper.git"
+  },
+  "homepage": "https://github.com/farnalabs/farna-bootstrapper#readme",
+  "bugs": {
+    "url": "https://github.com/farnalabs/farna-bootstrapper/issues"
+  },
+  "keywords": [
+    "agents",
+    "agent-configuration",
+    "claude-code",
+    "opencode",
+    "codegen"
+  ],
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "build": "tsc -p tsconfig.build.json",
+    "lint": "biome check .",
+    "lint:fix": "biome check --write .",
+    "format": "biome format --write .",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "commander": "14.0.1",
+    "jsonc-parser": "3.3.1",
+    "rulesync": "43.11.0",
+    "yaml": "2.8.1",
+    "zod": "4.1.12"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.3.5",
+    "@types/node": "22.19.1",
+    "typescript": "5.9.3",
+    "vitest": "3.2.4"
+  }
+}

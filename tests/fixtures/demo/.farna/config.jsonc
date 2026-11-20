@@ -1,0 +1,12 @@
+{
+  // One target, one model class. This is the slice-1 template.
+  "schemaVersion": 1,
+  "targets": {
+    "claudecode": {}
+  },
+  "models": {
+    "standard": {
+      "claudecode": "claude-sonnet-4-5"
+    }
+  }
+}

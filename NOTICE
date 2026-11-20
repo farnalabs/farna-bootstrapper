@@ -1,0 +1,13 @@
+farna-bootstrapper
+Copyright (c) 2026 Farnalabs Ltd
+
+This product includes software developed by third parties:
+
+  rulesync
+  https://github.com/dyoshikawa/rulesync
+  MIT License
+  Copyright (c) dyoshikawa and contributors
+
+rulesync is used as an unmodified library dependency. Its version and
+integrity are pinned in package.json and recorded by the generated
+.farna/lock.json.
