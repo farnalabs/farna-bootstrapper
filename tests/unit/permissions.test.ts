@@ -54,24 +54,30 @@ describe('permission mapping', () => {
   it('emits the exact Claude Code byte form for a catch-all', () => {
     const { entries } = map({
       read: 'allow',
+      write: 'allow',
       edit: 'allow',
       shell: 'allow',
       task: 'deny',
     });
-    expect(entries.allow).toEqual(['Bash', 'Edit', 'Read']);
-    expect(entries.deny).toEqual(['Task']);
+    expect(entries.allow).toEqual(['Bash', 'Edit', 'Read', 'Write']);
+    expect(entries.deny).toEqual(['Agent']);
     for (const entry of [...entries.allow, ...entries.deny]) {
       expect(entry).toMatch(/^[A-Z][A-Za-z]*$/);
     }
   });
 
-  it('maps write onto Edit and warns W112', () => {
+  it('maps write onto Write and produces no warning', () => {
     const { entries, warnings } = map({ write: 'allow' });
-    expect(entries.allow).toEqual(['Edit']);
-    const lossy = warnings.filter((entry) => entry.code === 'W112_PERMISSION_LOSSY');
-    expect(lossy).toHaveLength(1);
-    expect(lossy[0]?.severity).toBe('high');
-    expect(lossy[0]?.message).toContain('write is emitted as Edit');
+    expect(entries.allow).toEqual(['Write']);
+    expect(entries.deny).toEqual([]);
+    expect(codes(warnings)).not.toContain('W112_PERMISSION_LOSSY');
+    expect(warnings).toEqual([]);
+  });
+
+  it('maps task onto Agent', () => {
+    const { entries } = map({ task: 'allow' });
+    expect(entries.allow).toEqual(['Agent']);
+    expect(entries.deny).toEqual([]);
   });
 
   it('emits ask as deny and warns W111', () => {
@@ -93,11 +99,11 @@ describe('permission mapping', () => {
     expect(entries.deny).toEqual(['Edit', 'Edit(src/**)']);
   });
 
-  it('keeps two categories that collapse onto one tool deny-wins and reports W106', () => {
+  it('keeps write and edit as separate tools with no deny-wins report', () => {
     const { entries, warnings } = map({ write: 'allow', edit: 'deny' });
+    expect(entries.allow).toEqual(['Write']);
     expect(entries.deny).toEqual(['Edit']);
-    expect(entries.allow).toEqual([]);
-    expect(codes(warnings)).toContain('W106_DENY_WINS');
+    expect(codes(warnings)).not.toContain('W106_DENY_WINS');
   });
 
   it('refuses network with F011, naming the category and the target', () => {
@@ -234,7 +240,8 @@ describe('permission source form', () => {
     expect(frontmatter).toContain('- Bash');
     expect(frontmatter).toContain('- Edit');
     expect(frontmatter).toContain('- Read');
-    expect(frontmatter).toContain('- Task');
+    expect(frontmatter).toContain('- Agent');
+    expect(frontmatter).toContain('- Write');
     expect(frontmatter).not.toMatch(/\b(shell|network|task|write)\b/);
   });
 });

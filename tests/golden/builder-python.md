@@ -7,8 +7,9 @@ tools:
   - Bash(pytest *)
   - Edit
   - Read
+  - Write
 disallowedTools:
-  - Task
+  - Agent
 ---
 ## House style
 

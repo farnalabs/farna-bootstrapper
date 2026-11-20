@@ -27,8 +27,8 @@ export type PersonaFrontmatter = {
 
 /**
  * The renderer source form for the Claude Code per-agent block. `tools` and
- * `disallowedTools` already hold the harness's own tool names (`Bash`, `Edit`,
- * `Read`, `Task`, and `Bash(P)` for a pattern), never a product category.
+ * `disallowedTools` already hold the harness's own tool names (`Agent`, `Bash`,
+ * `Edit`, `Read`, `Write`, and `Bash(P)` for a pattern), never a product category.
  */
 export function personaFrontmatter(persona: ResolvedPersona): PersonaFrontmatter {
   const claudecode: NonNullable<PersonaFrontmatter['claudecode']> = {};

@@ -30,16 +30,20 @@ export type PermissionPatterns = Partial<
 
 /**
  * The renderer source form for Claude Code's per-agent block is the harness's
- * own tool name, and the emitted byte form is the same string. `write` collapses
- * into `Edit` (W112); `network` and a bare `mcp` have no tool at all.
+ * own tool name, and the emitted byte form is the same string. `Write` is its
+ * own tool, distinct from `Edit`; the subagent tool is `Agent` (the former
+ * `Task` name is a legacy alias). `network` and a bare `mcp` have no tool.
+ *
+ * W112 is not emitted here: `write` is native on Claude Code. The lossy
+ * `write` -> `edit` collapse in the design belongs to OpenCode (M2b).
  */
 export const CLAUDE_TOOL_BY_CATEGORY: Record<'read' | 'write' | 'edit' | 'shell' | 'task', string> =
   {
     read: 'Read',
-    write: 'Edit',
+    write: 'Write',
     edit: 'Edit',
     shell: 'Bash',
-    task: 'Task',
+    task: 'Agent',
   };
 
 const UNMAPPED_CATEGORIES: readonly PermissionCategory[] = ['network', 'mcp'];
@@ -171,7 +175,7 @@ function patternEntry(tool: string, pattern: string): string {
 /**
  * Map a persona's resolved permission map onto Claude Code's exact byte form.
  * Every unmapped category refuses with F011 before anything is materialised;
- * `ask` becomes deny (W111) and `write` is carried as `Edit` (W112).
+ * `ask` becomes deny (W111). Every mapped category is native here, so no W112.
  */
 export function mapPermissions(
   resolved: ResolvedPermissions,
@@ -229,17 +233,6 @@ export function mapPermissions(
     if (declared === undefined) {
       continue;
     }
-    if (category === 'write') {
-      warnings.push(
-        warning({
-          code: 'W112_PERMISSION_LOSSY',
-          persona: context.persona,
-          target: context.target,
-          capability: 'permission',
-          message: `write is emitted as Edit on ${context.target}; an allow also permits modifying existing files`,
-        }),
-      );
-    }
     const value = declared.value === 'ask' ? 'deny' : declared.value;
     if (declared.value === 'ask') {
       warnings.push(
@@ -263,17 +256,6 @@ export function mapPermissions(
     }
     const tool = CLAUDE_TOOL_BY_CATEGORY[category as keyof typeof CLAUDE_TOOL_BY_CATEGORY];
     for (const [pattern, declared] of Object.entries(patterns)) {
-      if (category === 'write') {
-        warnings.push(
-          warning({
-            code: 'W112_PERMISSION_LOSSY',
-            persona: context.persona,
-            target: context.target,
-            capability: 'permission',
-            message: `write is emitted as Edit on ${context.target}; the ${pattern} pattern now applies to edits too`,
-          }),
-        );
-      }
       const value = declared.value === 'ask' ? 'deny' : declared.value;
       if (declared.value === 'ask') {
         warnings.push(

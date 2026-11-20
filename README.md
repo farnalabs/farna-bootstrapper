@@ -167,18 +167,20 @@ They are validated at plan time and mapped to the target's own form before anyth
 | Category | Claude Code entry | Note |
 |---|---|---|
 | `read` | `Read` / `Read(P)` | native |
-| `write` | `Edit` / `Edit(P)` | lossy on Claude Code here: an allow also permits modifying existing files (W112) |
+| `write` | `Write` / `Write(P)` | native; `Write` is its own tool, distinct from `Edit` |
 | `edit` | `Edit` / `Edit(P)` | native |
 | `shell` | `Bash` / `Bash(P)` | native |
-| `task` | `Task` / `Task(P)` | native |
+| `task` | `Agent` / `Agent(P)` | native; `Task` is a legacy alias in Claude Code, `Agent` is the emitted name |
 | `network` | none | refused (F011, exit 3): the target has no mapping |
 | `mcp` (bare) | none | refused (F011, exit 3): a bare category restricts nothing |
 | `*` | expands to every category | refused (F011), because it covers `network` |
 
 `ask` has no per-agent surface on Claude Code, so it is emitted as `deny` and reported (W111).
-Two categories that collapse onto one entry (`write` and `edit`) are merged with deny winning,
-and every disagreement is reported (W106). Both arrays are sorted alphabetically and every entry
-starts with the harness's capitalised tool name.
+Every other category is native and maps 1:1 onto a distinct tool, so there is no W112 on this
+target; the design's lossy `write` -> `edit` collapse belongs to OpenCode (M2b). When two
+permission resources disagree on a category, the stricter value wins and the disagreement is
+reported (W106). Both arrays are sorted alphabetically and every entry starts with the harness's
+capitalised tool name.
 
 Only the harness's own tool names reach the renderer source tree. A product category name is
 never written there; a test asserts it.
@@ -249,49 +251,41 @@ them further. The differences, all deliberate:
 2. **Personas are YAML, not JSONC.** The brief for M1 specified `.farna/personas/*.yaml`. The
    design's JSONC persona format, with its parse-tree duplicate-key rules, remains a later target.
    Config and permission resources are JSONC with duplicate keys rejected.
-3. **`write` maps to `Edit` on Claude Code and is reported as lossy (W112).** `schema.md` 4.5.1
-   records `write` as native `Write` on Claude Code. The M2a brief specifies `write` → `Edit` and
-   the W112 lossy report, so that is what ships. The consequence, printed in the warning, is that
-   an allow also permits modifying existing files.
-4. **`task` is emitted as `Task`, not `Agent`.** `schema.md` 4.5.1 and the M0 measurement record
-   rulesync translating its `agent` category to `Agent`. The brief names `Task` as the exact
-   Claude Code byte form. The materialiser authors the harness's per-agent tool list directly
-   (`claudecode.tools` / `claudecode.disallowedTools`), which is the renderer's source form for
-   that target, so `Task` is carried verbatim.
-5. **Permission resources may declare `patterns`.** `schema.md` 4.5 has no pattern field on a
+3. **Permission resources may declare `patterns`.** `schema.md` 4.5 has no pattern field on a
    permission resource. The brief requires the `Bash(P)` / `Edit(P)` byte form, so a resource may
    add `patterns: { "<category>": { "<pattern>": "allow" | "ask" | "deny" } }`. Patterns are
    emitted into the per-agent lists, which is the only array this slice writes. The design notes
    that a per-agent *pattern* map is not a measured Claude Code surface; the workspace
    `.claude/settings.json` is not written in agent mode, because a shared permission block would
    leak one persona's deny onto every other persona.
-6. **A permission resource's identity is its declared `id`, not its file name.** This is the
+4. **A permission resource's identity is its declared `id`, not its file name.** This is the
    design's rule (`schema.md` 1.2) and is what makes the duplicate-content conflict reachable: two
    permission files may declare the same id, which is F005 (naming both paths) when their content
    differs and a deduplication when it does not. Rules keep M1's file-name rule.
-7. **A model conflict is detected on the resolved concrete model id.** Two classes that map to the
+5. **A model conflict is detected on the resolved concrete model id.** Two classes that map to the
    same model id do not conflict; two classes that resolve to different ids do (F005).
-8. **Only `rule`, `permission` and a model class are resolvable.** A persona may reference
+6. **Only `rule`, `permission` and a model class are resolvable.** A persona may reference
    `rule/<id>` and `permission/<id>`, and name a `model` class. Any other resource kind is
    rejected with a clear error rather than accepted and ignored. `targets.<t>.active` and
    `exclude` are also rejected: profile mode and per-target filters are later work, and accepting
    them here would be a silent no-op. For the same reason `ignoredFiles` is not accepted yet: an
    unknown-key error is louder than a setting that quietly does nothing.
-9. **`check` exits `1` on any drift.** `schema.md` §7 assigns `F007` exit `4`. The brief for the
+7. **`check` exits `1` on any drift.** `schema.md` §7 assigns `F007` exit `4`. The brief for the
    M1 slice requires `0` clean / `1` drift, so `check` returns `1` and reports the `F007` code in
    its payload. `generate` keeps the design's per-code exits (`F008` is `4`, `F011` is `3`).
-10. **No matrix snapshot or matrix digest.** The one-target, seven-cell snapshot, `probe`, and the
+8. **No matrix snapshot or matrix digest.** The one-target, seven-cell snapshot, `probe`, and the
     `matrixDigest` lockfile field are later work. The lockfile records the renderer identity,
     personas, resources, digests, managed files and warnings only.
-11. **The lockfile records warnings and two digests per persona.** `schema.md` 5.1 has a
+9. **The lockfile records warnings and two digests per persona.** `schema.md` 5.1 has a
     `warnings[]` array; it is carried here together with a `permissionDigest`. The resolved
     resource `rank` is not recorded; `fromPersona` is.
-12. **The permission digest covers the resolved product map** (category values and patterns), not
+10. **The permission digest covers the resolved product map** (category values and patterns), not
     the emitted Claude Code entries. The target mapping is code, not source; the digest changes
     when the source changes.
-13. **Only W106, W111 and W112 exist.** They are the warnings this milestone can produce. The
-    remaining W table, `--strict`, and severity promotion are deferred.
-14. **One recursive delete exists, in `src/render/stage.ts`.** It removes only the `mkdtemp`
+11. **Only W106 and W111 are emitted in this milestone.** W112 is defined in the design's code
+    table but is not emitted on Claude Code: `write` is native there, and the lossy mapping is
+    OpenCode's (M2b). The remaining W table, `--strict`, and severity promotion are deferred.
+12. **One recursive delete exists, in `src/render/stage.ts`.** It removes only the `mkdtemp`
     directory the stage created, after proving it is inside the canonical temporary root. The
     design's "no recursive delete in `src/`" rule is about never deleting user content; a
     self-created temp stage is the one justified exception, and stage cleanup is required.
