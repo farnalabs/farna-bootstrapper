@@ -22,23 +22,52 @@ export const PERSONAS_DIR = 'personas';
 export const RESOURCES_DIR = 'resources';
 export const RULES_DIR = 'rules';
 export const PERMISSIONS_DIR = 'permissions';
+export const MCP_DIR = 'mcp';
+export const SKILLS_DIR = 'skills';
+export const COMMANDS_DIR = 'commands';
+export const HOOKS_DIR = 'hooks';
 
 /** The extensions each source kind uses, and the one emitted artefacts use. */
 export const PERSONA_FILE_EXT = '.yaml';
 export const RULE_FILE_EXT = '.md';
 export const PERMISSION_FILE_EXT = '.jsonc';
+export const COMMAND_FILE_EXT = '.md';
+export const STRUCTURED_RESOURCE_FILE_EXT = '.jsonc';
+export const SKILL_FILE_NAME = 'SKILL.md';
 export const AGENT_FILE_EXT = '.md';
 
 /** The one base persona a composed persona may extend. */
 export const MAX_EXTENDS_DEPTH = 32;
 
-/** The only target implemented in this slice. */
+/**
+ * The targets this slice renders. Exactly one target is configured per run
+ * (`config.md`): rendering several configured targets in one run would need a
+ * per-target lockfile and mode plan, which is later work.
+ */
 export const DEFAULT_TARGET = 'claudecode' as const;
-export const SUPPORTED_TARGETS: readonly string[] = [DEFAULT_TARGET];
+export const OPENCODE_TARGET = 'opencode' as const;
+export type SupportedTarget = typeof DEFAULT_TARGET | typeof OPENCODE_TARGET;
+export const SUPPORTED_TARGETS: readonly SupportedTarget[] = [DEFAULT_TARGET, OPENCODE_TARGET];
 
-/** The harness directory and the rendered agent files, relative to the repository root. */
+/** The Claude Code directories, relative to the repository root. */
 export const CLAUDE_DIR = '.claude';
 export const CLAUDE_AGENTS_DIR = `${CLAUDE_DIR}/agents`;
+
+/**
+ * The OpenCode paths this slice writes, relative to the repository root.
+ * `commands` is plural and the workspace config is `opencode.jsonc`, both
+ * measured at rulesync 43.11.0; the measured record is `m0-measurements.md`.
+ */
+export const OPENCODE_DIR = '.opencode';
+export const OPENCODE_AGENTS_DIR = `${OPENCODE_DIR}/agents`;
+export const OPENCODE_COMMANDS_DIR = `${OPENCODE_DIR}/commands`;
+export const OPENCODE_SKILLS_DIR = `${OPENCODE_DIR}/skills`;
+export const OPENCODE_PLUGINS_DIR = `${OPENCODE_DIR}/plugins`;
+export const OPENCODE_CONFIG_FILE = 'opencode.jsonc';
+export const OPENCODE_HOOKS_PLUGIN = `${OPENCODE_PLUGINS_DIR}/rulesync-hooks.js`;
+/** The rulesync source files a workspace resource kind needs. */
+export const RULESYNC_MCP_FILE = 'mcp.jsonc';
+export const RULESYNC_HOOKS_FILE = 'hooks.jsonc';
 
 /**
  * Operating-system metadata a checkout can create in a source directory. These
@@ -52,24 +81,6 @@ export function isOsMetadataName(name: string): boolean {
   return OS_METADATA_NAMES.includes(name);
 }
 
-/** The local-only paths `init` adds to `.gitignore`, plus OS metadata. */
-export const GITIGNORE_LINES: readonly string[] = [
-  `${ROOT_DIR}/local.jsonc`,
-  `${ROOT_DIR}/.journal.json`,
-  ...OS_METADATA_NAMES,
-];
-
-/**
- * The two paths whose line endings change their committed bytes. `check`
- * compares bytes, so a checkout that rewrites them to CRLF would report drift
- * the source never declared. `init` merges these into the consumer's
- * `.gitattributes`.
- */
-export const GITATTRIBUTES_LINES: readonly string[] = [
-  `/${CLAUDE_AGENTS_DIR}/** text eol=lf`,
-  `/${LOCK_PATH} text eol=lf`,
-];
-
 /**
  * Our own staging namespace. `commitFiles` writes hidden siblings named
  * `.<target>.farna-tmp-<pid>-<uuid>` on the same filesystem and renames them
@@ -77,6 +88,37 @@ export const GITATTRIBUTES_LINES: readonly string[] = [
  * killed run can never make the tree permanently red.
  */
 export const STAGING_INFIX = '.farna-tmp-';
+/** The `.gitignore` pattern for the staging namespace, at any depth. */
+export const STAGING_PATTERN = `**/.*${STAGING_INFIX}*`;
+
+/**
+ * The local-only paths `init` adds to `.gitignore`, plus OS metadata. The
+ * staging pattern keeps a killed `generate`'s temporary sibling, which can
+ * appear in any managed directory, out of a commit.
+ */
+export const GITIGNORE_LINES: readonly string[] = [
+  `${ROOT_DIR}/local.jsonc`,
+  `${ROOT_DIR}/.journal.json`,
+  `${STAGING_PATTERN}`,
+  ...OS_METADATA_NAMES,
+];
+
+/**
+ * The managed paths whose line endings change their committed bytes. `check`
+ * compares bytes, so a checkout that rewrites them to CRLF would report drift
+ * the source never declared. `init` merges these into the consumer's
+ * `.gitattributes` for every supported target, so switching target in the
+ * config does not leave the new outputs unpinned.
+ */
+export const GITATTRIBUTES_LINES: readonly string[] = [
+  `/${CLAUDE_AGENTS_DIR}/** text eol=lf`,
+  `/${OPENCODE_AGENTS_DIR}/** text eol=lf`,
+  `/${OPENCODE_COMMANDS_DIR}/** text eol=lf`,
+  `/${OPENCODE_SKILLS_DIR}/** text eol=lf`,
+  `/${OPENCODE_PLUGINS_DIR}/** text eol=lf`,
+  `/${OPENCODE_CONFIG_FILE} text eol=lf`,
+  `/${LOCK_PATH} text eol=lf`,
+];
 
 /**
  * This product's own lockfile (`.farna/lock.json`) is derived and small: it
@@ -120,10 +162,31 @@ export const STAGING_MAX_AGE_MS = 60 * 60 * 1000;
 export const ID_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 export const ID_MAX_LENGTH = 64;
 
-export type Capability = 'rule' | 'permission' | 'model';
+export type Capability = 'rule' | 'mcp' | 'skill' | 'command' | 'permission' | 'hook' | 'model';
 
-/** Capabilities a persona resource reference may name in this slice. */
-export const SUPPORTED_RESOURCE_KINDS: readonly Capability[] = ['rule', 'model', 'permission'];
+/**
+ * Capabilities a persona resource reference may name in this slice. `model` is
+ * absent: a model is expressed with the persona's `model` class, and a
+ * `model/<id>` reference is refused rather than accepted and ignored.
+ */
+export const SUPPORTED_RESOURCE_KINDS: readonly Capability[] = [
+  'rule',
+  'permission',
+  'mcp',
+  'skill',
+  'command',
+  'hook',
+];
+
+/**
+ * The capability class of each resource kind (schema.md section 1.2). A dropped
+ * boundary capability is HIGH and can refuse; a dropped content capability is
+ * MEDIUM and can only produce a loss.
+ */
+export const BOUNDARY_CAPABILITIES: readonly Capability[] = ['permission', 'hook', 'mcp'];
+
+/** The resource kinds OpenCode carries only at the workspace level. */
+export const OPENCODE_WORKSPACE_KINDS: readonly Capability[] = ['mcp', 'skill', 'command', 'hook'];
 
 export type ExitCode = 0 | 1 | 2 | 3 | 4 | 5;
 
@@ -144,6 +207,7 @@ export const DRIFT_CODE = 'F007_DRIFT' as const;
 
 export type ErrorCode =
   | 'F001_INVALID_CONFIG'
+  | 'F002_SECRET_LITERAL'
   | 'F003_PATH_UNSAFE'
   | 'F005_CONFLICT'
   | 'F008_DECLARED_NOT_EMITTED'
@@ -155,6 +219,7 @@ export type ErrorCode =
 /** Exit code per diagnostic code. The table lives here once. F007 is absent: drift is a result. */
 export const EXIT_BY_CODE: Record<ErrorCode, ExitCode> = {
   F001_INVALID_CONFIG: EXIT.invalidConfig,
+  F002_SECRET_LITERAL: EXIT.invalidConfig,
   F003_PATH_UNSAFE: EXIT.invalidConfig,
   F005_CONFLICT: EXIT.conflict,
   F008_DECLARED_NOT_EMITTED: EXIT.declaredNotEmitted,
@@ -167,6 +232,7 @@ export const EXIT_BY_CODE: Record<ErrorCode, ExitCode> = {
 export type Severity = 'error' | 'high' | 'medium' | 'low' | 'info';
 
 export const WARNING_CODES = [
+  'W101_CAPABILITY_DROPPED',
   'W106_DENY_WINS',
   'W111_ASK_DOWNGRADED',
   'W112_PERMISSION_LOSSY',
@@ -188,8 +254,14 @@ export type WarningCode = (typeof WARNING_CODES)[number];
  * a run whose integrity could not be checked must never look like a clean
  * integrity pass. High is reserved for a warning that records a real loss
  * (W112), which this is not.
+ *
+ * W101's severity is dynamic: `high` for a boundary capability (`permission`,
+ * `hook`, `mcp`), `medium` for content (`rule`, `model`, `skill`, `command`).
+ * The table value is the content default; every boundary emission passes
+ * `high` explicitly so the classification is visible at the call site.
  */
 export const WARNING_SEVERITY: Record<WarningCode, Severity> = {
+  W101_CAPABILITY_DROPPED: 'medium',
   W106_DENY_WINS: 'info',
   W111_ASK_DOWNGRADED: 'medium',
   W112_PERMISSION_LOSSY: 'high',

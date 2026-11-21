@@ -14,7 +14,9 @@ const FIXTURES = fileURLToPath(new URL('../fixtures', import.meta.url));
 
 /**
  * Copy a fixture into a fresh temporary directory. `demo` is the M1 fixture;
- * `composed` adds `extends`, permissions and the composed builder-python.
+ * `composed` adds `extends`, permissions and the composed builder-python;
+ * `opencode` is the same shape on the OpenCode target, with the workspace
+ * resource kinds (mcp, skill, command and hook).
  */
 export async function createTempRepo(fixture = 'demo'): Promise<TempRepo> {
   const base = await realpath(tmpdir());

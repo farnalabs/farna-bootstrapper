@@ -33,12 +33,17 @@ function report(overrides: Partial<Report> = {}): Report {
     testResults: [
       { name: '/repo/tests/integration/rulesync.test.ts', assertionResults: passed(4) },
       { name: '/repo/tests/golden/builder-python.test.ts', assertionResults: passed(2) },
+      { name: '/repo/tests/golden/opencode.test.ts', assertionResults: passed(3) },
     ],
   };
   return { ...base, ...overrides };
 }
 
-const DEFAULT_FILES = ['tests/integration/rulesync.test.ts', 'tests/golden/builder-python.test.ts'];
+const DEFAULT_FILES = [
+  'tests/integration/rulesync.test.ts',
+  'tests/golden/builder-python.test.ts',
+  'tests/golden/opencode.test.ts',
+];
 
 /**
  * Run the gate against a fixture root. The gate enumerates `tests/**` and reads
@@ -108,6 +113,7 @@ describe('the test-count gate', () => {
         testResults: [
           { name: 'C:\\repo\\tests\\integration\\rulesync.test.ts', assertionResults: passed(4) },
           { name: 'C:\\repo\\tests\\golden\\builder-python.test.ts', assertionResults: passed(2) },
+          { name: 'C:\\repo\\tests\\golden\\opencode.test.ts', assertionResults: passed(3) },
         ],
       }),
     );
@@ -148,12 +154,14 @@ describe('the test-count gate', () => {
         testResults: [
           { name: '/repo/tests/integration/rulesync.test.ts', assertionResults: passed(4) },
           { name: '/repo/tests/golden/builder-python.test.ts', assertionResults: passed(2) },
+          { name: '/repo/tests/golden/opencode.test.ts', assertionResults: passed(3) },
           { name: '/repo/tests/unit/new-suite.test.ts', assertionResults: passed(5) },
         ],
       }),
       [
         'tests/integration/rulesync.test.ts',
         'tests/golden/builder-python.test.ts',
+        'tests/golden/opencode.test.ts',
         'tests/unit/new-suite.test.ts',
       ],
     );

@@ -1,0 +1,7 @@
+{
+  "kind": "hook",
+  "id": "format-on-save",
+  "phase": "before-tool",
+  "matcher": "Edit|Write",
+  "command": "pnpm exec prettier --write \"$FILE\""
+}

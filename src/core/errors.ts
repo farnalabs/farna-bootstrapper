@@ -41,6 +41,11 @@ export function invalidConfig(message: string, options: FarnaErrorOptions = {}):
   return new FarnaError('F001_INVALID_CONFIG', message, options);
 }
 
+/** A literal value in a credential position. The message never echoes it. */
+export function secretLiteral(message: string, options: FarnaErrorOptions = {}): FarnaError {
+  return new FarnaError('F002_SECRET_LITERAL', message, options);
+}
+
 export function pathUnsafe(message: string, options: FarnaErrorOptions = {}): FarnaError {
   return new FarnaError('F003_PATH_UNSAFE', message, options);
 }

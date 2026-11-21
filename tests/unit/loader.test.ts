@@ -236,7 +236,27 @@ describe('source loader', () => {
     }
   });
 
-  it('rejects an unsupported resource kind', async () => {
+  it('rejects a resource kind the product does not know', async () => {
+    const repo = await createTempRepo();
+    try {
+      await writeFile(
+        join(repo.root, '.farna/personas/reviewer.yaml'),
+        'kind: persona\nid: reviewer\ndisplayName: Reviewer\npurpose: Reviews a change.\nresources:\n  - widget/secure-review\n',
+        'utf8',
+      );
+      const config = await loadConfig(repo.root);
+      const source = await loadSource(repo.root);
+      const error = await expectFarnaError(
+        Promise.resolve().then(() => resolveSource(source, config)),
+        'F001_INVALID_CONFIG',
+      );
+      expect(error.message).toContain('unknown resource kind "widget"');
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
+  it('rejects a workspace resource kind on claudecode rather than ignoring it', async () => {
     const repo = await createTempRepo();
     try {
       await writeFile(
@@ -250,7 +270,7 @@ describe('source loader', () => {
         Promise.resolve().then(() => resolveSource(source, config)),
         'F001_INVALID_CONFIG',
       );
-      expect(error.message).toContain('not implemented in this slice');
+      expect(error.message).toContain('skill resource kind is not carried by claudecode');
     } finally {
       await repo.cleanup();
     }
@@ -259,9 +279,9 @@ describe('source loader', () => {
   it('rejects a resource directory this slice does not implement', async () => {
     const repo = await createTempRepo();
     try {
-      await mkdir(join(repo.root, '.farna/resources/skills'), { recursive: true });
+      await mkdir(join(repo.root, '.farna/resources/models'), { recursive: true });
       const error = await expectFarnaError(loadSource(repo.root), 'F001_INVALID_CONFIG');
-      expect(error.message).toContain('resource kind "skills" is not implemented');
+      expect(error.message).toContain('resource kind "models" is not implemented');
     } finally {
       await repo.cleanup();
     }
@@ -287,11 +307,11 @@ describe('source loader', () => {
     try {
       await writeFile(
         join(repo.root, '.farna/config.jsonc'),
-        '{"schemaVersion":1,"targets":{"opencode":{}}}\n',
+        '{"schemaVersion":1,"targets":{"cursor":{}}}\n',
         'utf8',
       );
       const error = await expectFarnaError(loadConfig(repo.root), 'F001_INVALID_CONFIG');
-      expect(error.message).toContain('this slice supports only: claudecode');
+      expect(error.message).toContain('this slice supports only: claudecode, opencode');
     } finally {
       await repo.cleanup();
     }

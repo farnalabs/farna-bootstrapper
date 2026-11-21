@@ -2,11 +2,14 @@ import { randomUUID } from 'node:crypto';
 import { mkdir, open, rename, rm, rmdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import {
+  COMMANDS_DIR,
   CONFIG_FILE,
   DEFAULT_TARGET,
   GITATTRIBUTES_LINES,
   GITIGNORE_LINES,
+  HOOKS_DIR,
   MANAGED_FILE_MAX_BYTES,
+  MCP_DIR,
   PERMISSION_FILE_EXT,
   PERMISSIONS_DIR,
   PERSONA_FILE_EXT,
@@ -17,6 +20,7 @@ import {
   RULE_FILE_EXT,
   RULES_DIR,
   SCHEMA_VERSION,
+  SKILLS_DIR,
   STAGING_INFIX,
 } from '../../core/constants.js';
 import { FarnaError, invalidConfig } from '../../core/errors.js';
@@ -303,6 +307,22 @@ export async function runInit(repoRoot: string): Promise<InitResult> {
       join(repoRoot, ROOT_DIR, RESOURCES_DIR, PERMISSIONS_DIR),
       `${ROOT_DIR}/${RESOURCES_DIR}/${PERMISSIONS_DIR}`,
     );
+    await ensureDirectory(
+      join(repoRoot, ROOT_DIR, RESOURCES_DIR, MCP_DIR),
+      `${ROOT_DIR}/${RESOURCES_DIR}/${MCP_DIR}`,
+    );
+    await ensureDirectory(
+      join(repoRoot, ROOT_DIR, RESOURCES_DIR, SKILLS_DIR),
+      `${ROOT_DIR}/${RESOURCES_DIR}/${SKILLS_DIR}`,
+    );
+    await ensureDirectory(
+      join(repoRoot, ROOT_DIR, RESOURCES_DIR, COMMANDS_DIR),
+      `${ROOT_DIR}/${RESOURCES_DIR}/${COMMANDS_DIR}`,
+    );
+    await ensureDirectory(
+      join(repoRoot, ROOT_DIR, RESOURCES_DIR, HOOKS_DIR),
+      `${ROOT_DIR}/${RESOURCES_DIR}/${HOOKS_DIR}`,
+    );
 
     createdFiles.push(configAbsolute);
     await writeFile(configAbsolute, configTemplate(), 'utf8');
@@ -340,6 +360,10 @@ export async function runInit(repoRoot: string): Promise<InitResult> {
       `${ROOT_DIR}/${RESOURCES_DIR}/`,
       `${ROOT_DIR}/${RESOURCES_DIR}/${RULES_DIR}/`,
       `${ROOT_DIR}/${RESOURCES_DIR}/${PERMISSIONS_DIR}/`,
+      `${ROOT_DIR}/${RESOURCES_DIR}/${MCP_DIR}/`,
+      `${ROOT_DIR}/${RESOURCES_DIR}/${SKILLS_DIR}/`,
+      `${ROOT_DIR}/${RESOURCES_DIR}/${COMMANDS_DIR}/`,
+      `${ROOT_DIR}/${RESOURCES_DIR}/${HOOKS_DIR}/`,
     ],
     updated: [...updated],
     nextStep: `Add personas to ${ROOT_DIR}/${PERSONAS_DIR}/*${PERSONA_FILE_EXT}, rules to ${ROOT_DIR}/${RESOURCES_DIR}/${RULES_DIR}/*${RULE_FILE_EXT} and permissions to ${ROOT_DIR}/${RESOURCES_DIR}/${PERMISSIONS_DIR}/*${PERMISSION_FILE_EXT}, then run "${PRODUCT_NAME} generate".`,

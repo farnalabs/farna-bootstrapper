@@ -182,15 +182,15 @@ function patternEntry(tool: string, pattern: string): string {
 }
 
 /**
- * Map a persona's resolved permission map onto Claude Code's exact byte form.
- * Every unmapped category refuses with F011 before anything is materialised;
- * `ask` becomes deny (W111). Every mapped category is native here, so no W112.
+ * Refuse a category that has no mapping on the configured target, before
+ * anything is materialised. Emitting an inert string is the false negative this
+ * product exists to prevent, so an unmapped category is F011, never a
+ * passthrough.
  */
-export function mapPermissions(
+export function assertPermissionCategoriesMappable(
   resolved: ResolvedPermissions,
-  context: { persona: string; target: string },
-): { entries: ClaudePermissionEntries; allowlist: boolean; warnings: Warning[] } {
-  const warnings: Warning[] = [];
+  context: { target: string },
+): void {
   for (const category of UNMAPPED_CATEGORIES) {
     const declared = resolved.values[category];
     if (declared !== undefined) {
@@ -211,6 +211,19 @@ export function mapPermissions(
       });
     }
   }
+}
+
+/**
+ * Map a persona's resolved permission map onto Claude Code's exact byte form.
+ * Every unmapped category refuses with F011 before anything is materialised;
+ * `ask` becomes deny (W111). Every mapped category is native here, so no W112.
+ */
+export function mapPermissions(
+  resolved: ResolvedPermissions,
+  context: { persona: string; target: string },
+): { entries: ClaudePermissionEntries; allowlist: boolean; warnings: Warning[] } {
+  const warnings: Warning[] = [];
+  assertPermissionCategoriesMappable(resolved, context);
 
   const entries = new Map<string, 'allow' | 'deny'>();
   const record = (entry: string, value: 'allow' | 'deny'): void => {
@@ -340,6 +353,161 @@ export function mapPermissions(
     );
   }
   return { entries: { allow, deny }, allowlist, warnings };
+}
+
+export type OpencodePermissionEffect = 'allow' | 'deny';
+
+/** One `{ action, resource, effect }` record OpenCode reads, last match wins. */
+export type OpencodePermissionRecord = {
+  action: 'read' | 'edit' | 'shell' | 'subagent';
+  resource: string;
+  effect: OpencodePermissionEffect;
+};
+
+/** One canonical category as it is written into the rulesync source tree. */
+export type OpencodePermissionCategory = {
+  key: 'read' | 'edit' | 'bash' | 'task';
+  patterns: Array<[string, OpencodePermissionEffect]>;
+};
+
+export type OpencodePermissionMapping = {
+  /** The rulesync `permission` map, in canonical order. */
+  source: OpencodePermissionCategory[];
+  /** The records rulesync emits from that map, in the same order. */
+  records: OpencodePermissionRecord[];
+  warnings: Warning[];
+};
+
+const OPENCODE_CATEGORY_ORDER: ReadonlyArray<{
+  key: OpencodePermissionCategory['key'];
+  action: OpencodePermissionRecord['action'];
+  product: readonly PermissionCategory[];
+}> = [
+  { key: 'read', action: 'read', product: ['read'] },
+  // OpenCode has no `write` category: `write` and `edit` both land as `edit`.
+  { key: 'edit', action: 'edit', product: ['write', 'edit'] },
+  { key: 'bash', action: 'shell', product: ['shell'] },
+  { key: 'task', action: 'subagent', product: ['task'] },
+];
+
+/**
+ * Map a persona's resolved permission map onto OpenCode's ordered permission
+ * records. Measured at rulesync 43.11.0: `bash` becomes `shell`, `task` becomes
+ * `subagent`, and `write` folds into `edit` (there is no write category). The
+ * fold is reported as W112 because an `allow` now also permits modifying
+ * existing files. `ask` becomes deny (W111) because no ask effect is measured.
+ *
+ * The source map and the emitted records are produced together so the
+ * containment gate asserts the same order the renderer preserves.
+ */
+export function mapOpencodePermissions(
+  resolved: ResolvedPermissions,
+  context: { persona: string; target: string },
+): OpencodePermissionMapping {
+  const warnings: Warning[] = [];
+  assertPermissionCategoriesMappable(resolved, context);
+
+  const effective = (declared: Winner, subject: string): OpencodePermissionEffect => {
+    if (declared.value !== 'ask') {
+      return declared.value;
+    }
+    warnings.push(
+      warning({
+        code: 'W111_ASK_DOWNGRADED',
+        persona: context.persona,
+        target: context.target,
+        capability: 'permission',
+        message: `${subject} is declared ask, which ${context.target} has no measured surface for; it is emitted as deny`,
+      }),
+    );
+    return 'deny';
+  };
+
+  // W112 is the widening case only: a `write` declaration that contributes an
+  // `allow` while no `edit` declaration already states that intent. A `write`
+  // that resolves deny is folded into edit with no widening, so it is not
+  // reported: a stricter rule must never be presented as a loss.
+  const writePatterns = Object.values(resolved.patterns['write'] ?? {});
+  const editPatterns = Object.values(resolved.patterns['edit'] ?? {});
+  const writeAllows =
+    resolved.values['write']?.value === 'allow' ||
+    writePatterns.some((pattern) => pattern.value === 'allow');
+  const editAllows =
+    resolved.values['edit']?.value === 'allow' ||
+    editPatterns.some((pattern) => pattern.value === 'allow');
+  if (writeAllows && !editAllows) {
+    warnings.push(
+      warning({
+        code: 'W112_PERMISSION_LOSSY',
+        persona: context.persona,
+        target: context.target,
+        capability: 'permission',
+        message: `write is carried as edit on ${context.target}: an allow also permits modifying existing files; declare edit to state that intent`,
+      }),
+    );
+  }
+
+  const source: OpencodePermissionCategory[] = [];
+  const records: OpencodePermissionRecord[] = [];
+  for (const mapping of OPENCODE_CATEGORY_ORDER) {
+    // Merge the product categories that share one OpenCode category, the
+    // stricter effect winning. `write` and `edit` are the only such pair.
+    const patterns = new Map<string, OpencodePermissionEffect>();
+    const recordPattern = (resource: string, effect: OpencodePermissionEffect): void => {
+      const existing = patterns.get(resource);
+      if (existing === undefined || (existing === 'allow' && effect === 'deny')) {
+        patterns.set(resource, effect);
+      }
+    };
+    for (const product of mapping.product) {
+      const declared = resolved.values[product];
+      if (declared !== undefined) {
+        recordPattern('*', effective(declared, product));
+      }
+      for (const [resource, declaredPattern] of Object.entries(resolved.patterns[product] ?? {})) {
+        recordPattern(resource, effective(declaredPattern, `${product}(${resource})`));
+      }
+    }
+    if (patterns.size === 0) {
+      continue;
+    }
+    // A deny catch-all wins: emitting an allow pattern after it would re-allow
+    // what the persona denied, and the harness, not this tool, would decide.
+    if (patterns.get('*') === 'deny') {
+      for (const [resource, effect] of [...patterns]) {
+        if (resource !== '*' && effect === 'allow') {
+          patterns.delete(resource);
+          warnings.push(
+            warning({
+              code: 'W106_DENY_WINS',
+              persona: context.persona,
+              target: context.target,
+              capability: 'permission',
+              severity: 'medium',
+              message: `${mapping.key} resolves deny, so the allow pattern "${resource}" is not emitted`,
+            }),
+          );
+        }
+      }
+    }
+    const ordered = [
+      ...(patterns.has('*') ? ([['*', patterns.get('*')]] as const) : []),
+      ...[...patterns.entries()]
+        .filter(([resource]) => resource !== '*')
+        .sort((a, b) => compareCodepoints(a[0], b[0])),
+    ];
+    const entry: OpencodePermissionCategory = { key: mapping.key, patterns: [] };
+    for (const [resource, effect] of ordered) {
+      if (effect === undefined) {
+        continue;
+      }
+      entry.patterns.push([resource, effect]);
+      records.push({ action: mapping.action, resource, effect });
+    }
+    source.push(entry);
+  }
+
+  return { source, records, warnings };
 }
 
 /** The digest of one permission resource's declared content. */

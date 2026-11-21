@@ -1,16 +1,9 @@
 import { readdir } from 'node:fs/promises';
 import { join, relative, sep } from 'node:path';
-import { DEFAULT_TARGET } from '../core/constants.js';
 import { rendererMismatch, renderFailed } from '../core/errors.js';
 import { compareCodepoints } from '../core/json.js';
 import { installedRendererIdentity, integrityRecordOf } from './identity.js';
-import type {
-  RendererIdentity,
-  RenderRequest,
-  RenderResult,
-  RenderTarget,
-  RenderTargetName,
-} from './port.js';
+import type { RendererIdentity, RenderRequest, RenderResult, RenderTarget } from './port.js';
 
 /**
  * The pinned renderer. This constant is BOTH the identity recorded in the
@@ -124,7 +117,6 @@ async function walk(root: string, current = root): Promise<string[]> {
  * load the renderer at all.
  */
 export class UpstreamRenderTarget implements RenderTarget {
-  readonly name: RenderTargetName = DEFAULT_TARGET;
   private cachedIdentity: RendererIdentity | undefined;
 
   identity(): RendererIdentity {
@@ -160,7 +152,7 @@ export class UpstreamRenderTarget implements RenderTarget {
         targets: [request.target],
         // The product derives its own feature set. The wildcard silently skips
         // features a target does not support, so it is never used here.
-        features: ['subagents'],
+        features: [...(request.features ?? ['subagents'])],
         inputRoots: [request.sourceRoot],
         outputRoots: [request.outputRoot],
         // Hermetic: the renderer's own config is read from the stage (a path

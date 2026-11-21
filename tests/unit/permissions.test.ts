@@ -70,6 +70,10 @@ function personaSource(
       },
     ],
     rules: [],
+    mcp: [],
+    skills: [],
+    commands: [],
+    hooks: [],
     permissions: [
       {
         kind: 'permission',
@@ -169,6 +173,10 @@ describe('permission mapping', () => {
         },
       ],
       rules: [],
+      mcp: [],
+      skills: [],
+      commands: [],
+      hooks: [],
       permissions: [
         {
           kind: 'permission',
@@ -433,6 +441,10 @@ describe('permission source form', () => {
           path: '.farna/resources/rules/house-style.md',
         },
       ],
+      mcp: [],
+      skills: [],
+      commands: [],
+      hooks: [],
       permissions: [
         {
           kind: 'permission',

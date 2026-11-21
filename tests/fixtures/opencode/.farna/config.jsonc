@@ -1,0 +1,13 @@
+{
+  // One OpenCode target. The workspace resource kinds (mcp, skill, command and
+  // hook) are carried once at the workspace level, not per persona.
+  "schemaVersion": 1,
+  "targets": {
+    "opencode": {}
+  },
+  "models": {
+    "standard": {
+      "opencode": "anthropic/claude-sonnet-4-5"
+    }
+  }
+}

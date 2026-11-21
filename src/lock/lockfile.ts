@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { z } from 'zod';
 import type { ResolvedSource } from '../compose/resolve.js';
 import {
+  type Capability,
   LOCK_FILE,
   LOCK_PATH,
   LOCKFILE_MAX_BYTES,
@@ -29,7 +30,7 @@ export type LockFileEntry = {
 };
 
 export type LockResource = {
-  kind: 'rule' | 'permission';
+  kind: 'rule' | 'permission' | 'mcp' | 'skill' | 'command' | 'hook';
   id: string;
   sha256: string;
   /** The persona in the composition chain that contributed the resource. */
@@ -50,7 +51,7 @@ export type LockWarning = {
   severity: Severity;
   persona: string;
   target: string;
-  capability?: 'rule' | 'permission' | 'model';
+  capability?: Capability;
   message: string;
 };
 
@@ -66,7 +67,7 @@ export type RenderedFile = {
 const sha256Schema = z.string().regex(/^[0-9a-f]{64}$/, 'must be a lower-case SHA-256 hex digest');
 
 const lockResourceSchema = z.strictObject({
-  kind: z.enum(['rule', 'permission']),
+  kind: z.enum(['rule', 'permission', 'mcp', 'skill', 'command', 'hook']),
   id: z.string().min(1),
   sha256: sha256Schema,
   fromPersona: z.string().min(1),
@@ -85,7 +86,7 @@ const lockWarningSchema = z.strictObject({
   severity: z.enum(['error', 'high', 'medium', 'low', 'info']),
   persona: z.string().min(1),
   target: z.string().min(1),
-  capability: z.enum(['rule', 'permission', 'model']).optional(),
+  capability: z.enum(['rule', 'mcp', 'skill', 'command', 'permission', 'hook', 'model']).optional(),
   message: z.string().min(1),
 });
 
