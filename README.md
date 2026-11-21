@@ -909,10 +909,14 @@ extend them further. The differences, all deliberate:
     update rather than as an unrecorded leftover.
 28. **`opencode.jsonc` is structured, not whole-file.** The design's ownership model has five
     shapes; this build implements `whole`, `tree` and `structured`. `opencode.jsonc` owns the `mcp`
-    key only and edits it **in place** with `jsonc-parser`'s `modify`/`applyEdits`: setting the
-    owned `mcp` key, deleting it when the generated document has none (the delete also removes a
-    trailing separator, so a valid trailing-comma document never becomes `{ , }`), and preserving
-    every other byte including comments, whitespace and the user's own keys (`$schema`, `theme`,
+    key only and edits it **in place** with `jsonc-parser`'s `parseTree` + `applyEdits`, through
+    the precise source range of the owned property: setting replaces only the `mcp` value range,
+    deleting removes only the property plus the one separator that keeps the document valid (the
+    comma that follows it, or the comma before a final member with no trailing comma, so a valid
+    trailing-comma document never becomes `{ , }`), and inserting an absent key appends it without
+    reformatting the last foreign member. `jsonc-parser`'s `modify` is deliberately unused because
+    it reformats the neighbouring member and drops a comment above the property. Every other byte
+    is preserved, including comments, whitespace and the user's own keys (`$schema`, `theme`,
     `instructions`, providers). `check` compares the owned key only, so a foreign-key or comment
     edit is not drift, and the lockfile records the owned subset's digest rather than the whole
     file, so two roots with the same source still produce identical lockfile bytes. An existing
