@@ -1,12 +1,13 @@
-import { LOCK_PATH } from '../../core/constants.js';
+import { LOCK_PATH, type RenderMode } from '../../core/constants.js';
 import { driftRefused, FarnaError } from '../../core/errors.js';
-import { readLockfile } from '../../lock/lockfile.js';
+import { type LockFileEntry, readLockfile } from '../../lock/lockfile.js';
 import {
   commitFiles,
   type FileStatus,
   inspectManagedTarget,
   type ManagedTarget,
 } from '../../render/commit.js';
+import { planOrphans, removeOrphans } from '../../render/orphans.js';
 import type { RenderTarget } from '../../render/port.js';
 import { type PreparedRender, prepareRender } from '../../render/prepare.js';
 import type { Warning } from '../../report/warnings.js';
@@ -14,35 +15,52 @@ import type { Warning } from '../../report/warnings.js';
 export type GenerateOptions = {
   cwd: string;
   dryRun: boolean;
+  /** The `--persona` override. It selects profile mode and wins over the config. */
+  persona?: string;
 };
+
+export type OrphanStatus = 'removed' | 'would-remove';
 
 export type GenerateResult = {
   ok: true;
   target: string;
+  mode: RenderMode;
+  activePersona: string | null;
   dryRun: boolean;
   personas: string[];
   files: Array<{ path: string; status: FileStatus | 'would-write' }>;
+  /** Recorded paths this run no longer produces, removed (or planned on a dry run). */
+  removed: Array<{ path: string; status: OrphanStatus }>;
   warnings: Warning[];
 };
 
 /**
- * The paths the committed lockfile proves this tool wrote. The lockfile does
- * not list itself, so it is always owned. `undefined` means the lockfile could
- * not be read as a regular file or a symlink; the commit preflight owns that
- * diagnostic (`F003`/`F012`), so ownership checking is skipped and the guard
- * that names the real problem is not masked.
+ * What the committed lockfile proves this tool wrote. `paths` includes the
+ * lockfile itself, which is always owned and never records itself; `entries`
+ * excludes it. `paths === undefined` means the lockfile could not be read as a
+ * regular file or a symlink; the commit preflight owns that diagnostic
+ * (`F003`/`F012`), so ownership checking is skipped and the guard that names the
+ * real problem is not masked.
  */
-async function recordedManagedPaths(cwd: string): Promise<Set<string> | undefined> {
+type RecordedState = {
+  paths: Set<string> | undefined;
+  entries: readonly LockFileEntry[];
+};
+
+async function recordedState(cwd: string): Promise<RecordedState> {
   let lock: Awaited<ReturnType<typeof readLockfile>>;
   try {
     lock = await readLockfile(cwd);
   } catch (error) {
     if (error instanceof FarnaError) {
-      return undefined;
+      return { paths: undefined, entries: [] };
     }
     throw error;
   }
-  return new Set([LOCK_PATH, ...(lock?.files.map((file) => file.path) ?? [])]);
+  return {
+    paths: new Set([LOCK_PATH, ...(lock?.files.map((file) => file.path) ?? [])]),
+    entries: lock?.files ?? [],
+  };
 }
 
 /**
@@ -94,15 +112,28 @@ async function inspectPlan(
  * `opencode.jsonc` (or any other file whose name matches a managed path) merely
  * because it happened to exist. `F007_DRIFT` is the refusal: the path is not
  * this run's output and rewriting it would lose content.
+ *
+ * A recorded path the new plan no longer produces is an orphan (a persona
+ * switch, a removed resource). It is preflighted with the same rigour and
+ * removed before the new set is committed. Removing before the commit means a
+ * failed commit leaves the tree visibly missing the old artefacts, which
+ * `check` reports; writing first would leave an unrecorded orphan behind, which
+ * nothing could ever find again. Only a recorded regular file in a managed
+ * location whose bytes still match its recorded digest is removed; a symlink,
+ * a directory, an edited file or an unrecorded user file is never touched.
  */
 export async function runGenerate(
   options: GenerateOptions,
   renderer: RenderTarget,
 ): Promise<GenerateResult> {
-  const prepared = await prepareRender(options.cwd, renderer);
+  const prepared = await prepareRender(options.cwd, renderer, {
+    ...(options.persona === undefined ? {} : { persona: options.persona }),
+  });
   const personas = prepared.source.personas.map((persona) => persona.id);
-  const recorded = await recordedManagedPaths(options.cwd);
-  const inspected = await inspectPlan(options.cwd, prepared.files, recorded);
+  const recorded = await recordedState(options.cwd);
+  const inspected = await inspectPlan(options.cwd, prepared.files, recorded.paths);
+  const expected = new Set(prepared.files.map((file) => file.path));
+  const orphans = await planOrphans(options.cwd, recorded.entries, expected);
 
   if (options.dryRun) {
     const files: GenerateResult['files'] = [];
@@ -120,20 +151,27 @@ export async function runGenerate(
     return {
       ok: true,
       target: prepared.source.target,
+      mode: prepared.source.mode,
+      activePersona: prepared.source.active,
       dryRun: true,
       personas,
       files,
+      removed: orphans.map((path) => ({ path, status: 'would-remove' as const })),
       warnings: prepared.warnings,
     };
   }
 
+  await removeOrphans(options.cwd, orphans);
   const committed = await commitFiles(options.cwd, prepared.files);
   return {
     ok: true,
     target: prepared.source.target,
+    mode: prepared.source.mode,
+    activePersona: prepared.source.active,
     dryRun: false,
     personas,
     files: committed.statuses,
+    removed: orphans.map((path) => ({ path, status: 'removed' as const })),
     warnings: prepared.warnings,
   };
 }

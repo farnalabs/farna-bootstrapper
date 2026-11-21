@@ -4,6 +4,7 @@ import {
   EXIT,
   LOCK_PATH,
   MANAGED_FILE_MAX_BYTES,
+  type RenderMode,
   ROOT_DIR,
 } from '../../core/constants.js';
 import { readBoundedBytes } from '../../core/fs.js';
@@ -24,9 +25,16 @@ export type DriftItem = {
   detail: string;
 };
 
+export type CheckOptions = {
+  /** The `--persona` override. It selects profile mode and wins over the config. */
+  persona?: string;
+};
+
 export type CheckResult = {
   ok: boolean;
   target: string;
+  mode: RenderMode;
+  activePersona: string | null;
   exitCode: 0 | typeof EXIT.drift;
   checked: string[];
   drift: DriftItem[];
@@ -51,7 +59,11 @@ export type CheckResult = {
  * one that produced the committed bytes fails F010 (exit 5) before any byte
  * comparison, so drift is never blamed on the wrong cause.
  */
-export async function runCheck(repoRoot: string, renderer: RenderTarget): Promise<CheckResult> {
+export async function runCheck(
+  repoRoot: string,
+  renderer: RenderTarget,
+  options: CheckOptions = {},
+): Promise<CheckResult> {
   await assertRealDirectory(join(repoRoot, ROOT_DIR), ROOT_DIR);
 
   const lockfile = await readLockfile(repoRoot);
@@ -59,7 +71,9 @@ export async function runCheck(repoRoot: string, renderer: RenderTarget): Promis
     verifyRendererIdentity(lockfile.renderer, renderer.identity(), LOCK_PATH);
   }
 
-  const prepared = await prepareRender(repoRoot, renderer);
+  const prepared = await prepareRender(repoRoot, renderer, {
+    ...(options.persona === undefined ? {} : { persona: options.persona }),
+  });
   const drift: DriftItem[] = [];
 
   for (const file of prepared.files) {
@@ -119,6 +133,8 @@ export async function runCheck(repoRoot: string, renderer: RenderTarget): Promis
   return {
     ok: drift.length === 0,
     target: prepared.source.target,
+    mode: prepared.source.mode,
+    activePersona: prepared.source.active,
     exitCode: drift.length === 0 ? EXIT.ok : EXIT.drift,
     checked: prepared.files.map((file) => file.path),
     drift,

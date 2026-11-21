@@ -17,8 +17,17 @@ export const SCHEMA_VERSION = 1 as const;
  * for the user, not a runtime probe: the tool never shells out to OpenCode.
  */
 export const OPENCODE_SUPPORTED_MAJOR = '2';
-/** The one lockfile mode this slice writes. */
-export const MODE = 'agent' as const;
+
+/**
+ * The render modes this build can write. `agent` is the default: every persona
+ * is live and carried per agent. `profile` is selected by
+ * `targets.<target>.active` or the `--persona` override, makes exactly one
+ * persona live, and lets it own the workspace at the repository root.
+ */
+export const RENDER_MODES = ['agent', 'profile'] as const;
+export type RenderMode = (typeof RENDER_MODES)[number];
+export const MODE_AGENT: RenderMode = 'agent';
+export const MODE_PROFILE: RenderMode = 'profile';
 
 /** The source root, relative to the repository root. */
 export const ROOT_DIR = '.farna';
@@ -57,6 +66,20 @@ export const OPENCODE_TARGET = 'opencode' as const;
 export type SupportedTarget = typeof DEFAULT_TARGET | typeof OPENCODE_TARGET;
 export const SUPPORTED_TARGETS: readonly SupportedTarget[] = [DEFAULT_TARGET, OPENCODE_TARGET];
 
+/**
+ * The targets that support profile mode in this build. Profile mode needs a
+ * workspace a single persona can own end to end; OpenCode's workspace resource
+ * kinds (`mcp`, `skill`, `command`, `hook`) make it the first target. Claude
+ * Code's only workspace-only capability is `command`, a content capability that
+ * does not force a profile, so profile mode there is later work and `active` is
+ * refused rather than silently ignored.
+ */
+export const PROFILE_TARGETS: readonly SupportedTarget[] = [OPENCODE_TARGET];
+
+export function targetSupportsProfile(target: SupportedTarget): boolean {
+  return PROFILE_TARGETS.includes(target);
+}
+
 /** The Claude Code directories, relative to the repository root. */
 export const CLAUDE_DIR = '.claude';
 export const CLAUDE_AGENTS_DIR = `${CLAUDE_DIR}/agents`;
@@ -76,6 +99,23 @@ export const OPENCODE_HOOKS_PLUGIN = `${OPENCODE_PLUGINS_DIR}/rulesync-hooks.js`
 /** The rulesync source files a workspace resource kind needs. */
 export const RULESYNC_MCP_FILE = 'mcp.jsonc';
 export const RULESYNC_HOOKS_FILE = 'hooks.jsonc';
+
+/**
+ * The locations a target can own. `generate` may delete a lockfile-recorded
+ * file only when it lies in one of these locations, is still a regular file,
+ * and its bytes still equal the recorded digest. Everything outside them is
+ * user content, never swept.
+ */
+export const MANAGED_OUTPUT_DIRS: Readonly<Record<SupportedTarget, readonly string[]>> = {
+  claudecode: [CLAUDE_AGENTS_DIR],
+  opencode: [OPENCODE_AGENTS_DIR, OPENCODE_COMMANDS_DIR, OPENCODE_SKILLS_DIR, OPENCODE_PLUGINS_DIR],
+};
+
+/** Whole files at the repository root that a target can own. */
+export const MANAGED_OUTPUT_FILES: Readonly<Record<SupportedTarget, readonly string[]>> = {
+  claudecode: [],
+  opencode: [OPENCODE_CONFIG_FILE],
+};
 
 /**
  * Operating-system metadata a checkout can create in a source directory. These

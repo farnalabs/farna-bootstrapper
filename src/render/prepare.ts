@@ -1,4 +1,4 @@
-import { type ResolvedSource, resolveSource } from '../compose/resolve.js';
+import { type ResolvedSource, resolveSource, type SourceSelection } from '../compose/resolve.js';
 import { loadConfig } from '../config/load.js';
 import { DEFAULT_TARGET, LOCK_PATH } from '../core/constants.js';
 import { rendererMismatch } from '../core/errors.js';
@@ -105,9 +105,10 @@ function lockfileRenderer(renderer: RenderTarget): LockfileRenderer {
 export async function prepareRender(
   repoRoot: string,
   renderer: RenderTarget,
+  selection: SourceSelection = {},
 ): Promise<PreparedRender> {
   const config = await loadConfig(repoRoot);
-  const source = resolveSource(await loadSource(repoRoot), config);
+  const source = resolveSource(await loadSource(repoRoot), config, selection);
   const warnings = sortWarnings([...source.warnings, ...rendererWarnings(renderer, source.target)]);
 
   return withStage(async (stage) => {

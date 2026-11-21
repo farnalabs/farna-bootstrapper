@@ -8,9 +8,9 @@ import {
   LOCK_FILE,
   LOCK_PATH,
   LOCKFILE_MAX_BYTES,
-  MODE,
   PRODUCT_NAME,
   PRODUCT_VERSION,
+  RENDER_MODES,
   ROOT_DIR,
   SCHEMA_VERSION,
   type Severity,
@@ -104,7 +104,10 @@ export const lockfileSchema = z.strictObject({
   schemaVersion: z.literal(SCHEMA_VERSION),
   product: z.strictObject({ name: z.string().min(1), version: z.string().min(1) }),
   target: z.string().min(1),
-  mode: z.literal(MODE),
+  /** `agent` (every persona live) or `profile` (the active persona owns the workspace). */
+  mode: z.enum(RENDER_MODES),
+  /** The persona selected by `targets.<t>.active` or `--persona`; null in agent mode. */
+  activePersona: z.string().min(1).nullable(),
   renderer: z.strictObject({
     name: z.string().min(1),
     version: z.string().min(1),
@@ -160,7 +163,8 @@ export function buildLockfile(
     schemaVersion: SCHEMA_VERSION,
     product: { name: PRODUCT_NAME, version: PRODUCT_VERSION },
     target: source.target,
-    mode: MODE,
+    mode: source.mode,
+    activePersona: source.active,
     renderer,
     personas,
     files: files
