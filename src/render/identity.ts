@@ -1,7 +1,7 @@
-import { closeSync, constants, fstatSync, openSync, readFileSync, statSync } from 'node:fs';
+import { closeSync, constants, fstatSync, openSync, readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
-import { dirname, isAbsolute, join, relative } from 'node:path';
-import { LOCKFILE_MAX_BYTES, NPM_LOCKFILE_MAX_BYTES } from '../core/constants.js';
+import { basename, dirname, isAbsolute, join, relative } from 'node:path';
+import { LOCKFILE_MAX_BYTES, NPM_LOCKFILE_MAX_BYTES, PRODUCT_NAME } from '../core/constants.js';
 import { FarnaError, rendererMismatch } from '../core/errors.js';
 import type { RendererIdentity } from './port.js';
 
@@ -154,51 +154,117 @@ function findPackageDir(name: string): string {
   });
 }
 
+/**
+ * True when an npm `packages` key names the renderer: the key is
+ * `node_modules/<name>` for a hoisted entry, or ends with
+ * `/node_modules/<name>` for one nested under another package. npm writes the
+ * key in exactly this shape, so the nested layout
+ * (`npm install --install-strategy=nested`, which records
+ * `node_modules/farna-bootstrapper/node_modules/rulesync`) is the same package
+ * record one path deeper rather than a missing one.
+ */
+function isRendererKey(key: string, name: string): boolean {
+  const hoisted = `node_modules/${name}`;
+  return key === hoisted || key.endsWith(`/${hoisted}`);
+}
+
+/** True when a `packages` key nests the renderer directly under our own package. */
+function isUnderProduct(key: string, name: string): boolean {
+  const underProduct = `node_modules/${PRODUCT_NAME}/node_modules/${name}`;
+  return key === underProduct || key.endsWith(`/${underProduct}`);
+}
+
+/** How many `node_modules` segments a `packages` key contains. Shallowest wins ties. */
+function nestingLevel(key: string): number {
+  return key.split('/').filter((segment) => segment === 'node_modules').length;
+}
+
+/**
+ * The renderer's recorded integrity from one npm lock record.
+ *
+ * The record is searched, not indexed by one literal key: a nested install
+ * records the renderer under the package that depends on it
+ * (`node_modules/<product>/node_modules/<renderer>`), and reading only the
+ * hoisted key made a present record look absent, so `generate` silently fell
+ * back to the compile-time pin. When several entries match, the one nested
+ * under our own package wins (that is the copy the product actually imports),
+ * then the shallowest. The key itself breaks a remaining tie so the same record
+ * always yields the same answer.
+ *
+ * Only an entry that is a JSON object with a string `integrity` counts. A
+ * matching key with no readable integrity leaves the record without an answer,
+ * exactly as an absent key did: the caller's bound and refusal rules decide
+ * what a present-but-unverifiable record means.
+ */
 function integrityFromLock(lock: JsonObject | undefined, name: string): string | undefined {
   const packages = lock?.['packages'];
   if (packages === null || typeof packages !== 'object' || Array.isArray(packages)) {
     return undefined;
   }
-  const entry = (packages as JsonObject)[`node_modules/${name}`];
-  if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) {
-    return undefined;
+  let best: { key: string; underProduct: boolean; level: number; integrity: string } | undefined;
+  for (const [key, value] of Object.entries(packages as JsonObject)) {
+    if (!isRendererKey(key, name)) {
+      continue;
+    }
+    if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+      continue;
+    }
+    const integrity = (value as JsonObject)['integrity'];
+    if (typeof integrity !== 'string') {
+      continue;
+    }
+    const candidate = { key, underProduct: isUnderProduct(key, name), level: nestingLevel(key) };
+    if (
+      best === undefined ||
+      (candidate.underProduct && !best.underProduct) ||
+      (candidate.underProduct === best.underProduct &&
+        (candidate.level < best.level ||
+          (candidate.level === best.level && candidate.key < best.key)))
+    ) {
+      best = { ...candidate, integrity };
+    }
   }
-  const integrity = (entry as JsonObject)['integrity'];
-  return typeof integrity === 'string' ? integrity : undefined;
-}
-
-/** True when `path` is a directory. A missing or unreadable entry is not. */
-function isDirectory(path: string): boolean {
-  try {
-    return statSync(path).isDirectory();
-  } catch {
-    return false;
-  }
+  return best?.integrity;
 }
 
 /**
- * The install root that bounds the project-lockfile walk: the nearest ancestor
- * that owns a `node_modules` directory. In a normal install that is the
- * directory holding the project's `package-lock.json`.
+ * The install root that bounds the project-lockfile walk: the package at the
+ * top of the renderer's `node_modules` chain. In a hoisted install the renderer
+ * is at `<root>/node_modules/<renderer>`, so that is `<root>`, the directory
+ * holding the project's `package-lock.json`.
+ *
+ * The climb follows the chain to its end rather than stopping at the first
+ * package that owns a `node_modules`. In a nested install
+ * (`npm install --install-strategy=nested`) the renderer's own package also
+ * owns a `node_modules`, so `<root>/node_modules/<product>/node_modules/<renderer>`
+ * is reached by hopping `<renderer> -> <product> -> <root>`; the project
+ * lockfile that records the renderer, keyed
+ * `node_modules/<product>/node_modules/<renderer>`, sits at that last hop.
  *
  * The walk must not climb above this boundary. An unrelated `package-lock.json`
  * in a parent directory (a home directory, a parent monorepo) would otherwise
  * be read as though it described this install and could refuse a healthy
- * project. When no ancestor owns a `node_modules` directory, only the working
- * tree bounds the walk; a package outside it is bounded by itself, so no
- * unrelated parent record is consulted.
+ * project. Climbing only out of `node_modules` directories stops exactly at the
+ * install root: a parent monorepo above the project is never entered, because
+ * the project is not inside that monorepo's `node_modules`. When the package is
+ * not inside any `node_modules` directory, only the working tree bounds the
+ * walk; a package outside it is bounded by itself, so no unrelated parent record
+ * is consulted.
  */
 function installRootFor(packageDir: string): string {
-  let current = dirname(packageDir);
-  for (;;) {
-    if (isDirectory(join(current, 'node_modules'))) {
-      return current;
-    }
+  let root = packageDir;
+  for (let current = packageDir; ; ) {
     const parent = dirname(current);
-    if (parent === current) {
+    if (parent === current || basename(parent) !== 'node_modules') {
       break;
     }
-    current = parent;
+    // `current` is inside a `node_modules` directory, so the package that owns
+    // that directory is one level further out on the same chain.
+    root = dirname(parent);
+    current = root;
+  }
+  if (root !== packageDir) {
+    return root;
   }
   const cwd = process.cwd();
   const fromCwd = relative(cwd, packageDir);
@@ -211,31 +277,46 @@ function installRootFor(packageDir: string): string {
 /**
  * npm records the tarball integrity in `node_modules/.package-lock.json`; a
  * project lockfile is the fallback for layouts that do not write the hidden
- * one. Only a record that does not exist is skipped: a present record that
- * cannot be read, or is over `NPM_LOCKFILE_MAX_BYTES`, is refused with F010
- * instead of being treated as an absent one and replaced by the compile-time
- * pin.
+ * one. Both are searched for the renderer's entry, including one nested under
+ * our own package (see `integrityFromLock`). Only a record that does not exist
+ * is skipped: a present record that cannot be read, or is over
+ * `NPM_LOCKFILE_MAX_BYTES`, is refused with F010 instead of being treated as an
+ * absent one and replaced by the compile-time pin.
  *
- * The project-lockfile walk stops at the install root (the nearest ancestor
- * holding `node_modules`) and never reads an unrelated lockfile above it.
+ * The project-lockfile walk stops at the install root (the top of the renderer's
+ * `node_modules` chain, so a nested install reaches the project record) and
+ * never reads an unrelated lockfile above it.
  *
  * @internal Exported so a test can prove the bound on an ancestor lockfile;
  * callers use `installedRendererIdentity`.
  */
 export function readRecordedIntegrity(packageDir: string, name: string): string | undefined {
-  const hidden = readLockRecord(join(dirname(packageDir), '.package-lock.json'));
-  const fromHidden = integrityFromLock(hidden, name);
-  if (fromHidden !== undefined) {
-    return fromHidden;
+  const installRoot = installRootFor(packageDir);
+  // The hidden record beside the installed package first: it describes the
+  // innermost `node_modules` the renderer was installed into. In every layout
+  // npm writes its hidden lockfile at the install root, which is also read.
+  const hiddenPaths = [
+    join(dirname(packageDir), '.package-lock.json'),
+    join(installRoot, 'node_modules', '.package-lock.json'),
+  ];
+  const seen = new Set<string>();
+  for (const hiddenPath of hiddenPaths) {
+    if (seen.has(hiddenPath)) {
+      continue;
+    }
+    seen.add(hiddenPath);
+    const fromHidden = integrityFromLock(readLockRecord(hiddenPath), name);
+    if (fromHidden !== undefined) {
+      return fromHidden;
+    }
   }
-  const boundary = installRootFor(packageDir);
   let current = packageDir;
   for (;;) {
     const fromLock = integrityFromLock(readLockRecord(join(current, 'package-lock.json')), name);
     if (fromLock !== undefined) {
       return fromLock;
     }
-    if (current === boundary) {
+    if (current === installRoot) {
       return undefined;
     }
     const parent = dirname(current);
