@@ -264,6 +264,50 @@ describe('opencode target', () => {
     }
   });
 
+  it('adopts byte-identical outputs when the lockfile was deleted', async () => {
+    // `check` on a missing lockfile tells the user to regenerate. That recovery
+    // must work: the outputs already on disk are this tool's own bytes, so they
+    // are adopted and the lockfile is rewritten rather than refused as drift.
+    const repo = await generated();
+    try {
+      const originalLock = await readText(repo.root, '.farna/lock.json');
+      await rm(join(repo.root, '.farna/lock.json'));
+      const result = await runGenerate(
+        { cwd: repo.root, dryRun: false },
+        new UpstreamRenderTarget(),
+      );
+      expect(result.files.find((file) => file.path === '.farna/lock.json')?.status).toBe('written');
+      expect(await readText(repo.root, '.farna/lock.json')).toBe(originalLock);
+      const check = await runCheck(repo.root, new UpstreamRenderTarget());
+      expect(check.ok).toBe(true);
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
+  it('refuses F007 and writes nothing when the lockfile is gone and an output differs', async () => {
+    const repo = await generated();
+    try {
+      await rm(join(repo.root, '.farna/lock.json'));
+      await appendFile(join(repo.root, '.opencode/agents/builder.md'), '\nmanual edit\n', 'utf8');
+      const before = await hashTree(repo.root);
+      let failure: FarnaError | undefined;
+      try {
+        await runGenerate({ cwd: repo.root, dryRun: false }, new UpstreamRenderTarget());
+      } catch (error) {
+        failure = error as FarnaError;
+      }
+      expect(failure?.code).toBe('F007_DRIFT');
+      expect(failure?.exitCode).toBe(1);
+      expect(failure?.subject).toBe('.opencode/agents/builder.md');
+      expect(failure?.message).toContain('not recorded in the committed lockfile');
+      expect(failure?.action).toContain('move the managed outputs aside');
+      expect(await hashTree(repo.root)).toBe(before);
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
   it('detects drift in an agent file and in the lockfile', async () => {
     const repo = await generated();
     try {
@@ -282,7 +326,7 @@ describe('opencode target', () => {
     }
   });
 
-  it('reports a missing managed file and a stray file at any depth', async () => {
+  it('reports a missing managed file and ignores a stray file at any depth', async () => {
     const repo = await generated();
     try {
       const agent = await readFile(join(repo.root, '.opencode/agents/reviewer.md'), 'utf8');
@@ -293,28 +337,33 @@ describe('opencode target', () => {
       ]);
       await writeFile(join(repo.root, '.opencode/agents/reviewer.md'), agent, 'utf8');
 
+      // An unrecorded file inside a managed directory belongs to the user.
       await writeFile(join(repo.root, '.opencode/agents/extra.md'), 'stray\n', 'utf8');
       check = await runCheck(repo.root, new UpstreamRenderTarget());
-      expect(check.drift.map((item) => [item.path, item.kind])).toEqual([
-        ['.opencode/agents/extra.md', 'unexpected'],
-      ]);
+      expect(check.ok).toBe(true);
+      expect(check.drift).toEqual([]);
     } finally {
       await repo.cleanup();
     }
   });
 
-  it('reports an orphaned root opencode.jsonc as unexpected', async () => {
+  it('ignores a user-owned opencode.jsonc and a user-owned command', async () => {
+    // A repository may keep its own workspace config and its own commands;
+    // `check` must not treat unrecorded files as drift, or no OpenCode repo
+    // with its own configuration could ever pass.
     const repo = await generated();
     try {
       await writeFile(join(repo.root, 'opencode.jsonc'), '{ "mcp": {} }\n', 'utf8');
+      await mkdir(join(repo.root, '.opencode/commands'), { recursive: true });
+      await writeFile(
+        join(repo.root, '.opencode/commands/custom.md'),
+        '# custom command\n',
+        'utf8',
+      );
       const check = await runCheck(repo.root, new UpstreamRenderTarget());
-      expect(check.ok).toBe(false);
-      expect(check.drift).toContainEqual({
-        code: 'F007_DRIFT',
-        path: 'opencode.jsonc',
-        kind: 'unexpected',
-        detail: 'path is not recorded as managed output',
-      });
+      expect(check.ok).toBe(true);
+      expect(check.exitCode).toBe(0);
+      expect(check.drift).toEqual([]);
     } finally {
       await repo.cleanup();
     }

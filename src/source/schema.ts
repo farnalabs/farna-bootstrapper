@@ -238,10 +238,30 @@ function describePatternProblem(pattern: string): string | undefined {
   return undefined;
 }
 
+/**
+ * JavaScript enumerates an object's own keys with every canonical array index
+ * (`0`, `1`, `10`, ...) first, in ascending numeric order, and only then the
+ * remaining string keys in insertion order. A pattern map is a plain object all
+ * the way to the renderer, so a numeric pattern such as `"10"` would silently
+ * move ahead of the patterns declared before it. OpenCode's last-match-wins
+ * makes that a permission change, and the digest (which records the declared
+ * order) would be identical for both spellings. Refuse the key at the source
+ * boundary rather than emit an order the source did not declare.
+ */
+const CANONICAL_ARRAY_INDEX_RE = /^(0|[1-9]\d*)$/;
+
 const patternRecordSchema = z
   .record(z.string().min(1).max(200), permissionValueSchema)
   .superRefine((record, ctx) => {
     for (const pattern of Object.keys(record)) {
+      if (CANONICAL_ARRAY_INDEX_RE.test(pattern)) {
+        ctx.addIssue({
+          code: 'custom',
+          path: [pattern],
+          message: `integer-like pattern key "${pattern}" cannot preserve declaration order: JavaScript enumerates canonical array-index keys first, so it would be emitted ahead of the patterns declared before it; use a non-numeric key such as "**/${pattern}/**" or another pattern that is not a bare integer`,
+        });
+        continue;
+      }
       const problem = describePatternProblem(pattern);
       if (problem !== undefined) {
         ctx.addIssue({ code: 'custom', path: [pattern], message: problem });

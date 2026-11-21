@@ -362,6 +362,14 @@ distinct tool, so there is no W112 on Claude Code. When two permission resources
 category, the stricter value wins and the disagreement is reported (W106). On Claude Code both
 arrays are sorted alphabetically and every entry starts with the harness's capitalised tool name.
 
+A pattern key that is a canonical array index (`"0"`, `"1"`, `"10"`, ...) is refused at the source
+boundary (F001). JavaScript enumerates an object's array-index keys first, in ascending numeric
+order, before every other key in declaration order, so a numeric pattern would silently move ahead
+of the patterns declared before it. Order is semantic (OpenCode is last-match-wins) and the digest
+would be identical for both spellings, so the tool refuses the key instead of emitting an order the
+source did not declare. Spell the resource as a non-numeric pattern such as `"**/10/**"`, or choose
+another key that is not a bare integer.
+
 An OpenCode persona may not opt into the Claude Code `tools` allow-list. OpenCode's records are a
 deny-list and cannot name every unmodelled tool, so `"allowlist": true` is refused (F001) on that
 target rather than silently ignored.
@@ -504,11 +512,13 @@ Deliberately out of scope, by milestone:
   where those workspace capabilities belong, and this slice refuses them
 - `patch` and `replaceWith` on a persona resource reference; `targets` filters on personas and
   resources; `--strict`; `--accept-config` gating; `.farna/local.jsonc`
-- deletion or sweeping of orphaned managed files: `check` reports an unexpected path inside a
-  managed directory (`.claude/agents/`, `.opencode/agents/`, `.opencode/commands/`,
-  `.opencode/skills/` and `.opencode/plugins/`) and `generate` never deletes a file it did not write
-  in the current run. Switching target therefore leaves the previous target's artefacts in place,
-  unrecorded and unreported.
+- deletion or sweeping of orphaned managed files: `check` reports a path that `.farna/lock.json`
+  records and the current source no longer produces, and `generate` never deletes a file it did not
+  write in the current run. An unrecorded file in a managed directory
+  (`.claude/agents/`, `.opencode/agents/`, `.opencode/commands/`, `.opencode/skills/` and
+  `.opencode/plugins/`) or at the repository root belongs to the user and is ignored by `check`.
+  Switching target therefore leaves the previous target's artefacts in place, unrecorded and
+  unreported.
 - structured or region ownership; only whole files (and, for a skill, a whole tree) are owned
 - the weekly renderer-sync bot and the two compiled binaries
 
@@ -545,10 +555,12 @@ These are deliberate limits of the current controls, stated rather than implied 
 - **Windows-specific test skips.** The symlink regression tests are skipped on Windows because
   creating a symlink needs a privilege the runner does not grant. CI runs them on Linux; the guard
   code itself is platform-independent.
-- **Stray files outside the managed directories** are not reported by `check`; the unexpected-path
-  scan is scoped to `.claude/agents/` and OpenCode's `agents/`, `commands/`, `skills/` and
-  `plugins/` trees. The only names ignored inside them are this tool's own staging namespace and OS
-  metadata.
+- **Unrecorded files are never drift.** `check` compares only the paths in the fresh plan (missing
+  or changed) and the paths the committed lockfile records (an output the source no longer
+  produces). A file the user keeps in a managed directory or at the repository root is not this
+  tool's output, so it is neither reported nor followed; a repository may keep its own
+  `opencode.jsonc` and its own commands. A symlink at a *managed* path is still drift, and a
+  symlinked ancestor is still refused.
 - **The hooks plugin is verified by structure, not by a committed golden.** Containment asserts the
   exact commands, events and matchers; a change to rulesync's generated helper code that keeps the
   same commands and events is caught only by `check` against a fresh render of the pinned renderer,
@@ -589,13 +601,17 @@ them further. The differences, all deliberate:
    `targets.<t>.active` and `exclude` are also rejected: profile mode and per-target filters are
    later work, and accepting them here would be a silent no-op. For the same reason `ignoredFiles`
    is not accepted yet: an unknown-key error is louder than a setting that quietly does nothing.
-7. **`check` exits `1` on any drift; `generate` refuses an unowned managed path with `F007`.** The
-   brief requires `0` clean / `1` drift, so `check` returns `1` and reports `F007_DRIFT` in its
-   payload. `generate` uses the same code and exit `1` when a managed target already exists but is
-   not recorded in the committed lockfile: taking over a file this tool did not write is drift,
-   not a renderer failure. `F007` therefore stays out of the exception table (`EXIT_BY_CODE`)
-   while remaining a reportable diagnostic code with exit `1`. `generate` keeps the design's
-   per-code exits for the rest (`F008` is `4`, `F011` is `3`).
+7. **`check` exits `1` on any drift; `generate` refuses an unowned managed path with `F007`.**
+   The brief requires `0` clean / `1` drift, so `check` returns `1` and reports `F007_DRIFT` in
+   its payload. `generate` uses the same code and exit `1` when a managed target already exists
+   but is not recorded in the committed lockfile **and its bytes differ from the fresh render**:
+   taking over a file this tool did not write is drift, not a renderer failure. An unrecorded
+   target whose bytes are identical to the fresh render is adopted and the lockfile is rewritten;
+   that is the recovery path after a deleted lockfile, and it does not destroy any content.
+   When the bytes differ the diagnostic tells the user to move the managed outputs aside. `F007`
+   therefore stays out of the exception table (`EXIT_BY_CODE`) while remaining a reportable
+   diagnostic code with exit `1`. `generate` keeps the design's per-code exits for the rest
+   (`F008` is `4`, `F011` is `3`).
 8. **No matrix snapshot or matrix digest.** The one-target, seven-cell snapshot, `probe`, and the
     `matrixDigest` lockfile field are later work. The lockfile records the renderer identity,
     personas, resources, digests, managed files and source warnings only.
