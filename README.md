@@ -3,13 +3,16 @@
 Compile named agent personas and their resources into the configuration a coding harness
 actually reads, and prove that the committed output still matches the source.
 
-This repository is at **M2b: the OpenCode target in agent mode**. It implements two targets
+This repository is at **M3: OpenCode profile mode**. It implements two targets
 (`claudecode` and `opencode`), three commands of the compiler loop (`generate`, `check`) plus
-`init`, six resource kinds (`rule`, `permission`, `mcp`, `skill`, `command`, `hook`) plus a model
-class, and one base persona per composed persona (`extends`). Exactly one configured target is
-rendered per run. OpenCode's workspace resource kinds (`mcp`, `skill`, `command`, `hook`) are read
-and validated but require profile mode, which is not in this slice: agent mode refuses them (F001)
-rather than emitting them workspace-wide. Everything else is deliberately deferred; see
+`init`, the two plan outcomes this build produces (`agent` and `profile`) plus the refusal path,
+six resource kinds (`rule`, `permission`, `mcp`, `skill`, `command`, `hook`) plus a model class, and
+one base persona per composed persona (`extends`). Exactly one configured target is rendered per run.
+
+Profile mode makes exactly one persona live and lets it own the workspace at the repository root,
+so OpenCode's workspace resource kinds (`mcp`, `skill`, `command`, `hook`) are carried for that
+persona. Agent mode remains the default and still refuses one of those kinds (F001) rather than
+emitting it workspace-wide. Everything else is deliberately deferred; see
 [What this slice does not do](#what-this-slice-does-not-do).
 
 ## The loop
@@ -17,7 +20,9 @@ rather than emitting them workspace-wide. Everything else is deliberately deferr
 1. You declare personas and their resources under `.farna/`, and select one target in the config.
 2. `farna-bootstrapper generate` renders that target's artefacts and records what it wrote in
    `.farna/lock.json`. Claude Code gets one whole file per persona under `.claude/agents/`; OpenCode
-   in agent mode gets one whole file per persona under `.opencode/agents/` and no workspace file.
+   in agent mode gets one whole file per persona under `.opencode/agents/` and no workspace file;
+   OpenCode in profile mode gets the active persona's agent file plus its MCP, skill, command and
+   hook output at the repository root.
 3. `farna-bootstrapper check` renders the same input into a temporary directory and compares it
    with the repository. Exit `0` when identical, `1` when anything drifted.
 
@@ -40,6 +45,7 @@ string.
 - For the `opencode` target, OpenCode **2.x**. The emitted per-agent file is the V2 shape
   (`description`, `mode`, `model`, ordered permission records, no `name`); the 1.x layout is
   unsupported. The tool does not shell out to OpenCode, so this is documented rather than probed.
+- Profile mode is supported for the `opencode` target only. Agent mode works on both targets.
 
 ## Install
 
@@ -206,7 +212,12 @@ Then run:
 farna-bootstrapper generate          # write the agent files and the lockfile
 farna-bootstrapper generate --dry-run # print the plan, write nothing
 farna-bootstrapper check             # prove the tree matches a fresh render
+farna-bootstrapper generate --persona <id>  # OpenCode profile mode, overriding the config
+farna-bootstrapper check --persona <id>      # check the same selection
 ```
+
+`--persona` is the one CLI selection override. It selects profile mode and wins over
+`targets.<target>.active`; see [Profile mode](#profile-mode).
 
 Every command accepts `--json`. A success object carries `schemaVersion`, `command`, `ok`,
 `exitCode` and the command's own fields; `init` adds `root`, `configPath`, `created`, `updated` and
@@ -253,29 +264,95 @@ claudecode, agent mode:
 opencode, agent mode:
   .opencode/agents/<id>.md          one whole file per persona
 
+opencode, profile mode (active: <id>):
+  opencode.jsonc                    the active persona's MCP servers
+  .opencode/agents/<id>.md          only the active persona
+  .opencode/skills/<skill-id>/**    the active persona's skills and their extra files
+  .opencode/commands/<id>.md        the active persona's commands
+  .opencode/plugins/rulesync-hooks.js   the active persona's carried hooks
+
 both:
   .farna/lock.json                  the manifest and the source-derived warnings
 ```
 
-Every path is conditional on a declaration. Agent mode writes no `opencode.jsonc`, skill tree,
-command file or hooks plugin; those paths belong to profile mode (M3). `check` computes the
-expected set independently of what the renderer reports, so a dropped or invented file is refused
-rather than written.
+Every path is conditional on a declaration: a persona with no MCP server emits no
+`opencode.jsonc`, one with no hooks emits no plugin, and one with no skills has no skill tree.
+Agent mode writes none of the workspace paths. `check` computes the expected set independently of
+what the renderer reports, so a dropped or invented file is refused rather than written.
 
-### OpenCode workspace resources require profile mode
+### Profile mode
 
 OpenCode carries MCP servers, skills, commands and hooks at the **workspace** level, not per agent.
 In agent mode a workspace emission would give every persona the declaring persona's resource, with
 no per-recipient record and no opt-out. That is not a capability the author declared for those
-personas, so the design makes all four boundary/workspace capabilities require profile mode, where
-exactly one persona is live.
+personas, so the four kinds require profile mode: exactly one persona is live, and it owns the
+workspace. Agent mode still refuses such a reference with `F001_INVALID_CONFIG`, naming the
+resource, the declaring persona and "requires profile mode"; nothing is written.
 
-This slice implements agent mode only. A persona that references `mcp/<id>`, `skill/<id>`,
-`command/<id>` or `hook/<id>` on the `opencode` target is refused with `F001_INVALID_CONFIG`,
-naming the resource, the declaring persona and "requires profile mode". Nothing is written. The
-loaders, schemas and materialisation helpers for the four kinds remain in the source tree for M3,
-but agent mode emits none of them; there is no `W101_CAPABILITY_DROPPED` workspace record because
-nothing is emitted workspace-wide.
+Select profile mode in the config:
+
+```jsonc
+// .farna/config.jsonc
+{
+  "schemaVersion": 1,
+  "targets": {
+    "opencode": { "active": "builder" }
+  }
+}
+```
+
+Or override the committed selection for one run:
+
+```sh
+farna-bootstrapper generate --persona reviewer
+farna-bootstrapper check    --persona reviewer
+```
+
+`--persona` wins over `targets.<target>.active`. A persona that does not exist is
+`F001_INVALID_CONFIG` naming the config field or `--persona`; the tool never picks a persona for
+you. Agent mode is the default when no active persona is set.
+
+**The invariant is one persona per workspace.** In profile mode only the active persona is
+materialised and verified: no other persona's agent file, MCP server, skill, command or hook is
+emitted, and the containment gate accepts only the active set. Every persona is still resolved, so
+a broken declaration anywhere in the source is still refused; only emission is scoped to the live
+persona. The lockfile records one `personas[]` entry, `mode: "profile"` and `activePersona: "<id>"`;
+in agent mode `mode` is `"agent"` and `activePersona` is `null`.
+
+**The profile is the repository root.** It is never a cache directory and never a subdirectory
+below another config. The exact paths are in [Output layout](#output-layout).
+
+Profile mode is supported for `opencode` only. `claudecode` refuses an `active` value or
+`--persona` with `F001_INVALID_CONFIG`: its only workspace-only capability is `command`, a content
+capability that does not force a profile, so profile mode there is later work. Accepting the
+setting and ignoring it would be a silent no-op.
+
+A hook OpenCode cannot represent (`session-end`, or a matcher on a non-tool event) is reported as
+`W101_CAPABILITY_DROPPED` at `high` severity and is not emitted; it is never silently omitted.
+
+#### Orphan handling
+
+A persona switch, a removed resource or a target edit leaves output the committed lockfile records
+but the current source no longer produces. `check` reports every such recorded path as
+`F007_DRIFT` drift with kind `unexpected`. A user file is never drift: `check` compares only the
+fresh plan and the recorded set, so an unrecorded file in a managed directory or at the repository
+root is ignored.
+
+`generate` may remove a recorded orphan, under four guards:
+
+1. it must be a relative, escape-free path in a managed location — one of `.claude/agents/`,
+   `.opencode/agents/`, `.opencode/commands/`, `.opencode/skills/`, `.opencode/plugins/`, or a
+   target's whole root config file (`opencode.jsonc`);
+2. it must still be a **regular file**; a symbolic link is refused (`F003`) and never followed;
+3. its bytes must still equal the SHA-256 the lockfile recorded. A file edited since the last
+   generate is refused with `F007_DRIFT`: ownership can no longer be proven, so it is not deleted;
+4. it must be recorded. An unrecorded file is the user's and is never removed.
+
+The whole orphan set is preflighted before anything is written, so a refusal leaves the tree
+untouched. Removals happen before the new managed set is committed: a commit that then fails leaves
+the old artefacts visibly missing, which `check` reports, rather than leaving an unrecorded orphan
+that nothing could find again. An empty directory left after removing a skill's last file is not
+removed: the contract is to remove recorded regular files, not directories.
 
 MCP environment values are references only. A resource declares
 `{ "fromEnv": "EXAMPLE_TOKEN" }`; the materialiser writes rulesync's canonical `${EXAMPLE_TOKEN}`.
@@ -387,12 +464,13 @@ src/
   config/         strict JSONC config schema and loader
   source/         YAML personas; markdown rules, skills and commands; JSONC permissions,
                   MCP servers and hooks; strict frontmatter and reference-only secrets
-  compose/        extends resolution, resource union, deny-wins merge, digests, workspace refusal
+  compose/        mode resolution, extends resolution, resource union, deny-wins merge, digests
   permissions/    the canonical vocabulary and the Claude Code and OpenCode mappings
   materialise/    persona and workspace resources -> rulesync source tree
   render/         port.ts (the seam), upstream.ts (the only rulesync import),
                   identity.ts (installed vs pinned renderer), prepare.ts (the pipeline),
-                  stage.ts (the disposable stage), commit.ts (the write), staging.ts
+                  stage.ts (the disposable stage), commit.ts (the write), staging.ts,
+                  orphans.ts (recorded-orphan preflight and removal)
   verify/         containment and cross-persona isolation gates
   lock/           lockfile construction and validated reading
   core/           constants, typed errors, paths, strict UTF-8 reads, canonical JSON
@@ -401,16 +479,18 @@ tests/
   fixtures/demo/      the M1 fixture: two personas, two rules, no permissions
   fixtures/composed/  builder, builder-python (extends builder) and reviewer, with permissions
   fixtures/opencode/  the OpenCode fixture: rules, permissions and the files for the refused kinds
+  fixtures/profile/   OpenCode profile mode: two personas with distinct MCP, skill, command and hook
   golden/             both targets' pinned emitted bytes
   unit/               composition, permissions, fake and mutating renderer gates, loader, init,
-                      check, paths
+                      check, paths, profile mode and orphan removal
   integration/        the real pinned renderer
   cli/                the built CLI: exit codes, JSON envelopes and drift output
 scripts/              CI gates: the minimum test count, real-renderer suites and tarball contents
 ```
 
 `.farna/lock.json` records `schemaVersion`, `product` (name and version), `target` (`claudecode` or
-`opencode`), `mode` (`agent`), the `renderer` identity, each persona's composition base and resolved
+`opencode`), `mode` (`agent` or `profile`), `activePersona` (the persona id in profile mode, `null`
+in agent mode), the `renderer` identity, each **live** persona's composition base and resolved
 resource ids (each with the persona that contributed it, across every loaded kind), a persona
 digest, an order-sensitive permission digest, every source-derived warning, and the path, size and
 SHA-256 of every managed file. It does **not** list
@@ -504,21 +584,18 @@ what it created if it subsequently fails.
 
 Deliberately out of scope, by milestone:
 
-- `doctor`; profile mode; `agent with loss` and `refuse` as plan outcomes; rendering more than one
-  configured target per run; every target other than `claudecode` and `opencode`; the full
-  71-target capability matrix and the capability report page
+- `doctor`; `agent with loss` and `refuse` as plan outcomes; profile mode on `claudecode`;
+  rendering more than one configured target per run; every target other than `claudecode` and
+  `opencode`; the full 71-target capability matrix and the capability report page
 - model resources (a model is the persona's `model` class in this slice)
-- carrying `mcp`, `skill`, `command` or `hook` on either target in agent mode; profile mode is
-  where those workspace capabilities belong, and this slice refuses them
+- carrying `mcp`, `skill`, `command` or `hook` on either target in **agent** mode; profile mode is
+  where those workspace capabilities belong, and agent mode still refuses them
 - `patch` and `replaceWith` on a persona resource reference; `targets` filters on personas and
   resources; `--strict`; `--accept-config` gating; `.farna/local.jsonc`
-- deletion or sweeping of orphaned managed files: `check` reports a path that `.farna/lock.json`
-  records and the current source no longer produces, and `generate` never deletes a file it did not
-  write in the current run. An unrecorded file in a managed directory
-  (`.claude/agents/`, `.opencode/agents/`, `.opencode/commands/`, `.opencode/skills/` and
-  `.opencode/plugins/`) or at the repository root belongs to the user and is ignored by `check`.
-  Switching target therefore leaves the previous target's artefacts in place, unrecorded and
-  unreported.
+- removing a cross-target orphan under a directory the current target does not write: profile mode
+  now removes every recorded orphan in a managed location, but an orphan outside every managed
+  location is refused rather than deleted; an empty directory left after a skill's last file is
+  removed is not swept
 - structured or region ownership; only whole files (and, for a skill, a whole tree) are owned
 - the weekly renderer-sync bot and the two compiled binaries
 
@@ -549,6 +626,18 @@ These are deliberate limits of the current controls, stated rather than implied 
 - **Staging leftovers.** A killed `generate` can leave `.<target>.farna-tmp-*` siblings. They are
   ignored by `check` and swept at the start of the next `generate`; a leftover that cannot be
   removed is best-effort and never a managed path.
+- **Orphan removal is preflighted, not transactional.** The whole orphan set is checked before the
+  first write, and removals run before the new set is committed. A filesystem failure while
+  removing, or a commit failure after a removal, leaves a mixed tree: the removed paths are still
+  recorded by the old lockfile, so `check` reports them, and re-running `generate` completes the
+  switch. A recorded orphan replaced by a directory, a symlink or edited bytes is refused rather
+  than guessed at, and must be removed deliberately.
+- **An empty directory is left after a skill's last file is removed.** Only recorded regular files
+  are removed; the now-empty `<skill>/` (or `scripts/`) directory is harmless and carries no
+  declaration.
+- **The profile-mode per-agent frontmatter keeps `mode: subagent`.** The persona's own harness file
+  is unchanged by profile mode; promoting the live persona to OpenCode's primary `mode` is a
+  separate product decision, not a rendering detail, and is not claimed here.
 - **No coverage gate.** There is no coverage provider or threshold in this slice. CI runs lint,
   type-check, tests (with a minimum count and real-renderer suite assertions), a dependency audit at
   `moderate`, and a published-tarball check.
@@ -571,8 +660,8 @@ These are deliberate limits of the current controls, stated rather than implied 
 
 ## Deviations from `design/`
 
-The M1 slice was intentionally narrower than the design documents; M2a and M2b narrow or extend
-them further. The differences, all deliberate:
+The M1 slice was intentionally narrower than the design documents; M2a, M2b and M3 narrow or
+extend them further. The differences, all deliberate:
 
 1. **npm and Node, not Bun.** The design pins `bun` as the package manager and test runner. Bun is
    not installed on the delivery host, so this slice uses npm, `tsc` and Vitest. The package
@@ -595,12 +684,13 @@ them further. The differences, all deliberate:
    same model id do not conflict; two classes that resolve to different ids do (F005).
 6. **A persona may reference `rule`, `permission`, `mcp`, `skill`, `command` and `hook`, and name
    a `model` class.** The workspace kinds are loaded and validated for every target but require
-   profile mode; agent mode refuses a reference on either target (F001) rather than silently
-   losing it or emitting it workspace-wide. A `model/<id>` reference is still refused: a model is
-   the persona's `model` class.
-   `targets.<t>.active` and `exclude` are also rejected: profile mode and per-target filters are
-   later work, and accepting them here would be a silent no-op. For the same reason `ignoredFiles`
-   is not accepted yet: an unknown-key error is louder than a setting that quietly does nothing.
+   profile mode; agent mode refuses a reference with F001 rather than silently losing it or
+   emitting it workspace-wide. A `model/<id>` reference is still refused: a model is the persona's
+   `model` class.
+   `targets.<t>.active` is accepted and selects profile mode (it is refused where the target does
+   not support it). `targets.<t>.exclude` is still rejected: the per-target filter is later work,
+   and accepting it would be a silent no-op. For the same reason `ignoredFiles` is not accepted
+   yet: an unknown-key error is louder than a setting that quietly does nothing.
 7. **`check` exits `1` on any drift; `generate` refuses an unowned managed path with `F007`.**
    The brief requires `0` clean / `1` drift, so `check` returns `1` and reports `F007_DRIFT` in
    its payload. `generate` uses the same code and exit `1` when a managed target already exists
@@ -628,9 +718,9 @@ them further. The differences, all deliberate:
 11. **W106, W111, W112, W113, W114 and W115 are emitted in this milestone.** The full codes are
     `W106_DENY_WINS`, `W111_ASK_DOWNGRADED`, `W112_PERMISSION_LOSSY` (OpenCode's `write` fold only;
     `write` is native on Claude Code), `W113_ALLOW_LIST_NARROWS`,
-    `W114_RENDERER_INTEGRITY_UNVERIFIED` and `W115_CREDENTIAL_IN_URL`. W101 remains in the code
-    vocabulary for M3 but is not emitted: agent mode writes no workspace resource, so there is no
-    workspace scoping loss to report. W113 is emitted whenever a resource opts into the `tools`
+    `W114_RENDERER_INTEGRITY_UNVERIFIED` and `W115_CREDENTIAL_IN_URL`. W101 is emitted in profile
+    mode when the active persona declares a hook OpenCode cannot represent; agent mode refuses a
+    hook reference before representability is considered, so it has no W101 to report. W113 is emitted whenever a resource opts into the `tools`
     allow-list: it names the tools the narrowing removes, and an opt-in whose categories all
     resolve deny/ask is reported as having no effect (no `tools` is emitted, and the digest records
     the same effective value the artefact does). W114 is emitted when the installed renderer's
@@ -671,32 +761,58 @@ them further. The differences, all deliberate:
     skills, commands and hooks are workspace-level on OpenCode. Emitting them from the union of the
     live personas would hand every persona the declarer's resource, with no per-recipient record
     and no opt-out, so agent mode refuses a reference with F001 naming the resource, the declaring
-    persona and "requires profile mode". The loaders, schema and materialisation helpers stay for
-    M3, when profile mode emits them for one live persona.
+    persona and "requires profile mode". Profile mode (this milestone) resolves only the active
+    persona and emits its four kinds at the repository root.
 19. **The OpenCode per-agent `task` category is authored as `task`, not `agent`.** The design's
     canonical mapping authors `task` as rulesync's `agent`. Measured at rulesync 43.11.0, the
     per-agent V2 raise path translates `task` to `subagent` but passes `agent` through
     untranslated, where OpenCode does not read it. Authoring `agent` would emit an inert record,
     so the materialiser authors `task` and a test pins the emitted `subagent` action.
-20. **OpenCode hook representability is M3 work.** `session-end` has no OpenCode event, and a
-    `matcher` is honoured only on the tool events (`before-tool`, `after-tool`). In this slice a
-    hook reference is refused in agent mode before representability is considered; the mapping is
-    kept for profile mode.
+20. **An unrepresentable OpenCode hook is a reported loss, not an omission.** `session-end` has
+    no OpenCode event, and a `matcher` is honoured only on the tool events (`before-tool`,
+    `after-tool`). Agent mode refuses any hook reference before representability is considered; in
+    profile mode the carried hooks are emitted and each unrepresentable one is reported as
+    `W101_CAPABILITY_DROPPED` at `high` severity.
 21. **A skill's extra files are UTF-8 text.** The managed-output pipeline compares and writes text,
     so a valid UTF-8 file is reproduced byte for byte and a non-UTF-8 asset is refused (F001)
     rather than corrupted.
 22. **`"allowlist": true` is refused on OpenCode.** OpenCode's permission records are a deny-list
     and cannot name every unmodelled tool, so the Claude Code allow-list opt-in has no faithful
     representation; it is F001, never a silent no-op.
-23. **The command kind is not carried per agent on either target in this slice.** The design's
-    matrix marks `command` as workspace-level; agent mode refuses it on OpenCode and on Claude Code
-    with the other workspace kinds. Profile mode is where it is carried.
+23. **The command kind is carried only at the workspace level.** The design's matrix marks
+    `command` as workspace-level; agent mode refuses it on OpenCode and on Claude Code with the
+    other workspace kinds. OpenCode profile mode carries it as `.opencode/commands/<id>.md`.
 24. **The new resource kinds accept only fields the tool carries.** `command` and `skill` require
     `description` (emitted; a command without one cannot be rendered, so the missing field is a
     deliberate F001), and neither accepts `displayName`; `mcp` and `hook` accept neither, because
     neither is written into the artefact. `schema.md`'s generic `ResourceBase` allows a display name for every
     resource; accepting one that is never emitted would be the silent no-op the strict schema exists
     to reject. A rule keeps `displayName`, because it names the rule's section in the persona body.
+
+25. **The lockfile field is `activePersona`, not `active`.** `schema.md` 5.1 names the selection
+    `active`. This build records `activePersona` because the brief for M3 names it, and because the
+    field is the persona id while the config field it comes from is also called `active`; two
+    different scopes with one name invites a consumer to read the wrong one. `mode` is `agent` or
+    `profile`; `agent-with-loss` and `refuse` are not yet produced by this build.
+26. **Profile mode is OpenCode-only in this build.** The design allows `active` on any target. This
+    build refuses it on `claudecode`, whose only workspace-only capability is `command` (content,
+    so it does not force a profile). Accepting a setting that does nothing would be the silent
+    no-op the strict schema exists to prevent.
+27. **Orphan removal is limited to recorded regular files in managed locations.** A recorded path
+    is removable only when it is in a managed directory (or is a target's whole root config file),
+    is still a regular file, and still has the recorded SHA-256. A symlink is refused and never
+    followed; a directory, an edited file or an unrecorded user file is never removed. The whole
+    set is preflighted before any write, and removals run before the new set is committed so a
+    failed commit is visible as missing artefacts rather than as an unrecorded leftover.
+28. **Profile mode keeps the persona's permissions in its per-agent file.** The design's
+    `schema.md` 4.5.2 describes the workspace permissions array as the profile-mode carrier. This
+    build's only ownership shape is the whole file, and the per-agent permission array is the
+    matrix's native per-persona carrier on OpenCode; a shared permissions block would be a
+    structured merge this milestone does not implement. The workspace `opencode.jsonc` carries only
+    `mcp`. Profile mode therefore does not widen or share any permission across personas.
+29. **The active persona's OpenCode frontmatter keeps `mode: subagent`.** Profile mode changes
+    which personas are emitted, not the shape of the per-agent file. Promoting the live persona to
+    a primary mode is a product decision about how the session starts, and is not made here.
 
 ## Licence
 
