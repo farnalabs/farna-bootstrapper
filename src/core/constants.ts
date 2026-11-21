@@ -92,10 +92,15 @@ export const LOCKFILE_MAX_BYTES = 4 * 1024 * 1024;
  * `package-lock.json`) scale with the dependency tree: a monorepo lockfile can
  * legitimately be several megabytes, far above this product's own derived
  * lockfile. The bound is generous so a real record is read, and still finite so
- * a repository-controlled path can never allocate without limit. A present
- * record that cannot be read, or is above this bound, is refused (F010); only a
- * genuinely missing npm record (a global install) falls back to the compile-time
- * pin.
+ * a repository-controlled path can never allocate without limit.
+ *
+ * The renderer's entry is searched for under any `packages` key ending in
+ * `node_modules/<renderer-name>`, so a nested install
+ * (`node_modules/<product>/node_modules/<renderer>`) is read rather than
+ * mistaken for an absent record. Only a record with no renderer entry anywhere
+ * in it (a global install that wrote no npm lockfile) falls back to the
+ * compile-time pin. A present record that cannot be read, or is above this
+ * bound, is refused (F010) instead of falling back.
  */
 export const NPM_LOCKFILE_MAX_BYTES = 64 * 1024 * 1024;
 

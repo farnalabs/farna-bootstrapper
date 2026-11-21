@@ -14,7 +14,11 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { runCheck } from '../../src/cli/commands/check.js';
 import { runGenerate } from '../../src/cli/commands/generate.js';
-import { LOCKFILE_MAX_BYTES, NPM_LOCKFILE_MAX_BYTES } from '../../src/core/constants.js';
+import {
+  LOCKFILE_MAX_BYTES,
+  NPM_LOCKFILE_MAX_BYTES,
+  PRODUCT_NAME,
+} from '../../src/core/constants.js';
 import { readLockfile } from '../../src/lock/lockfile.js';
 import { readRecordedIntegrity } from '../../src/render/identity.js';
 import type { RendererIdentity } from '../../src/render/port.js';
@@ -368,7 +372,7 @@ describe('the bounded npm integrity read', () => {
   });
 
   it('ignores an unrelated parent lockfile above the install root', async () => {
-    // The nearest ancestor owning node_modules is the install root. A
+    // The install root is the top of the renderer's node_modules chain. A
     // package-lock.json above it describes a different install and must never
     // be read, or a healthy project could be refused by an unrelated record.
     const parent = await mkdtemp(join(tmpdir(), 'fbs-integrity-parent-'));
@@ -380,6 +384,29 @@ describe('the bounded npm integrity read', () => {
         join(parent, 'package-lock.json'),
         JSON.stringify({
           packages: { 'node_modules/rulesync': { integrity: 'sha512-PARENT-UNRELATED' } },
+        }),
+        'utf8',
+      );
+      expect(readRecordedIntegrity(packageDir, 'rulesync')).toBeUndefined();
+    } finally {
+      await rm(parent, { recursive: true, force: true });
+    }
+  });
+
+  it('ignores a parent lockfile even when the parent owns a node_modules directory', async () => {
+    // Reaching a nested install must not turn into climbing above the project.
+    // A parent monorepo that happens to own a node_modules directory is still
+    // outside the renderer's chain, so its record is never read.
+    const parent = await mkdtemp(join(tmpdir(), 'fbs-integrity-mono-'));
+    const root = join(parent, 'project');
+    const packageDir = packageDirOf(root);
+    try {
+      await mkdir(packageDir, { recursive: true });
+      await mkdir(join(parent, 'node_modules'), { recursive: true });
+      await writeFile(
+        join(parent, 'package-lock.json'),
+        JSON.stringify({
+          packages: { 'node_modules/rulesync': { integrity: 'sha512-PARENT-MONOREPO' } },
         }),
         'utf8',
       );
@@ -484,6 +511,140 @@ describe('the bounded npm integrity read', () => {
     try {
       await mkdir(packageDir, { recursive: true });
       expect(readRecordedIntegrity(packageDir, 'rulesync')).toBeUndefined();
+      const resolved = resolvePinnedIdentity({
+        name: RENDERER_PIN.name,
+        version: RENDERER_PIN.version,
+      });
+      expect(resolved.integrity).toBe(RENDERER_PIN.integrity);
+      expect(() => assertPinned(resolved)).not.toThrow();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('a nested install layout', () => {
+  // `npm install --install-strategy=nested` puts the renderer under the package
+  // that depends on it, and records it under that same nested key. Reading only
+  // `node_modules/<name>` made a present record look absent, so `generate`
+  // exited 0 with no integrity recorded.
+  const NESTED_KEY = `node_modules/${PRODUCT_NAME}/node_modules/${RENDERER_PIN.name}`;
+
+  type NestedLayout = { root: string; packageDir: string };
+
+  async function nestedLayout(): Promise<NestedLayout> {
+    const root = await mkdtemp(join(tmpdir(), 'fbs-nested-'));
+    const packageDir = join(root, 'node_modules', PRODUCT_NAME, 'node_modules', RENDERER_PIN.name);
+    await mkdir(packageDir, { recursive: true });
+    return { root, packageDir };
+  }
+
+  async function writeRecord(path: string, entries: Record<string, unknown>): Promise<void> {
+    await writeFile(path, JSON.stringify({ packages: entries }), 'utf8');
+  }
+
+  function pinned(integrity: string): RendererIdentity {
+    return { name: RENDERER_PIN.name, version: RENDERER_PIN.version, integrity };
+  }
+
+  it('reads the nested entry from the project lockfile instead of falling back to the pin', async () => {
+    const { root, packageDir } = await nestedLayout();
+    try {
+      await writeRecord(join(root, 'package-lock.json'), {
+        [NESTED_KEY]: { integrity: 'sha512-from-the-nested-record' },
+      });
+      expect(readRecordedIntegrity(packageDir, RENDERER_PIN.name)).toBe(
+        'sha512-from-the-nested-record',
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('reads the nested entry from the hidden install-root record', async () => {
+    const { root, packageDir } = await nestedLayout();
+    try {
+      await writeRecord(join(root, 'node_modules', '.package-lock.json'), {
+        [NESTED_KEY]: { integrity: 'sha512-from-the-hidden-record' },
+      });
+      expect(readRecordedIntegrity(packageDir, RENDERER_PIN.name)).toBe(
+        'sha512-from-the-hidden-record',
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('prefers the entry nested under our own package over a hoisted one', async () => {
+    const { root, packageDir } = await nestedLayout();
+    try {
+      await writeRecord(join(root, 'package-lock.json'), {
+        'node_modules/rulesync': { integrity: 'sha512-hoisted-copy' },
+        [NESTED_KEY]: { integrity: 'sha512-the-copy-we-import' },
+      });
+      expect(readRecordedIntegrity(packageDir, RENDERER_PIN.name)).toBe(
+        'sha512-the-copy-we-import',
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('fails F010 for a nested entry whose integrity differs from the pin', async () => {
+    const { root, packageDir } = await nestedLayout();
+    try {
+      await writeRecord(join(root, 'package-lock.json'), {
+        [NESTED_KEY]: { integrity: 'sha512-DIFFERENT-NOT-THE-PIN' },
+      });
+      const recorded = readRecordedIntegrity(packageDir, RENDERER_PIN.name);
+      expect(recorded).toBe('sha512-DIFFERENT-NOT-THE-PIN');
+      if (recorded === undefined) {
+        throw new Error('expected the nested record to be read');
+      }
+      // A nested install is a real record: its integrity is compared, never
+      // replaced by the pin.
+      expect(() => assertPinned(resolvePinnedIdentity(pinned(recorded)))).toThrowError(
+        expect.objectContaining({ code: 'F010_RENDERER_MISMATCH' }),
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('still reads a hoisted entry', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'fbs-hoisted-'));
+    const packageDir = join(root, 'node_modules', RENDERER_PIN.name);
+    try {
+      await mkdir(packageDir, { recursive: true });
+      await writeRecord(join(root, 'package-lock.json'), {
+        'node_modules/rulesync': { integrity: 'sha512-hoisted-entry' },
+      });
+      expect(readRecordedIntegrity(packageDir, RENDERER_PIN.name)).toBe('sha512-hoisted-entry');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('finds the renderer nested under any package, not only ours', async () => {
+    const { root, packageDir } = await nestedLayout();
+    try {
+      await writeRecord(join(root, 'package-lock.json'), {
+        'node_modules/some-other-package/node_modules/rulesync': {
+          integrity: 'sha512-nested-elsewhere',
+        },
+      });
+      expect(readRecordedIntegrity(packageDir, RENDERER_PIN.name)).toBe('sha512-nested-elsewhere');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('falls back to the pin for a global install with no record anywhere', async () => {
+    // The genuine global-install case: the install tree exists but no npm lock
+    // record does. This is the only case the pin may cover.
+    const { root, packageDir } = await nestedLayout();
+    try {
+      expect(readRecordedIntegrity(packageDir, RENDERER_PIN.name)).toBeUndefined();
       const resolved = resolvePinnedIdentity({
         name: RENDERER_PIN.name,
         version: RENDERER_PIN.version,

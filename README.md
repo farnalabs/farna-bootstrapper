@@ -39,12 +39,16 @@ string.
 `npm install farna-bootstrapper` (registry), `npm install <git-url>` and `npm install -g
 farna-bootstrapper` all work. `prepare` builds `dist/` for a git install and `prepack` builds it
 for the published tarball; a source checkout therefore produces a working `bin` without a manual
-build. A global install has no npm lockfile recording the renderer's tarball integrity, so the
-compile-time pin stands in for it; the installed renderer's version is still checked and a
-mismatch is refused (F010). The fallback applies only when no lock record exists: a record that is
-present but cannot be read, or is above the 64 MiB npm-record bound, is refused (F010) rather than
-replaced by the pin. That bound is separate from the 4 MiB bound on this product's own derived
-`.farna/lock.json`, because npm's record scales with the dependency tree.
+build. The renderer's integrity is read from the npm lock record wherever npm recorded it,
+including a nested install (`npm install --install-strategy=nested`), where the entry is keyed
+`node_modules/farna-bootstrapper/node_modules/rulesync` instead of `node_modules/rulesync`. When the
+record contains no renderer entry at all — a global install that wrote no npm lockfile — the
+compile-time pin stands in for the missing integrity; the installed renderer's version is still
+checked and a mismatch is refused (F010). The fallback applies only when no renderer entry exists
+anywhere in the lock record: a record that is present but cannot be read, or is above the 64 MiB
+npm-record bound, is refused (F010) rather than replaced by the pin. That bound is separate from
+the 4 MiB bound on this product's own derived `.farna/lock.json`, because npm's record scales with
+the dependency tree.
 
 ## Develop
 
@@ -304,18 +308,24 @@ exercised without the network or the real renderer.
 and `check` compares it with the installed package before any byte comparison: a different name or
 version fails `F010` with exit `5`, and so does a different npm-recorded integrity. The installed
 integrity is read from npm's `node_modules/.package-lock.json`, with the project
-`package-lock.json` as a fallback. The project-lockfile walk stops at the install root — the
-nearest ancestor that owns a `node_modules` directory — so an unrelated `package-lock.json` above
-the project (a home directory, a parent monorepo) is never read as though it described this
-install. Only a missing record falls back to the compile-time pin: a record that exists but cannot
-be read, or is above the 64 MiB npm-record bound, is refused `F010` naming the record, so a
+`package-lock.json` as a fallback, and the `packages` map is searched for the renderer's entry
+under any key ending in `node_modules/rulesync` — a nested install records it as
+`node_modules/farna-bootstrapper/node_modules/rulesync`, and reading only the top-level key used to
+mistake that present record for an absent one and fall back to the pin. When more than one entry
+matches, the one nested under farna-bootstrapper's own package wins, then the shallowest. The
+project-lockfile walk stops at the install root — the top of the renderer's `node_modules` chain,
+the package that owns its outermost `node_modules`, so a nested install still reaches the project
+record — and an unrelated `package-lock.json` above the project (a home directory, a parent
+monorepo) is never read as though it described this install. Only a lock record with no renderer
+entry anywhere in it falls back to the compile-time pin: a record that exists but cannot be read,
+or is above the 64 MiB npm-record bound, is refused `F010` naming the record, so a
 present-but-unverifiable integrity never becomes a pass. The 64 MiB npm-record bound is deliberately
-separate from the 4 MiB bound on `.farna/lock.json`: npm's record scales with the dependency tree, so
-a legitimate monorepo lockfile is several megabytes. When npm recorded no integrity at all — a
-global install has no lockfile — the compile-time pin stands in for it, so a global install works
-while the installed version is still checked and a mismatch is still `F010`. The check never
-degrades to a version-only comparison against an integrity it did read, and an integrity that is
-present on both sides is compared exactly.
+separate from the 4 MiB bound on `.farna/lock.json`: npm's record scales with the dependency tree,
+so a legitimate monorepo lockfile is several megabytes. When npm recorded no integrity at all — no
+renderer entry anywhere in a global install's records — the compile-time pin stands in for it, so
+such an install works while the installed version is still checked and a mismatch is still `F010`.
+The check never degrades to a version-only comparison against an integrity it did read, and an
+integrity that is present on both sides is compared exactly.
 
 The renderer is imported **in-process**. The pin is provenance, not a sandbox: it ties the
 committed bytes to a published tarball, but a package patched in place with the same `package.json`
