@@ -1,4 +1,4 @@
-import { appendFile } from 'node:fs/promises';
+import { appendFile, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { runGenerate } from '../../src/cli/commands/generate.js';
@@ -120,6 +120,21 @@ describe('generate with the injected renderer', () => {
       const changed = result.files.filter((file) => file.status === 'would-write');
       expect(changed.map((file) => file.path)).toEqual(['.claude/agents/reviewer.md']);
       expect(await hashTree(repo.root)).toBe(before);
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
+  it('omits model from the artefact when the persona declares none', async () => {
+    const repo = await createTempRepo();
+    try {
+      const personaPath = join(repo.root, '.farna/personas/builder.yaml');
+      const source = await readFile(personaPath, 'utf8');
+      await writeFile(personaPath, source.replace('model: standard\n', ''), 'utf8');
+      const result = await runGenerate({ cwd: repo.root, dryRun: false }, new FakeRenderTarget());
+      expect(result.personas).toEqual(['builder', 'reviewer']);
+      const builder = await readText(repo.root, '.claude/agents/builder.md');
+      expect(builder).not.toContain('model:');
     } finally {
       await repo.cleanup();
     }
