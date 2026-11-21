@@ -4,12 +4,14 @@
     "includes": [
       "src/**",
       "tests/**",
+      "scripts/**",
       "*.json",
       "*.jsonc",
       "*.md",
       "!dist",
       "!node_modules",
-      "!package-lock.json"
+      "!package-lock.json",
+      "!vitest-report.json"
     ]
   },
   "formatter": {

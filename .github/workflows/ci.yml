@@ -32,8 +32,30 @@ jobs:
       - name: Lint
         run: npm run lint
 
-      - name: Test
-        run: npm test
+      # `npm run build` type-checks `src/` only and Vitest transforms without
+      # type-checking, so a type error in `tests/` would otherwise merge green.
+      - name: Type check
+        run: npm run typecheck
 
       - name: Build
         run: npm run build
+
+      - name: Test
+        run: npm test -- --reporter=default --reporter=json --outputFile=vitest-report.json
+
+      # A green run proves nothing if a suite silently skipped or failed to
+      # collect. This asserts the exact test count and that both real-renderer
+      # suites executed.
+      - name: Assert the expected tests ran
+        run: node scripts/assert-test-count.mjs vitest-report.json
+
+      # Both runtime advisories (zod, yaml) were reachable from files this tool
+      # parses; the gate fails on a high or critical advisory in any dependency.
+      - name: Audit dependencies
+        run: npm audit --audit-level=high
+
+      # `dist/` is gitignored, so without `prepack` a tarball from a clean
+      # clone contains no code. This proves the published package has its
+      # entry points.
+      - name: Assert the published tarball contains dist
+        run: node scripts/assert-pack.mjs
