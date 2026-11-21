@@ -18,13 +18,16 @@ one base persona per composed persona (`extends`). Everything else is deliberate
    with the repository. Exit `0` when identical, `1` when anything drifted.
 
 `generate` never writes until every gate has passed. Containment means equality, not substring
-presence: each persona's artefact must be a non-empty markdown file whose frontmatter matches the
-resolved persona exactly (`name`, `description`, `model`, `tools`, `disallowedTools`, with an absent
-field absent) and whose body ends with that persona's whole composed body. A renderer that drops
-content, weakens a permission, mixes personas or appends anything of its own is refused before the
-first byte reaches the repository. Every permission category is validated before anything is
-materialised: a category the target cannot carry refuses the run (F011) rather than being emitted as
-an inert string.
+presence: each persona's artefact must be a non-empty markdown file whose emitted frontmatter has
+exactly the keys the persona declares (`name` and `description`, plus `model`, `tools` and
+`disallowedTools` only when declared) with matching values, and whose body is exactly that persona's
+composed body, with one trailing newline normalised. An absent field must be absent, and an extra
+field is refused: a renderer that adds a harness directive such as `permissionMode` or `hooks` is
+adding a capability the persona never declared. A renderer that drops content, weakens or invents a
+permission, mixes personas, prepends or appends anything of its own is refused before the first byte
+reaches the repository. Every permission category is validated before anything is materialised: a
+category the target cannot carry refuses the run (F011) rather than being emitted as an inert
+string.
 
 ## Requirements
 
@@ -39,6 +42,8 @@ npm run lint
 npm run typecheck
 npm test
 npm run build
+npm audit --audit-level=moderate
+node scripts/assert-pack.mjs     # after a build: the tarball contains dist
 ```
 
 `npm run build` compiles `src/` to `dist/`. After a build, run the CLI with
@@ -164,6 +169,10 @@ order, under a `## displayName` heading. The rule body itself is never re-wrappe
    the example above `builder-python` carries both rule markers and not the reviewer's, because
    the reviewer's rules were never in its chain.
 
+`resources` may be empty. A persona with no rules has an empty composed body: its artefact carries
+only its frontmatter, so a permission-only persona (a locked-down reviewer with no prose) is valid
+and generates cleanly.
+
 A composed persona is one new name. There are no multi-parent unions and no per-target branches
 in the source.
 
@@ -219,7 +228,7 @@ tests/
   unit/               composition, permissions, fake-renderer gates, loader, init, check, paths
   integration/        the real pinned renderer
   cli/                the built CLI: exit codes, JSON envelopes and drift output
-scripts/              CI gates: the expected test count and the published tarball contents
+scripts/              CI gates: the minimum test count, real-renderer suites and tarball contents
 ```
 
 `.farna/lock.json` records the renderer identity, each persona's composition base, its resolved
@@ -243,12 +252,20 @@ project lockfile as a fallback); if no package manager recorded one, the field i
 version check still applies. The product never uses rulesync's `--delete`; cleanup is
 ownership-scoped, and this slice never deletes a user file.
 
-Every source directory and output path is checked with `lstat` before use. A symbolic link is
-refused wherever it appears: `.farna`, its subdirectories, `config.jsonc`, any ancestor of a managed
-output path (including `.claude` symlinked inside the repository), and a managed file itself.
-`generate` stages the whole managed set in sibling temporary files and renames only after every
-write has succeeded; a failure leaves the tree as it was and reports `F012` with the failing path.
-`init` preflights `.gitignore` and removes anything it created if it subsequently fails.
+Every source directory and output path used by `generate`, `generate --dry-run` and `check` is
+checked with `lstat` before use. The write and dry-run paths refuse a symbolic link wherever it
+appears: `.farna`, its subdirectories, `config.jsonc`, any ancestor of a managed output path
+(including `.claude` symlinked inside the repository), and a managed file itself. `check` reports
+a symlinked managed file as drift instead of following it. The dry-run plan goes through the same
+guard as the write path, so it cannot report a plan the real command would refuse.
+
+`generate` preflights the whole set, stages it in sibling temporary files on the same filesystem,
+and renames only after every write has succeeded. A caught failure before the first rename leaves
+the tree unchanged; a failure between renames restores the files already replaced and names any
+file it could not restore. A crash or kill between renames can still leave a mixed tree; see
+[Residual risks and known gaps](#residual-risks-and-known-gaps). `init` preflights `.gitignore`
+before creating anything, preserves its line ending, and removes what it created if it subsequently
+fails.
 
 ## What this slice does not do
 
@@ -264,6 +281,32 @@ Deliberately out of scope, by milestone:
   `.claude/agents/` and `generate` never deletes a file it did not write in the current run
 - structured or region ownership; only whole files are owned
 - the weekly renderer-sync bot and the two compiled binaries
+
+## Residual risks and known gaps
+
+These are deliberate limits of the current controls, stated rather than implied away:
+
+- **TOCTOU between preflight and write.** Every ancestor is `lstat`'ed before the write, but a
+  symlink swapped in between that check and the `mkdir`/`rename` is not detected. Node exposes no
+  `openat`/`O_NOFOLLOW` equivalent, so closing this needs a separate seam.
+- **Crash between renames.** A caught rename failure restores the files already replaced and names
+  any it could not restore. A process kill or power loss between two renames can leave a mixed tree
+  (some new artefact files, a stale lockfile). Re-running `generate` replaces the managed set and
+  rewrites the record; `check` reports the drift.
+- **Renderer file-content tampering.** The identity check reads the installed package's version and
+  the npm-recorded tarball integrity. A renderer patched in place with the same `package.json` and
+  the same tarball integrity is not detected.
+- **Stage cleanup.** If the disposable render stage cannot be removed (for example a renderer left
+  an unreadable directory in it), the cleanup failure is a warning naming the leftover path and
+  never replaces the renderer's own error.
+- **No coverage gate.** There is no coverage provider or threshold in this slice. CI runs lint,
+  type-check, tests (with a minimum count and real-renderer suite assertions), a dependency audit at
+  `moderate`, and a published-tarball check.
+- **Windows-specific test skips.** The symlink regression tests are skipped on Windows because
+  creating a symlink needs a privilege the runner does not grant. CI runs them on Linux; the guard
+  code itself is platform-independent.
+- **Stray files outside `.claude/agents/`** are not reported by `check`; the unexpected-path scan is
+  scoped to the managed directory.
 
 ## Deviations from `design/`
 
@@ -315,17 +358,21 @@ them further. The differences, all deliberate:
     design's "no recursive delete in `src/`" rule is about never deleting user content; a
     self-created temp stage is the one justified exception, and stage cleanup is required.
 13. **`F012_WRITE_FAILED` (exit `5`) is added for a commit that cannot complete.** It names the
-    managed path and leaves the tree as it was. The design's code table has no write-failure code;
-    this is a new one rather than overloading `F009` (a renderer failure) with a filesystem error.
+    managed path. A failure before the first rename leaves the tree unchanged; a failure between
+    renames restores what it can and reports any file it could not restore. The design's code table
+    has no write-failure code; this is a new one rather than overloading `F009` (a renderer
+    failure) with a filesystem error.
 14. **A rule's `description` frontmatter key is rejected.** Nothing emitted it, and a field the tool
     accepts and ignores is the silent no-op the strict schema exists to prevent. Persona
     `displayName` remains a required human label but is no longer required to be unique: it is not
     emitted either, so a uniqueness rejection would have been a false rejection of valid input.
 15. **A YAML file with more than one document is refused (F001).** Parsing only the first document
     would silently discard every persona after the first `---`.
-16. **`generate` and `init` are atomic at the set level.** The managed output is staged in sibling
-    temporary files and renamed only after every write has succeeded; `init` preflights the one
-    path that can fail on an ordinary filesystem state and rolls back what it created.
+16. **`generate` and `init` are atomic for a caught failure.** The managed output is staged in
+    sibling temporary files and renamed only after every write has succeeded, and a rename failure
+    restores what it already replaced (reporting any restore it could not complete). A crash
+    between renames is not atomic; `init` preflights the one path that can fail on an ordinary
+    filesystem state and rolls back what it created.
 
 ## Licence
 
