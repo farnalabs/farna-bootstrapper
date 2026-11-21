@@ -2,12 +2,15 @@ import { z } from 'zod';
 import { ID_RE, SCHEMA_VERSION, SUPPORTED_TARGETS } from '../core/constants.js';
 
 /**
- * One configured target. In this slice a target accepts no options:
- * `targets.<t>.active` and `targets.<t>.exclude` are profile-mode and
- * per-target-filter fields, which are not implemented yet. Accepting them and
- * ignoring them would be a silent no-op, so they are rejected until they work.
+ * One configured target. `active` selects profile mode: exactly that persona is
+ * live and owns the workspace. Its existence is checked against the loaded
+ * source tree (F001) because the config loader does not read personas; the
+ * per-target filter field `exclude` is not implemented, so it is rejected rather
+ * than accepted and ignored.
  */
-const targetConfigSchema = z.strictObject({});
+const targetConfigSchema = z.strictObject({
+  active: z.string().regex(ID_RE, 'a persona id uses lower-case kebab-case').optional(),
+});
 
 export const configSchema = z
   .strictObject({

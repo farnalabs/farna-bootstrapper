@@ -1,7 +1,16 @@
 import type { CheckResult } from '../cli/commands/check.js';
 import type { GenerateResult } from '../cli/commands/generate.js';
 import type { InitResult } from '../cli/commands/init.js';
+import type { RenderMode } from '../core/constants.js';
 import type { Warning } from './warnings.js';
+
+/**
+ * The mode line names the active persona only in profile mode: in agent mode
+ * every persona is live, and there is no selection to report.
+ */
+function modeLabel(mode: RenderMode, activePersona: string | null): string {
+  return mode === 'profile' ? `profile mode, active ${activePersona ?? '<none>'}` : 'agent mode';
+}
 
 function warningLines(warnings: readonly Warning[]): string[] {
   if (warnings.length === 0) {
@@ -38,19 +47,25 @@ export function formatGenerate(result: GenerateResult): string {
     : `managed ${pending} file(s), ${unchanged} unchanged`;
   const lines = [
     'farna-bootstrapper generate',
-    `  target ${result.target} (agent mode)`,
+    `  target ${result.target} (${modeLabel(result.mode, result.activePersona)})`,
     `  personas ${result.personas.join(', ')}`,
     `  ${summary}`,
   ];
   for (const file of result.files) {
     lines.push(`  ${file.status.padEnd(10)} ${file.path}`);
   }
+  for (const orphan of result.removed) {
+    lines.push(`  ${orphan.status.padEnd(12)} ${orphan.path}`);
+  }
   lines.push(...warningLines(result.warnings));
   return `${lines.join('\n')}\n`;
 }
 
 export function formatCheck(result: CheckResult): string {
-  const lines = ['farna-bootstrapper check', `  target ${result.target} (agent mode)`];
+  const lines = [
+    'farna-bootstrapper check',
+    `  target ${result.target} (${modeLabel(result.mode, result.activePersona)})`,
+  ];
   if (result.ok) {
     lines.push(`  ${result.checked.length} managed file(s) match a fresh render`);
     lines.push(...warningLines(result.warnings));

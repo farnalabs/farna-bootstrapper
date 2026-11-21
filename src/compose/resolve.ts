@@ -1,11 +1,17 @@
 import type { Config } from '../config/schema.js';
 import {
+  CONFIG_PATH,
   MAX_EXTENDS_DEPTH,
+  MODE_AGENT,
+  MODE_PROFILE,
   OPENCODE_TARGET,
   OPENCODE_WORKSPACE_KINDS,
+  PROFILE_TARGETS,
+  type RenderMode,
   SUPPORTED_RESOURCE_KINDS,
   SUPPORTED_TARGETS,
   type SupportedTarget,
+  targetSupportsProfile,
 } from '../core/constants.js';
 import { conflict, invalidConfig } from '../core/errors.js';
 import { canonicalJson, compareCodepoints, sha256Hex } from '../core/json.js';
@@ -154,6 +160,10 @@ export type ResolvedPersona = {
 
 export type ResolvedSource = {
   target: SupportedTarget;
+  /** `profile` when one persona owns the workspace, `agent` otherwise. */
+  mode: RenderMode;
+  /** The active persona id in profile mode; `null` in agent mode. */
+  active: string | null;
   personas: ResolvedPersona[];
   /** Every workspace resource any live persona declares, deduplicated by id. */
   mcp: ResolvedMcp[];
@@ -161,6 +171,14 @@ export type ResolvedSource = {
   commands: ResolvedCommand[];
   hooks: ResolvedHookOutcome[];
   warnings: Warning[];
+};
+
+/**
+ * The one selection override the CLI accepts. A present persona wins over
+ * `targets.<target>.active`; both select profile mode.
+ */
+export type SourceSelection = {
+  persona?: string;
 };
 
 const KIND_ORDER: Record<string, number> = {
@@ -282,7 +300,12 @@ function resolveModel(
   return distinct[0];
 }
 
-function assertSupportedRef(persona: LoadedPersona, ref: string, target: SupportedTarget): void {
+function assertSupportedRef(
+  persona: LoadedPersona,
+  ref: string,
+  target: SupportedTarget,
+  mode: RenderMode,
+): void {
   const { kind } = splitRef(ref);
   if (kind === 'model') {
     throw invalidConfig('model resources are expressed with the persona "model" key', {
@@ -300,6 +323,25 @@ function assertSupportedRef(persona: LoadedPersona, ref: string, target: Support
       subject: persona.path,
       action: `render this source for the opencode target, or remove the ${kind} reference`,
     });
+  }
+  // A workspace kind in agent mode has no per-recipient record, no opt-out and
+  // no honest warning: a workspace emission would give every persona the
+  // declarer's resource. Profile mode is the only mode that carries it, and its
+  // absence is a refusal, never a silent workspace-wide emission.
+  if (
+    mode === MODE_AGENT &&
+    target === OPENCODE_TARGET &&
+    (OPENCODE_WORKSPACE_KINDS as readonly string[]).includes(kind)
+  ) {
+    const { id } = splitRef(ref);
+    throw invalidConfig(
+      `${kind}/${id} is declared by persona ${persona.id} and requires profile mode`,
+      {
+        subject: persona.path,
+        action:
+          'set targets.opencode.active to this persona (or pass --persona <id>) to run profile mode, or remove the reference',
+      },
+    );
   }
 }
 
@@ -356,6 +398,7 @@ function resolveOne(
   },
   config: Config,
   target: SupportedTarget,
+  mode: RenderMode,
 ): ResolvedPersona {
   const model = resolveModel(chain, config, target);
   const resources = new Map<string, ResolvedResource>();
@@ -380,25 +423,8 @@ function resolveOne(
 
   for (const contributor of chain) {
     for (const ref of contributor.resources) {
-      assertSupportedRef(contributor, ref, target);
+      assertSupportedRef(contributor, ref, target, mode);
       const { kind, id } = splitRef(ref);
-      // OpenCode carries these four at the workspace level only. In agent mode
-      // there is no per-recipient record, no opt-out and no honest warning: a
-      // workspace emission gives every persona the declarer's resource. The
-      // design requires profile mode for them, so agent mode refuses rather
-      // than pretending the capability was scoped to one persona.
-      if (
-        target === OPENCODE_TARGET &&
-        (OPENCODE_WORKSPACE_KINDS as readonly string[]).includes(kind)
-      ) {
-        throw invalidConfig(
-          `${kind}/${id} is declared by persona ${contributor.id} and requires profile mode`,
-          {
-            subject: contributor.path,
-            action: `${OPENCODE_TARGET} carries ${kind} at the workspace level, not per agent; remove the reference until profile mode is available`,
-          },
-        );
-      }
       const key = `${kind}/${id}`;
       const repeated = seenRefs.has(key);
       seenRefs.add(key);
@@ -527,6 +553,24 @@ function resolveOne(
         ? { ...hook, carried: true }
         : { ...hook, carried: false, reason };
     });
+  // A hook the target cannot represent is a real loss, never a silent omission.
+  // `hook` is a boundary capability, so the loss is HIGH. This is reachable only
+  // in profile mode: agent mode refuses a hook reference before attribution.
+  for (const hook of resolvedHooks) {
+    if (hook.carried) {
+      continue;
+    }
+    warnings.push(
+      warning({
+        code: 'W101_CAPABILITY_DROPPED',
+        persona: persona.id,
+        target,
+        capability: 'hook',
+        severity: 'high',
+        message: `hook "${hook.id}" is not carried by ${target}: ${hook.reason ?? 'no matching event'}`,
+      }),
+    );
+  }
 
   const mapped =
     target === 'claudecode'
@@ -612,9 +656,34 @@ function unionAcrossPersonas<T extends { id: string; sha256: string }>(
  * persona's rules, permissions and workspace resources are unioned in; the
  * stricter permission value wins; two different models are a conflict, never a
  * silent override.
+ *
+ * The target's mode is computed here, never chosen by a heuristic:
+ *
+ * - `targets.<target>.active` (or the `--persona` override) selects profile
+ *   mode, makes exactly that persona live, and refuses F001 when the persona or
+ *   the target's profile support is missing;
+ * - otherwise the target is in agent mode and every persona is live.
+ *
+ * In profile mode only the live persona's artefacts and workspace resources are
+ * returned, so `materialise` and the containment gate cannot emit or accept
+ * another persona's resources: the isolation is structural, not a filter applied
+ * later. Every persona is still resolved, so a broken declaration anywhere in
+ * the source is reported; only emission is scoped to the live persona.
  */
-export function resolveSource(source: SourceTree, config: Config): ResolvedSource {
+export function resolveSource(
+  source: SourceTree,
+  config: Config,
+  selection: SourceSelection = {},
+): ResolvedSource {
   const target = configuredTarget(config);
+  const configuredActive = config.targets[target]?.active;
+  const requested = selection.persona ?? configuredActive;
+  const mode: RenderMode = requested === undefined ? MODE_AGENT : MODE_PROFILE;
+  const active = requested ?? null;
+  // The subject names the thing the user must edit: the flag they passed, or
+  // the config field that selected the persona.
+  const selectionSubject = selection.persona !== undefined ? '--persona' : CONFIG_PATH;
+
   const sourceWarnings = source.warnings.map((entry) =>
     warning({
       code: entry.code,
@@ -625,6 +694,22 @@ export function resolveSource(source: SourceTree, config: Config): ResolvedSourc
     }),
   );
   const byId = new Map(source.personas.map((persona) => [persona.id, persona]));
+
+  if (active !== null) {
+    if (!targetSupportsProfile(target)) {
+      throw invalidConfig(`the ${target} target does not support profile mode`, {
+        subject: selectionSubject,
+        action: `remove the active persona for ${target}; profile mode is supported for: ${PROFILE_TARGETS.join(', ')}`,
+      });
+    }
+    if (!byId.has(active)) {
+      throw invalidConfig(`active persona "${active}" names no persona`, {
+        subject: selectionSubject,
+        action: 'declare the persona under .farna/personas/, or choose one that exists',
+      });
+    }
+  }
+
   const byKind = {
     rules: new Map(source.rules.map((rule) => [rule.id, rule])),
     permissions: new Map(source.permissions.map((permission) => [permission.id, permission])),
@@ -633,16 +718,46 @@ export function resolveSource(source: SourceTree, config: Config): ResolvedSourc
     commands: new Map(source.commands.map((command) => [command.id, command])),
     hooks: new Map(source.hooks.map((hook) => [hook.id, hook])),
   };
-  const personas = source.personas.map((persona) =>
-    resolveOne(persona, resolveChain(persona, byId), byKind, config, target),
+  const resolved = source.personas.map((persona) =>
+    resolveOne(persona, resolveChain(persona, byId), byKind, config, target, mode),
   );
+  const personas = active === null ? resolved : resolved.filter((persona) => persona.id === active);
+  if (active === null) {
+    return {
+      target,
+      mode,
+      active,
+      personas,
+      mcp: unionAcrossPersonas('mcp', personas, (persona) => persona.mcp),
+      skills: unionAcrossPersonas('skill', personas, (persona) => persona.skills),
+      commands: unionAcrossPersonas('command', personas, (persona) => persona.commands),
+      hooks: unionAcrossPersonas('hook', personas, (persona) => persona.hooks),
+      warnings: sortWarnings([
+        ...sourceWarnings,
+        ...personas.flatMap((persona) => persona.warnings),
+      ]),
+    };
+  }
+  const live = personas[0];
+  if (personas.length !== 1 || live === undefined) {
+    // Defensive: `active` was proven to name a persona above. Reaching here
+    // means the source changed under the resolver, which must never be guessed.
+    throw invalidConfig(`active persona "${active}" did not resolve to exactly one live persona`, {
+      subject: selectionSubject,
+    });
+  }
   return {
     target,
+    mode,
+    active,
     personas,
-    mcp: unionAcrossPersonas('mcp', personas, (persona) => persona.mcp),
-    skills: unionAcrossPersonas('skill', personas, (persona) => persona.skills),
-    commands: unionAcrossPersonas('command', personas, (persona) => persona.commands),
-    hooks: unionAcrossPersonas('hook', personas, (persona) => persona.hooks),
+    // Profile mode: the live persona's own resources, never a union across the
+    // personas that are not live. Anything else would leak a resource the
+    // workspace owner never declared.
+    mcp: live.mcp,
+    skills: live.skills,
+    commands: live.commands,
+    hooks: live.hooks,
     warnings: sortWarnings([...sourceWarnings, ...personas.flatMap((persona) => persona.warnings)]),
   };
 }

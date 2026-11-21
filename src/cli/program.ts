@@ -114,7 +114,11 @@ export function buildProgram(context: CliContext): Command {
     )
     .addHelpText(
       'after',
-      `\nThe OpenCode target supports OpenCode ${OPENCODE_SUPPORTED_MAJOR}.x only; the 1.x layout is unsupported.`,
+      `\nThe OpenCode target supports OpenCode ${OPENCODE_SUPPORTED_MAJOR}.x only; the 1.x layout is unsupported.
+\nProfile mode: pass --persona <id> to generate or check, or set "active" under a target
+in .farna/config.jsonc. Exactly one persona is live and owns the workspace at the
+repository root, so its MCP servers, skills, commands and hooks are emitted there.
+Profile mode is supported for the opencode target; agent mode remains the default.`,
     )
     .version(
       // The compiled-in pin, never the installed renderer: `--version` and
@@ -152,13 +156,18 @@ export function buildProgram(context: CliContext): Command {
   program
     .command('generate')
     .exitOverride()
-    .description('render every persona and write the verified files into the repository')
+    .description('render every live persona and write the verified files into the repository')
     .option('--dry-run', 'print the plan without writing anything')
+    .option('--persona <id>', 'run profile mode as this persona (overrides the configured active)')
     .option('--json', 'print one JSON object')
-    .action(async (options: { dryRun?: boolean; json?: boolean }) => {
+    .action(async (options: { dryRun?: boolean; json?: boolean; persona?: string }) => {
       await emit('generate', options.json === true, context, async () => {
         const result = await runGenerate(
-          { cwd: context.cwd, dryRun: options.dryRun === true },
+          {
+            cwd: context.cwd,
+            dryRun: options.dryRun === true,
+            ...(options.persona === undefined ? {} : { persona: options.persona }),
+          },
           context.renderer,
         );
         return {
@@ -178,10 +187,13 @@ export function buildProgram(context: CliContext): Command {
     .command('check')
     .exitOverride()
     .description('regenerate into a temporary directory and compare with the repository')
+    .option('--persona <id>', 'run profile mode as this persona (overrides the configured active)')
     .option('--json', 'print one JSON object')
-    .action(async (options: { json?: boolean }) => {
+    .action(async (options: { json?: boolean; persona?: string }) => {
       await emit('check', options.json === true, context, async () => {
-        const result = await runCheck(context.cwd, context.renderer);
+        const result = await runCheck(context.cwd, context.renderer, {
+          ...(options.persona === undefined ? {} : { persona: options.persona }),
+        });
         const payload: Record<string, unknown> = {
           schemaVersion: SCHEMA_VERSION,
           command: 'check',
