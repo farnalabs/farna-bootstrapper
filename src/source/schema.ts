@@ -44,11 +44,15 @@ export const personaSchema = z
     }
   });
 
+/**
+ * A rule has no `description`: nothing would emit it, and a field the tool
+ * accepts and ignores is the silent no-op this schema exists to reject. A
+ * description is F001 (unknown key).
+ */
 export const ruleFrontmatterSchema = z.strictObject({
   kind: z.literal('rule'),
   id: idSchema,
   displayName: z.string().min(1).max(80).optional(),
-  description: z.string().min(1).max(200).optional(),
 });
 
 const permissionValueSchema = z.enum(['allow', 'ask', 'deny']);

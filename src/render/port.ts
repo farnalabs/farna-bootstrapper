@@ -25,7 +25,12 @@ export type RenderResult = {
 export type RendererIdentity = {
   name: string;
   version: string;
-  integrity: string;
+  /**
+   * The tarball integrity npm recorded for the installed package. Omitted only
+   * when the package manager did not record one; the version is always read
+   * from the installed package, never from a compiled-in literal.
+   */
+  integrity?: string;
 };
 
 export interface RenderTarget {

@@ -10,12 +10,20 @@ import type {
   RenderTargetName,
 } from '../../src/render/port.js';
 
+type ClaudeBlock = { model?: string; tools?: string[]; disallowedTools?: string[] };
+
 export type FakeMode =
   | { kind: 'ok' }
   | { kind: 'drop-body'; persona: string }
   | { kind: 'drop-file'; persona: string }
   | { kind: 'leak'; from: string; into: string }
-  | { kind: 'extra-file' };
+  | { kind: 'extra-file' }
+  | { kind: 'drop-tools'; persona: string }
+  | { kind: 'drop-deny'; persona: string }
+  | { kind: 'swap-tools'; from: string; into: string }
+  | { kind: 'inject-body'; persona: string; text: string }
+  | { kind: 'empty' }
+  | { kind: 'list-only' };
 
 type SourceDoc = {
   name: string;
@@ -39,38 +47,44 @@ async function readSources(sourceRoot: string): Promise<SourceDoc[]> {
   return docs;
 }
 
-function renderAgent(doc: SourceDoc): string {
-  const claudecode = doc.frontmatter['claudecode'] as
-    | { model?: string; tools?: string[]; disallowedTools?: string[] }
-    | undefined;
+function claudeBlock(doc: SourceDoc): ClaudeBlock {
+  const block = doc.frontmatter['claudecode'];
+  return typeof block === 'object' && block !== null ? (block as ClaudeBlock) : {};
+}
+
+function renderAgent(doc: SourceDoc, block: ClaudeBlock, body: string): string {
   const frontmatter: Record<string, unknown> = {
     name: doc.name,
     description: doc.frontmatter['description'],
-    ...(claudecode?.model === undefined ? {} : { model: claudecode.model }),
-    ...(claudecode?.tools === undefined ? {} : { tools: claudecode.tools }),
-    ...(claudecode?.disallowedTools === undefined
-      ? {}
-      : { disallowedTools: claudecode.disallowedTools }),
+    ...(block.model === undefined ? {} : { model: block.model }),
+    ...(block.tools === undefined ? {} : { tools: block.tools }),
+    ...(block.disallowedTools === undefined ? {} : { disallowedTools: block.disallowedTools }),
   };
-  return `---\n${stringify(frontmatter, { lineWidth: 0 })}---\n${doc.body}`;
+  return `---\n${stringify(frontmatter, { lineWidth: 0 })}---\n${body}`;
 }
 
 /**
  * A deliberately independent renderer used by the unit tests. It reads the
  * same source shape as the real renderer and writes Claude Code agent files.
- * Modes simulate the failure classes the port exists to catch.
+ * Modes simulate the failure classes the port exists to catch, including every
+ * way a renderer can weaken or invent a permission.
  */
 export class FakeRenderTarget implements RenderTarget {
   readonly name: RenderTargetName = 'claudecode';
 
-  constructor(private readonly mode: FakeMode = { kind: 'ok' }) {}
+  constructor(
+    private readonly mode: FakeMode = { kind: 'ok' },
+    private readonly identityOverride?: RendererIdentity,
+  ) {}
 
   identity(): RendererIdentity {
-    return {
-      name: 'fake-renderer',
-      version: '0.0.0-test',
-      integrity: 'sha512-fake',
-    };
+    return (
+      this.identityOverride ?? {
+        name: 'fake-renderer',
+        version: '0.0.0-test',
+        integrity: 'sha512-fake',
+      }
+    );
   }
 
   async generate(request: RenderRequest): Promise<RenderResult> {
@@ -79,23 +93,57 @@ export class FakeRenderTarget implements RenderTarget {
     const agentsDir = join(request.outputRoot, '.claude', 'agents');
     await mkdir(agentsDir, { recursive: true });
 
+    if (mode.kind === 'list-only') {
+      return {
+        target: request.target,
+        files: docs.map((doc) => `.claude/agents/${doc.name}.md`).sort(compareCodepoints),
+        sourceLoadFailed: false,
+      };
+    }
+
+    const swapFrom = mode.kind === 'swap-tools' ? mode.from : undefined;
+    const donor = swapFrom === undefined ? undefined : docs.find((doc) => doc.name === swapFrom);
     const files: string[] = [];
     for (const doc of docs) {
       if (mode.kind === 'drop-file' && mode.persona === doc.name) {
         continue;
       }
       let body = doc.body;
+      const block: ClaudeBlock = { ...claudeBlock(doc) };
       if (mode.kind === 'drop-body' && mode.persona === doc.name) {
         body = '';
       }
       if (mode.kind === 'leak' && mode.into === doc.name) {
-        const donor = docs.find((candidate) => candidate.name === mode.from);
-        if (donor !== undefined) {
-          body = `${body}\n${donor.body}`;
+        const donorDoc = docs.find((candidate) => candidate.name === mode.from);
+        if (donorDoc !== undefined) {
+          body = `${body}\n${donorDoc.body}`;
         }
       }
+      if (mode.kind === 'drop-tools' && mode.persona === doc.name) {
+        delete block.tools;
+      }
+      if (mode.kind === 'drop-deny' && mode.persona === doc.name) {
+        delete block.disallowedTools;
+      }
+      if (mode.kind === 'swap-tools' && mode.into === doc.name && donor !== undefined) {
+        const donorBlock = claudeBlock(donor);
+        if (donorBlock.tools === undefined) {
+          delete block.tools;
+        } else {
+          block.tools = donorBlock.tools;
+        }
+        if (donorBlock.disallowedTools === undefined) {
+          delete block.disallowedTools;
+        } else {
+          block.disallowedTools = donorBlock.disallowedTools;
+        }
+      }
+      if (mode.kind === 'inject-body' && mode.persona === doc.name) {
+        body = `${body}\n${mode.text}\n`;
+      }
       const path = `.claude/agents/${doc.name}.md`;
-      await writeFile(join(request.outputRoot, path), renderAgent({ ...doc, body }), 'utf8');
+      const value = mode.kind === 'empty' ? '' : renderAgent(doc, block, body);
+      await writeFile(join(request.outputRoot, path), value, 'utf8');
       files.push(path);
     }
 

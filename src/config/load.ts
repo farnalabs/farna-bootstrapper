@@ -4,6 +4,7 @@ import { ZodError } from 'zod';
 import { CONFIG_FILE, ROOT_DIR } from '../core/constants.js';
 import { invalidConfig } from '../core/errors.js';
 import { parseJsonc } from '../core/json.js';
+import { assertRealDirectory, assertRealFile } from '../core/paths.js';
 import { type Config, configSchema } from './schema.js';
 
 export function configPath(repoRoot: string): string {
@@ -26,6 +27,8 @@ function describeZodError(error: ZodError): { message: string; pointer?: string 
 export async function loadConfig(repoRoot: string): Promise<Config> {
   const path = configPath(repoRoot);
   const relative = `${ROOT_DIR}/${CONFIG_FILE}`;
+  await assertRealDirectory(join(repoRoot, ROOT_DIR), ROOT_DIR);
+  await assertRealFile(path, relative);
   let text: string;
   try {
     text = await readFile(path, 'utf8');

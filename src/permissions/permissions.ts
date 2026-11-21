@@ -203,28 +203,22 @@ export function mapPermissions(
     }
   }
 
-  const entries = new Map<string, { value: 'allow' | 'deny'; sources: Set<string> }>();
-  const record = (entry: string, value: 'allow' | 'deny', source: string): void => {
+  const entries = new Map<string, 'allow' | 'deny'>();
+  const record = (entry: string, value: 'allow' | 'deny'): void => {
     const existing = entries.get(entry);
     if (existing === undefined) {
-      entries.set(entry, { value, sources: new Set([source]) });
+      entries.set(entry, value);
       return;
     }
-    existing.sources.add(source);
-    if (existing.value !== value) {
-      // Only allow and deny reach here, so the loser is always the allow: a
-      // deny has taken an allow away, which is the medium-severity case.
-      warnings.push(
-        warning({
-          code: 'W106_DENY_WINS',
-          persona: context.persona,
-          target: context.target,
-          capability: 'permission',
-          severity: 'medium',
-          message: `deny wins for "${entry}": permission/${[...existing.sources].join(', permission/')}`,
-        }),
+    if (existing !== value) {
+      // Unreachable by construction: every mapped category has its own tool
+      // name and every pattern entry carries its own `Tool(P)` spelling, so no
+      // two mapping sites can disagree about one entry. Deny-wins is enforced
+      // earlier, per category and per pattern, by mergeWinner. If a future
+      // mapping table breaks that invariant, fail loudly rather than guess.
+      throw new Error(
+        `internal invariant violated: permission entry "${entry}" was recorded as both allow and deny`,
       );
-      existing.value = 'deny';
     }
   };
 
@@ -246,7 +240,7 @@ export function mapPermissions(
       );
     }
     const tool = CLAUDE_TOOL_BY_CATEGORY[category as keyof typeof CLAUDE_TOOL_BY_CATEGORY];
-    record(tool, value === 'allow' ? 'allow' : 'deny', declared.source);
+    record(tool, value === 'allow' ? 'allow' : 'deny');
   }
 
   for (const category of PERMISSION_CATEGORIES) {
@@ -255,6 +249,12 @@ export function mapPermissions(
       continue;
     }
     const tool = CLAUDE_TOOL_BY_CATEGORY[category as keyof typeof CLAUDE_TOOL_BY_CATEGORY];
+    // Resolve the category before its patterns: an allow pattern under a
+    // category that resolves deny would contradict the bare tool entry in the
+    // same file. The harness, not this tool, would decide which wins.
+    const categoryValue = resolved.values[category]?.value;
+    const categoryEmitted =
+      categoryValue === 'deny' || categoryValue === 'ask' ? 'deny' : categoryValue;
     for (const [pattern, declared] of Object.entries(patterns)) {
       const value = declared.value === 'ask' ? 'deny' : declared.value;
       if (declared.value === 'ask') {
@@ -268,18 +268,27 @@ export function mapPermissions(
           }),
         );
       }
-      record(patternEntry(tool, pattern), value === 'allow' ? 'allow' : 'deny', declared.source);
+      if (value === 'allow' && categoryEmitted === 'deny') {
+        warnings.push(
+          warning({
+            code: 'W106_DENY_WINS',
+            persona: context.persona,
+            target: context.target,
+            capability: 'permission',
+            severity: 'medium',
+            message: `${category} resolves deny, so the allow pattern "${pattern}" is not emitted: permission/${declared.source}`,
+          }),
+        );
+        continue;
+      }
+      record(patternEntry(tool, pattern), value);
     }
   }
 
   const allow: string[] = [];
   const deny: string[] = [];
   for (const entry of [...entries.keys()].sort(compareCodepoints)) {
-    const resolvedEntry = entries.get(entry);
-    if (resolvedEntry === undefined) {
-      continue;
-    }
-    (resolvedEntry.value === 'allow' ? allow : deny).push(entry);
+    (entries.get(entry) === 'allow' ? allow : deny).push(entry);
   }
   return { entries: { allow, deny }, warnings };
 }

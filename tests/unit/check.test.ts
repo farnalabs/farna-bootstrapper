@@ -1,10 +1,12 @@
-import { appendFile, rm, writeFile } from 'node:fs/promises';
+import { appendFile, readFile, rename, rm, symlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { runCheck } from '../../src/cli/commands/check.js';
 import { runGenerate } from '../../src/cli/commands/generate.js';
 import { FakeRenderTarget } from '../support/fake-renderer.js';
-import { createTempRepo, hashTree } from '../support/temp-repo.js';
+import { createEmptyTempDir, createTempRepo, hashTree } from '../support/temp-repo.js';
+
+const skipSymlinks = process.platform === 'win32';
 
 async function generatedRepo(): Promise<{ root: string; cleanup: () => Promise<void> }> {
   const repo = await createTempRepo();
@@ -93,6 +95,75 @@ describe('check', () => {
       expect(result.drift.map((item) => item.path)).toContain('.farna/lock.json');
     } finally {
       await repo.cleanup();
+    }
+  });
+
+  it.skipIf(skipSymlinks)('reports a stray symlink in .claude/agents as unexpected', async () => {
+    const repo = await generatedRepo();
+    const outside = await createEmptyTempDir();
+    try {
+      const target = join(outside.root, 'passwd');
+      await writeFile(target, 'root:x:0:0\n', 'utf8');
+      await symlink(target, join(repo.root, '.claude/agents/evil.md'), 'file');
+      const result = await runCheck(repo.root, new FakeRenderTarget());
+      expect(result.ok).toBe(false);
+      expect(result.drift).toEqual([
+        {
+          code: 'F007_DRIFT',
+          path: '.claude/agents/evil.md',
+          kind: 'unexpected',
+          detail: 'path is not a regular managed file',
+        },
+      ]);
+    } finally {
+      await repo.cleanup();
+      await outside.cleanup();
+    }
+  });
+
+  it.skipIf(skipSymlinks)(
+    'treats a managed file replaced by a symlink as drift, not a match',
+    async () => {
+      const repo = await generatedRepo();
+      const outside = await createEmptyTempDir();
+      try {
+        const managed = join(repo.root, '.claude/agents/builder.md');
+        const target = join(outside.root, 'builder.md');
+        // The bytes match, so only an lstat can tell the difference.
+        await writeFile(target, await readFile(managed, 'utf8'), 'utf8');
+        await rm(managed);
+        await symlink(target, managed, 'file');
+        const result = await runCheck(repo.root, new FakeRenderTarget());
+        expect(result.ok).toBe(false);
+        expect(result.drift).toEqual([
+          {
+            code: 'F007_DRIFT',
+            path: '.claude/agents/builder.md',
+            kind: 'modified',
+            detail: 'managed path is not a regular file',
+          },
+        ]);
+      } finally {
+        await repo.cleanup();
+        await outside.cleanup();
+      }
+    },
+  );
+
+  it.skipIf(skipSymlinks)('refuses to read through a symlinked .claude/agents', async () => {
+    const repo = await generatedRepo();
+    const outside = await createEmptyTempDir();
+    try {
+      const agents = join(repo.root, '.claude/agents');
+      const target = join(outside.root, 'agents');
+      await rename(agents, target);
+      await symlink(target, agents, 'dir');
+      await expect(runCheck(repo.root, new FakeRenderTarget())).rejects.toMatchObject({
+        code: 'F003_PATH_UNSAFE',
+      });
+    } finally {
+      await repo.cleanup();
+      await outside.cleanup();
     }
   });
 });

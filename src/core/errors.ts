@@ -68,3 +68,11 @@ export function rendererMismatch(message: string, options: FarnaErrorOptions = {
 export function permissionUnmapped(message: string, options: FarnaErrorOptions = {}): FarnaError {
   return new FarnaError('F011_PERMISSION_UNMAPPED', message, options);
 }
+
+/**
+ * The verified managed set could not be written. The tree is left as it was;
+ * the subject names the path that could not be staged.
+ */
+export function writeFailed(message: string, options: FarnaErrorOptions = {}): FarnaError {
+  return new FarnaError('F012_WRITE_FAILED', message, options);
+}

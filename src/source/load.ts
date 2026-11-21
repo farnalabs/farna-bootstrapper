@@ -11,6 +11,7 @@ import {
 } from '../core/constants.js';
 import { conflict, invalidConfig, pathUnsafe } from '../core/errors.js';
 import { compareCodepoints, parseJsonc } from '../core/json.js';
+import { assertRealDirectory } from '../core/paths.js';
 import { permissionResourceDigest } from '../permissions/permissions.js';
 import { splitFrontmatter } from './frontmatter.js';
 import {
@@ -70,6 +71,12 @@ async function listEntries(
   subject: string,
   options: { optional?: boolean } = {},
 ): Promise<Dirent[]> {
+  // The directory itself is checked before it is listed: a symlinked
+  // `.farna/personas` would otherwise compile personas from anywhere on disk.
+  const stats = await assertRealDirectory(path, subject);
+  if (stats === undefined && options.optional === true) {
+    return [];
+  }
   let entries: Dirent[];
   try {
     entries = await readdir(path, { withFileTypes: true });
@@ -275,22 +282,10 @@ async function loadPermissions(repoRoot: string): Promise<PermissionResource[]> 
 }
 
 function assertUniqueIds(source: SourceTree): void {
-  const personaIds = new Set<string>();
-  for (const persona of source.personas) {
-    if (personaIds.has(persona.id)) {
-      throw conflict(`two personas share the id "${persona.id}"`, { subject: persona.path });
-    }
-    personaIds.add(persona.id);
-  }
-  const displayNames = new Set<string>();
-  for (const persona of source.personas) {
-    if (displayNames.has(persona.displayName)) {
-      throw invalidConfig(`duplicate displayName "${persona.displayName}"`, {
-        subject: persona.path,
-      });
-    }
-    displayNames.add(persona.displayName);
-  }
+  // A persona id cannot collide: `loadPersonas` requires `id` to equal the
+  // file stem, and one directory cannot hold two files with one stem. The
+  // display name is a human label and is deliberately not constrained: two
+  // personas may share a label while keeping distinct ids.
   const ruleIds = new Set<string>();
   for (const rule of source.rules) {
     if (ruleIds.has(rule.id)) {
@@ -302,6 +297,9 @@ function assertUniqueIds(source: SourceTree): void {
 
 /** Enumerate and parse the whole source tree. A file that is present but unparsed is an error. */
 export async function loadSource(repoRoot: string): Promise<SourceTree> {
+  // The source root itself is checked first: a symlinked `.farna` is refused
+  // even though its contents would list perfectly.
+  await assertRealDirectory(join(repoRoot, ROOT_DIR), ROOT_DIR);
   await assertSupportedResourceDirs(repoRoot);
   const personas = (await loadPersonas(repoRoot)).sort((a, b) => compareCodepoints(a.id, b.id));
   const rules = (await loadRules(repoRoot)).sort((a, b) => compareCodepoints(a.id, b.id));

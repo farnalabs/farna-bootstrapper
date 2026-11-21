@@ -1,8 +1,9 @@
 import { readdir } from 'node:fs/promises';
 import { join, relative, sep } from 'node:path';
 import { generate } from 'rulesync';
-import { renderFailed } from '../core/errors.js';
+import { rendererMismatch, renderFailed } from '../core/errors.js';
 import { compareCodepoints } from '../core/json.js';
+import { installedRendererIdentity } from './identity.js';
 import type {
   RendererIdentity,
   RenderRequest,
@@ -12,8 +13,10 @@ import type {
 } from './port.js';
 
 /**
- * The pinned renderer. `checksums` records the tarball integrity the design
- * measured; a contract test asserts this matches the installed package.
+ * The pinned renderer. The version and integrity the lockfile records are read
+ * from the installed package; this constant is the pin they are checked
+ * against, so a swapped or patched renderer fails loudly instead of silently
+ * producing bytes under the pinned name.
  */
 export const RENDERER_PIN: RendererIdentity = {
   name: 'rulesync',
@@ -21,6 +24,27 @@ export const RENDERER_PIN: RendererIdentity = {
   integrity:
     'sha512-P9YtvLVkUsSAfdU2zvh2CFGkikTT3/frT5dajHU+S1YoYxsd+NHF9sjN2f7jSWAbKMXKRWBLw75g4vobCClZYQ==',
 };
+
+function assertPinned(identity: RendererIdentity): void {
+  if (identity.version !== RENDERER_PIN.version) {
+    throw rendererMismatch(
+      `the installed ${identity.name} is ${identity.version} but this build pins ${RENDERER_PIN.version}`,
+      {
+        subject: identity.name,
+        action: 're-install dependencies from the lockfile, or upgrade farna-bootstrapper',
+      },
+    );
+  }
+  if (identity.integrity !== undefined && identity.integrity !== RENDERER_PIN.integrity) {
+    throw rendererMismatch(
+      `the installed ${identity.name} has integrity ${identity.integrity} but this build pins ${RENDERER_PIN.integrity ?? 'none'}`,
+      {
+        subject: identity.name,
+        action: 're-install dependencies from the lockfile; a replaced renderer is refused',
+      },
+    );
+  }
+}
 
 async function walk(root: string, current = root): Promise<string[]> {
   const entries = await readdir(current, { withFileTypes: true });
@@ -43,12 +67,15 @@ async function walk(root: string, current = root): Promise<string[]> {
  */
 export class UpstreamRenderTarget implements RenderTarget {
   readonly name: RenderTargetName = 'claudecode';
+  private cachedIdentity: RendererIdentity | undefined;
 
   identity(): RendererIdentity {
-    return { ...RENDERER_PIN };
+    this.cachedIdentity ??= installedRendererIdentity(RENDERER_PIN.name);
+    return { ...this.cachedIdentity };
   }
 
   async generate(request: RenderRequest): Promise<RenderResult> {
+    assertPinned(this.identity());
     let result: Awaited<ReturnType<typeof generate>>;
     try {
       result = await generate({

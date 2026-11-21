@@ -106,6 +106,31 @@ describe('permission mapping', () => {
     expect(codes(warnings)).not.toContain('W106_DENY_WINS');
   });
 
+  it('does not emit an allow pattern under a category that resolves deny', () => {
+    const { entries, warnings } = map({ shell: 'deny' }, { shell: { 'pytest *': 'allow' } });
+    expect(entries.allow).toEqual([]);
+    expect(entries.deny).toEqual(['Bash']);
+    const denyWins = warnings.filter((entry) => entry.code === 'W106_DENY_WINS');
+    expect(denyWins).toHaveLength(1);
+    expect(denyWins[0]?.message).toContain('pytest *');
+  });
+
+  it('drops an allow pattern when the category ask is downgraded to deny', () => {
+    const { entries, warnings } = map({ write: 'ask' }, { write: { 'src/**': 'allow' } });
+    expect(entries.allow).toEqual([]);
+    expect(entries.deny).toEqual(['Write']);
+    expect(warnings.filter((entry) => entry.code === 'W111_ASK_DOWNGRADED')).toHaveLength(1);
+    const denyWins = warnings.filter((entry) => entry.code === 'W106_DENY_WINS');
+    expect(denyWins).toHaveLength(1);
+    expect(denyWins[0]?.message).toContain('src/**');
+  });
+
+  it('keeps a deny pattern under an allow category, which is not self-contradictory', () => {
+    const { entries } = map({ edit: 'allow' }, { edit: { 'src/**': 'deny' } });
+    expect(entries.allow).toEqual(['Edit']);
+    expect(entries.deny).toEqual(['Edit(src/**)']);
+  });
+
   it('refuses network with F011, naming the category and the target', () => {
     try {
       map({ network: 'allow' });

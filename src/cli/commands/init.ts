@@ -1,4 +1,4 @@
-import { mkdir, readFile, stat, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rename, rm, rmdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import {
   CONFIG_FILE,
@@ -8,7 +8,8 @@ import {
   ROOT_DIR,
   RULES_DIR,
 } from '../../core/constants.js';
-import { invalidConfig } from '../../core/errors.js';
+import { FarnaError, invalidConfig } from '../../core/errors.js';
+import { assertRealDirectory, lstatOrUndefined } from '../../core/paths.js';
 
 export type InitResult = {
   ok: true;
@@ -30,51 +31,158 @@ const CONFIG_TEMPLATE = `{
 
 const GITIGNORE_LINES = ['.farna/local.jsonc', '.farna/.journal.json'];
 
-async function exists(path: string): Promise<boolean> {
-  try {
-    await stat(path);
-    return true;
-  } catch (error) {
-    if (error instanceof Error && 'code' in error && error.code === 'ENOENT') {
-      return false;
-    }
-    throw error;
-  }
+/** The line ending the existing file already uses; a new file uses LF. */
+function detectLineEnding(text: string): string {
+  const crlf = text.split('\r\n').length - 1;
+  const lf = text.split('\n').length - 1 - crlf;
+  return crlf > lf ? '\r\n' : '\n';
 }
 
-async function updateGitignore(repoRoot: string): Promise<void> {
-  const path = join(repoRoot, '.gitignore');
-  const existing = (await exists(path)) ? await readFile(path, 'utf8') : '';
-  const lines = existing.split('\n').map((line) => line.trim());
+async function preflightGitignore(path: string): Promise<string | undefined> {
+  const stats = await lstatOrUndefined(path);
+  if (stats === undefined) {
+    return undefined;
+  }
+  if (stats.isSymbolicLink()) {
+    throw invalidConfig('cannot update .gitignore: it is a symbolic link', {
+      subject: '.gitignore',
+      action: 'replace the symbolic link with a regular file',
+    });
+  }
+  if (!stats.isFile()) {
+    throw invalidConfig('cannot update .gitignore: it is not a regular file', {
+      subject: '.gitignore',
+      action: 'replace it with a regular file, or remove it',
+    });
+  }
+  return readFile(path, 'utf8');
+}
+
+function nextGitignore(existing: string): string | undefined {
+  const eol = detectLineEnding(existing);
+  const lines = existing.split(/\r?\n/).map((line) => line.trim());
   const missing = GITIGNORE_LINES.filter((line) => !lines.includes(line));
   if (missing.length === 0) {
-    return;
+    return undefined;
   }
-  const prefix = existing === '' || existing.endsWith('\n') ? existing : `${existing}\n`;
-  await writeFile(path, `${prefix}${missing.join('\n')}\n`, 'utf8');
+  const prefix = existing === '' || existing.endsWith('\n') ? existing : `${existing}${eol}`;
+  return `${prefix}${missing.join(eol)}${eol}`;
+}
+
+async function writeGitignore(path: string, contents: string): Promise<void> {
+  const temporary = `${path}.farna-tmp-${process.pid}`;
+  try {
+    await writeFile(temporary, contents, 'utf8');
+    await rename(temporary, path);
+  } catch (error) {
+    await rm(temporary, { force: true });
+    throw invalidConfig('cannot update .gitignore', {
+      subject: '.gitignore',
+      action: 'make .gitignore writable and re-run init',
+      cause: error,
+    });
+  }
 }
 
 /**
  * Create the source root. Refuses to overwrite an existing config: `init` is
- * never destructive.
+ * never destructive. The whole command is atomic: the one write that can fail
+ * on an ordinary filesystem state (`.gitignore`) is preflighted before
+ * anything is created, and a failure after creation removes what this
+ * invocation created.
  */
 export async function runInit(repoRoot: string): Promise<InitResult> {
   const rootRelative = ROOT_DIR;
   const configRelative = `${ROOT_DIR}/${CONFIG_FILE}`;
   const configAbsolute = join(repoRoot, ROOT_DIR, CONFIG_FILE);
+  const gitignorePath = join(repoRoot, '.gitignore');
 
-  if (await exists(configAbsolute)) {
+  const existingConfig = await lstatOrUndefined(configAbsolute);
+  if (existingConfig !== undefined) {
     throw invalidConfig('a source root already exists', {
       subject: configRelative,
       action: 'edit the existing config, or remove it deliberately before re-initialising',
     });
   }
+  // Preflight every path this invocation will touch before creating anything.
+  await assertRealDirectory(join(repoRoot, ROOT_DIR), ROOT_DIR);
+  const gitignoreOriginal = await preflightGitignore(gitignorePath);
+  const gitignoreNext =
+    gitignoreOriginal === undefined
+      ? `${GITIGNORE_LINES.join('\n')}\n`
+      : nextGitignore(gitignoreOriginal);
 
-  await mkdir(join(repoRoot, ROOT_DIR, PERSONAS_DIR), { recursive: true });
-  await mkdir(join(repoRoot, ROOT_DIR, RESOURCES_DIR, RULES_DIR), { recursive: true });
-  await mkdir(join(repoRoot, ROOT_DIR, RESOURCES_DIR, PERMISSIONS_DIR), { recursive: true });
-  await writeFile(configAbsolute, CONFIG_TEMPLATE, 'utf8');
-  await updateGitignore(repoRoot);
+  const createdDirectories: string[] = [];
+  const createdFiles: string[] = [];
+  let gitignoreWritten = false;
+
+  const ensureDirectory = async (path: string, subject: string): Promise<void> => {
+    const stats = await assertRealDirectory(path, subject);
+    if (stats === undefined) {
+      await mkdir(path);
+      createdDirectories.push(path);
+    }
+  };
+
+  const rollback = async (): Promise<void> => {
+    if (gitignoreWritten) {
+      try {
+        if (gitignoreOriginal === undefined) {
+          await rm(gitignorePath, { force: true });
+        } else {
+          await writeFile(gitignorePath, gitignoreOriginal, 'utf8');
+        }
+      } catch {
+        // Best effort: the typed error below still names the failing path.
+      }
+    }
+    for (const file of [...createdFiles].reverse()) {
+      try {
+        await rm(file, { force: true });
+      } catch {
+        // Best effort.
+      }
+    }
+    for (const directory of [...createdDirectories].reverse()) {
+      try {
+        await rmdir(directory);
+      } catch {
+        // A non-empty directory means something other than init wrote to it.
+      }
+    }
+  };
+
+  try {
+    await ensureDirectory(join(repoRoot, ROOT_DIR), ROOT_DIR);
+    await ensureDirectory(join(repoRoot, ROOT_DIR, PERSONAS_DIR), `${ROOT_DIR}/${PERSONAS_DIR}`);
+    await ensureDirectory(join(repoRoot, ROOT_DIR, RESOURCES_DIR), `${ROOT_DIR}/${RESOURCES_DIR}`);
+    await ensureDirectory(
+      join(repoRoot, ROOT_DIR, RESOURCES_DIR, RULES_DIR),
+      `${ROOT_DIR}/${RESOURCES_DIR}/${RULES_DIR}`,
+    );
+    await ensureDirectory(
+      join(repoRoot, ROOT_DIR, RESOURCES_DIR, PERMISSIONS_DIR),
+      `${ROOT_DIR}/${RESOURCES_DIR}/${PERMISSIONS_DIR}`,
+    );
+
+    createdFiles.push(configAbsolute);
+    await writeFile(configAbsolute, CONFIG_TEMPLATE, 'utf8');
+
+    if (gitignoreNext !== undefined) {
+      await writeGitignore(gitignorePath, gitignoreNext);
+      gitignoreWritten = true;
+    }
+  } catch (error) {
+    await rollback();
+    if (error instanceof FarnaError) {
+      throw error;
+    }
+    const message = error instanceof Error ? error.message : String(error);
+    throw invalidConfig(`init could not complete: ${message}`, {
+      subject: ROOT_DIR,
+      cause: error,
+    });
+  }
 
   return {
     ok: true,
