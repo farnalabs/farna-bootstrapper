@@ -125,13 +125,15 @@ export type Lockfile = z.infer<typeof lockfileSchema>;
  * its resolved resource ids and its permission digest; every value is derived,
  * never timestamped. The renderer identity is the build's pin (see
  * `prepareRender`), so the bytes are identical on two machines with the same
- * source and toolchain except when a renderer-level warning such as `W114`
- * records what this machine could not verify. The lockfile does not list
- * itself.
+ * source and toolchain.
  *
- * `warnings` is the full set for the run, source warnings plus renderer-level
- * warnings; it is passed in rather than read from `source` so a warning about
- * the renderer itself is recorded in `warnings[]` too.
+ * `warnings` is the source-derived warning set only. A renderer-level warning
+ * (such as `W114_RENDERER_INTEGRITY_UNVERIFIED`) is evidence about the machine
+ * that ran, not about the source, so `prepareRender` keeps it out of this
+ * document: writing it here made a verified and an unverified machine produce
+ * different lockfile bytes for the same source, and `check` reported drift for
+ * a tree whose source had not changed. The command still reports it. The
+ * lockfile does not list itself.
  */
 export function buildLockfile(
   source: ResolvedSource,

@@ -119,7 +119,17 @@ export async function prepareRender(
     const files: RenderedFile[] = [...verified.entries()]
       .map(([path, bytes]) => ({ path, bytes }))
       .sort((a, b) => compareCodepoints(a.path, b.path));
-    const lock = buildLockfile(source, lockfileRenderer(renderer), files, warnings);
+    // The lockfile records source-derived state only. A renderer-level warning
+    // such as `W114` is runtime verification evidence about THIS machine, so it
+    // is reported by the command but never written into the byte-compared
+    // artefact: a verified and an unverified machine with the same source must
+    // produce the same `.farna/lock.json`.
+    const lock = buildLockfile(
+      source,
+      lockfileRenderer(renderer),
+      files,
+      sortWarnings(source.warnings),
+    );
     files.push({ path: LOCK_PATH, bytes: serialiseLockfile(lock) });
     files.sort((a, b) => compareCodepoints(a.path, b.path));
     return { source, files, warnings };

@@ -1,6 +1,6 @@
 import { closeSync, constants, fstatSync, openSync, readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
-import { basename, dirname, isAbsolute, join, relative } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative, sep } from 'node:path';
 import { LOCKFILE_MAX_BYTES, NPM_LOCKFILE_MAX_BYTES, PRODUCT_NAME } from '../core/constants.js';
 import { FarnaError, rendererMismatch } from '../core/errors.js';
 import type { RecordedIntegrity, RendererIdentity } from './port.js';
@@ -231,6 +231,139 @@ function integrityFromLock(lock: JsonObject | undefined, name: string): LockLook
   return best === undefined ? { found } : { found: true, integrity: best.integrity };
 }
 
+/** This package's path relative to `directory`, in npm's slash-spelled key form. */
+function relativeLockKey(directory: string, packageDir: string): string {
+  return relative(directory, packageDir).split(sep).join('/');
+}
+
+/**
+ * The renderer's entry keyed by its path relative to a lockfile's directory.
+ *
+ * An ancestor lockfile — the workspace root of an npm workspace install, or the
+ * project record one level above the renderer's own install root — writes the
+ * same package under exactly this key: `packages/<workspace>/node_modules/<name>`
+ * for a workspace member, `node_modules/<name>` for a hoisted install. The
+ * suffix search in `integrityFromLock` cannot be used here, because an ancestor
+ * may also record a *different* member's renderer
+ * (`packages/other/node_modules/<name>`); accepting that entry would refuse a
+ * healthy install with a foreign integrity. Requiring the exact relative key
+ * means a value is only taken from a record that genuinely describes this
+ * package.
+ */
+function integrityAtKey(lock: JsonObject | undefined, key: string): LockLookup {
+  const packages = lock?.['packages'];
+  if (packages === null || typeof packages !== 'object' || Array.isArray(packages)) {
+    return { found: false };
+  }
+  const value = (packages as JsonObject)[key];
+  if (value === undefined) {
+    return { found: false };
+  }
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    return { found: true };
+  }
+  const integrity = (value as JsonObject)['integrity'];
+  return typeof integrity === 'string' ? { found: true, integrity } : { found: true };
+}
+
+/**
+ * Read a lock record from an ancestor directory, where the file's relevance is
+ * not established yet. Absent, unreadable or oversized records yield
+ * `undefined`: above the renderer's own install root a file that cannot be read
+ * cannot be shown to describe this install, so it is not a refusal. Only the
+ * install's own records go through `readLockRecord`, which refuses a
+ * present-but-unreadable one with `F010`.
+ */
+function tryReadLockRecord(path: string): JsonObject | undefined {
+  try {
+    return readLockRecord(path);
+  } catch {
+    return undefined;
+  }
+}
+
+/** How many ancestors the workspace-root search climbs before giving up. */
+const WORKSPACE_WALK_MAX_DEPTH = 16;
+
+/**
+ * True when a package manifest declares npm workspaces, in either the array
+ * form (`"workspaces": ["packages/*"]`) or the object form
+ * (`"workspaces": { "packages": [...] }`).
+ */
+function declaresWorkspaces(directory: string): boolean {
+  const manifest = readJson(join(directory, 'package.json'));
+  const value = manifest?.['workspaces'];
+  if (Array.isArray(value)) {
+    return value.length > 0;
+  }
+  return value !== null && typeof value === 'object';
+}
+
+/**
+ * The workspace root of an npm workspace install: the nearest ancestor of the
+ * renderer's install root whose `package.json` declares `workspaces`.
+ *
+ * Only `package.json` is read on the way up, never an ancestor's lockfile, so a
+ * search that finds nothing costs nothing and reads no other install's record.
+ * The search stops at its first hit, which is the outermost directory that can
+ * legitimately describe this package — the walk never climbs past the workspace
+ * root into an unrelated parent monorepo.
+ */
+function workspaceRootFor(installRoot: string): string | undefined {
+  let current = installRoot;
+  for (let depth = 0; depth < WORKSPACE_WALK_MAX_DEPTH; depth += 1) {
+    const parent = dirname(current);
+    if (parent === current) {
+      return undefined;
+    }
+    if (declaresWorkspaces(parent)) {
+      return parent;
+    }
+    current = parent;
+  }
+  return undefined;
+}
+
+/**
+ * The renderer's record from the workspace/install root, for a real npm
+ * workspace install. npm writes the workspace member's dependencies under the
+ * member's own path in the root lockfile
+ * (`packages/foo/node_modules/<renderer>`), so the project walk that stops at
+ * the member's install root never reaches it and a present record looked
+ * absent.
+ *
+ * Two ancestor locations are consulted, nearest first: the directory directly
+ * above the member's install root (a plain project whose own lockfile records
+ * the member), and the workspace root. Only an entry keyed by this package's
+ * exact relative path is accepted (see `integrityAtKey`).
+ */
+function readWorkspaceRecord(packageDir: string, installRoot: string): LockLookup {
+  const roots: string[] = [];
+  const immediate = dirname(installRoot);
+  if (immediate !== installRoot) {
+    roots.push(immediate);
+  }
+  const workspaceRoot = workspaceRootFor(installRoot);
+  if (workspaceRoot !== undefined && !roots.includes(workspaceRoot)) {
+    roots.push(workspaceRoot);
+  }
+  let sawEntry = false;
+  for (const root of roots) {
+    const key = relativeLockKey(root, packageDir);
+    for (const candidate of [
+      join(root, 'node_modules', '.package-lock.json'),
+      join(root, 'package-lock.json'),
+    ]) {
+      const lookup = integrityAtKey(tryReadLockRecord(candidate), key);
+      if (lookup.integrity !== undefined) {
+        return lookup;
+      }
+      sawEntry = sawEntry || lookup.found;
+    }
+  }
+  return { found: sawEntry };
+}
+
 /**
  * The install root that bounds the project-lockfile walk: the package at the
  * top of the renderer's `node_modules` chain. In a hoisted install the renderer
@@ -305,7 +438,13 @@ function installRootFor(packageDir: string): string {
  *
  * The project-lockfile walk stops at the install root (the top of the renderer's
  * `node_modules` chain, so a nested install reaches the project record) and
- * never reads an unrelated lockfile above it.
+ * never reads an unrelated lockfile above it. When that bounded walk finds no
+ * entry, the workspace/install root is consulted once (see
+ * `readWorkspaceRecord`), because an npm workspace records a member's
+ * dependencies under the member's path in the workspace root lockfile. That
+ * lookup is bounded at the workspace root and only accepts an entry keyed by
+ * this package's exact relative path, so a parent monorepo's own record can
+ * never be mistaken for this install's.
  *
  * The result is structured, never `undefined` for both "no record" and "no
  * usable entry". The renderer identity policy reports those as `W114` and names
@@ -354,6 +493,11 @@ export function readRecordedIntegrity(packageDir: string, name: string): Recorde
     }
     current = parent;
   }
+  const fromWorkspace = readWorkspaceRecord(packageDir, installRoot);
+  if (fromWorkspace.integrity !== undefined) {
+    return { verified: true, integrity: fromWorkspace.integrity };
+  }
+  sawEntry = sawEntry || fromWorkspace.found;
   return sawEntry
     ? { verified: false, reason: 'no-integrity' }
     : { verified: false, reason: 'no-record' };

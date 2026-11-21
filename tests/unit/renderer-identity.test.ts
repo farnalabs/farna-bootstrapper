@@ -131,9 +131,10 @@ describe('renderer identity verification', () => {
     }
   });
 
-  it('produces a byte-identical lockfile when each machine verified its install', async () => {
+  it('produces a byte-identical lockfile across verified and unverified installs', async () => {
     const first = await createTempRepo();
     const second = await createTempRepo();
+    const third = await createTempRepo();
     try {
       await runGenerate(
         { cwd: first.root, dryRun: false },
@@ -143,12 +144,20 @@ describe('renderer identity verification', () => {
         { cwd: second.root, dryRun: false },
         new FakeRenderTarget({ kind: 'ok' }, { ...PIN, integrity: 'sha512-machine-b' }, PIN),
       );
-      expect(await readFile(join(first.root, '.farna/lock.json'), 'utf8')).toBe(
-        await readFile(join(second.root, '.farna/lock.json'), 'utf8'),
+      const unverified = await runGenerate(
+        { cwd: third.root, dryRun: false },
+        new FakeRenderTarget({ kind: 'ok' }, WITHOUT_INTEGRITY, PIN),
       );
+      expect(unverified.warnings.map((entry) => entry.code)).toContain(W114);
+      const verifiedBytes = await readFile(join(first.root, '.farna/lock.json'), 'utf8');
+      expect(await readFile(join(second.root, '.farna/lock.json'), 'utf8')).toBe(verifiedBytes);
+      // The unverified machine reports W114, but that is runtime evidence and
+      // must not change the byte-compared artefact.
+      expect(await readFile(join(third.root, '.farna/lock.json'), 'utf8')).toBe(verifiedBytes);
     } finally {
       await first.cleanup();
       await second.cleanup();
+      await third.cleanup();
     }
   });
 
@@ -169,8 +178,8 @@ describe('renderer identity verification', () => {
   it('warns W114, and checks clean, when the installed identity carries no integrity', async () => {
     const repo = await createTempRepo();
     try {
-      // Both runs are unverified, so the lockfile's W114 records agree and the
-      // comparison is clean; only the warning distinguishes the run.
+      // The lockfile carries no W114 (see the test below), so this proves the
+      // warning is reported by the command while the bytes still verify.
       await runGenerate(
         { cwd: repo.root, dryRun: false },
         new FakeRenderTarget({ kind: 'ok' }, WITHOUT_INTEGRITY, PIN),
@@ -188,7 +197,7 @@ describe('renderer identity verification', () => {
     }
   });
 
-  it('records W114 in the lockfile when the install could not be verified', async () => {
+  it('reports W114 from the command but never records it in the lockfile', async () => {
     const repo = await createTempRepo();
     try {
       const result = await runGenerate(
@@ -197,12 +206,36 @@ describe('renderer identity verification', () => {
       );
       expect(result.warnings.map((entry) => entry.code)).toContain(W114);
       const lock = await readLockfile(repo.root);
-      const entry = lock?.warnings.find((candidate) => candidate.code === W114);
-      expect(entry).toMatchObject({ code: W114, severity: 'medium', persona: '<renderer>' });
-      expect(entry?.message).toContain('no npm lock record');
-      // The installed integrity is still recorded as the build's pin; W114
-      // records that this machine could not check it.
+      expect(lock?.warnings.map((entry) => entry.code)).not.toContain(W114);
+      expect(lock?.warnings).toHaveLength(0);
+      // The pin is still the recorded identity; W114 says this machine could
+      // not check it, and that belongs in the report, not the artefact.
       expect(lock?.renderer).toEqual(PIN);
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
+  it('checks clean in both directions across a verified and an unverified install', async () => {
+    const repo = await createTempRepo();
+    try {
+      // Generated on a machine that could not verify its install, so a
+      // verified machine must not see drift from the missing W114 record.
+      await runGenerate(
+        { cwd: repo.root, dryRun: false },
+        new FakeRenderTarget({ kind: 'ok' }, WITHOUT_INTEGRITY, PIN),
+      );
+      const verified = await runCheck(repo.root, new FakeRenderTarget({ kind: 'ok' }, PIN, PIN));
+      expect(verified.ok).toBe(true);
+      expect(verified.drift).toHaveLength(0);
+      expect(verified.warnings.map((entry) => entry.code)).not.toContain(W114);
+      const unverified = await runCheck(
+        repo.root,
+        new FakeRenderTarget({ kind: 'ok' }, WITHOUT_INTEGRITY, PIN),
+      );
+      expect(unverified.ok).toBe(true);
+      expect(unverified.drift).toHaveLength(0);
+      expect(unverified.warnings.map((entry) => entry.code)).toContain(W114);
     } finally {
       await repo.cleanup();
     }
@@ -751,6 +784,157 @@ describe('a nested install layout', () => {
       expect(rendererIntegrityWarning(installed)).toMatchObject({ code: W114 });
     } finally {
       await rm(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('an npm workspace install layout', () => {
+  // A real npm workspace records the member's dependencies under the member's
+  // own path in the workspace root lockfile:
+  // `packages/foo/node_modules/<renderer>`. The project walk stops at the
+  // member's install root (`packages/foo`), so before this lookup the record
+  // was never reached and a readable, differing integrity passed as W114.
+  const MEMBER = 'packages/foo';
+  const WORKSPACE_KEY = `${MEMBER}/node_modules/${RENDERER_PIN.name}`;
+
+  type WorkspaceLayout = { root: string; packageDir: string };
+
+  async function workspaceLayout(): Promise<WorkspaceLayout> {
+    const root = await mkdtemp(join(tmpdir(), 'fbs-workspace-'));
+    const packageDir = join(root, MEMBER, 'node_modules', RENDERER_PIN.name);
+    await mkdir(packageDir, { recursive: true });
+    await writeFile(
+      join(root, 'package.json'),
+      JSON.stringify({ name: 'monorepo', private: true, workspaces: ['packages/*'] }),
+      'utf8',
+    );
+    return { root, packageDir };
+  }
+
+  async function writeRecord(path: string, entries: Record<string, unknown>): Promise<void> {
+    await writeFile(path, JSON.stringify({ packages: entries }), 'utf8');
+  }
+
+  function installedFrom(record: ReturnType<typeof readRecordedIntegrity>): RendererIdentity {
+    return { name: RENDERER_PIN.name, version: RENDERER_PIN.version, integrityRecord: record };
+  }
+
+  it('finds the renderer under the member path in the workspace root lockfile', async () => {
+    const { root, packageDir } = await workspaceLayout();
+    try {
+      await writeRecord(join(root, 'package-lock.json'), {
+        [WORKSPACE_KEY]: { integrity: 'sha512-from-the-workspace-root' },
+      });
+      expect(readRecordedIntegrity(packageDir, RENDERER_PIN.name)).toEqual({
+        verified: true,
+        integrity: 'sha512-from-the-workspace-root',
+      });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('finds it in the workspace root hidden record too', async () => {
+    const { root, packageDir } = await workspaceLayout();
+    try {
+      await mkdir(join(root, 'node_modules'), { recursive: true });
+      await writeRecord(join(root, 'node_modules', '.package-lock.json'), {
+        [WORKSPACE_KEY]: { integrity: 'sha512-from-the-hidden-workspace-record' },
+      });
+      expect(readRecordedIntegrity(packageDir, RENDERER_PIN.name)).toEqual({
+        verified: true,
+        integrity: 'sha512-from-the-hidden-workspace-record',
+      });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('fails F010 for a workspace-local integrity that differs from the pin', async () => {
+    const { root, packageDir } = await workspaceLayout();
+    try {
+      await writeRecord(join(root, 'package-lock.json'), {
+        [WORKSPACE_KEY]: { integrity: 'sha512-DIFFERENT-NOT-THE-PIN' },
+      });
+      const record = readRecordedIntegrity(packageDir, RENDERER_PIN.name);
+      expect(record).toEqual({ verified: true, integrity: 'sha512-DIFFERENT-NOT-THE-PIN' });
+      if (!record.verified) {
+        throw new Error('expected the workspace record to be read');
+      }
+      expect(() =>
+        assertPinned({
+          name: RENDERER_PIN.name,
+          version: RENDERER_PIN.version,
+          integrity: record.integrity,
+        }),
+      ).toThrowError(expect.objectContaining({ code: 'F010_RENDERER_MISMATCH', exitCode: 5 }));
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('produces no W114 for a matching workspace-local integrity', async () => {
+    const { root, packageDir } = await workspaceLayout();
+    try {
+      if (RENDERER_PIN.integrity === undefined) {
+        throw new Error('the renderer pin must carry an integrity');
+      }
+      await writeRecord(join(root, 'package-lock.json'), {
+        [WORKSPACE_KEY]: { integrity: RENDERER_PIN.integrity },
+      });
+      const installed = installedFrom(readRecordedIntegrity(packageDir, RENDERER_PIN.name));
+      expect(() => assertPinned(installed)).not.toThrow();
+      expect(rendererIntegrityWarning(installed)).toBeUndefined();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('does not take another workspace member renderer entry', async () => {
+    // The workspace root records every member. Another member's renderer is a
+    // different copy, so reading it would compare this install against a
+    // foreign integrity and refuse a healthy tree.
+    const { root, packageDir } = await workspaceLayout();
+    try {
+      await writeRecord(join(root, 'package-lock.json'), {
+        [`packages/other/node_modules/${RENDERER_PIN.name}`]: { integrity: 'sha512-other-member' },
+      });
+      expect(readRecordedIntegrity(packageDir, RENDERER_PIN.name)).toEqual({
+        verified: false,
+        reason: 'no-record',
+      });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('stops at the workspace root and never reads a parent monorepo record', async () => {
+    // A different install above the real workspace root must never supply the
+    // integrity: its record describes its own tree, not this one.
+    const outer = await mkdtemp(join(tmpdir(), 'fbs-workspace-outer-'));
+    const root = join(outer, 'monorepo');
+    const packageDir = join(root, MEMBER, 'node_modules', RENDERER_PIN.name);
+    try {
+      await mkdir(packageDir, { recursive: true });
+      await writeFile(
+        join(root, 'package.json'),
+        JSON.stringify({ name: 'workspace', private: true, workspaces: ['packages/*'] }),
+        'utf8',
+      );
+      await writeFile(
+        join(outer, 'package.json'),
+        JSON.stringify({ name: 'outer', private: true, workspaces: ['monorepo'] }),
+        'utf8',
+      );
+      await writeRecord(join(outer, 'package-lock.json'), {
+        [`monorepo/${MEMBER}/node_modules/${RENDERER_PIN.name}`]: { integrity: 'sha512-outer' },
+      });
+      expect(readRecordedIntegrity(packageDir, RENDERER_PIN.name)).toEqual({
+        verified: false,
+        reason: 'no-record',
+      });
+    } finally {
+      await rm(outer, { recursive: true, force: true });
     }
   });
 });
