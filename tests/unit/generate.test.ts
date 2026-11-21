@@ -1,3 +1,5 @@
+import { appendFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { runGenerate } from '../../src/cli/commands/generate.js';
 import { FakeRenderTarget } from '../support/fake-renderer.js';
@@ -85,6 +87,38 @@ describe('generate with the injected renderer', () => {
         '.farna/lock.json',
       ]);
       expect(result.files.every((file) => file.status === 'would-write')).toBe(true);
+      expect(await hashTree(repo.root)).toBe(before);
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
+  it('dry-run reports unchanged on a tree that already matches a fresh render', async () => {
+    const repo = await createTempRepo();
+    try {
+      await runGenerate({ cwd: repo.root, dryRun: false }, new FakeRenderTarget());
+      const before = await hashTree(repo.root);
+      const result = await runGenerate({ cwd: repo.root, dryRun: true }, new FakeRenderTarget());
+      expect(result.files.map((file) => file.status)).toEqual([
+        'unchanged',
+        'unchanged',
+        'unchanged',
+      ]);
+      expect(await hashTree(repo.root)).toBe(before);
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
+  it('dry-run reports exactly the one edited file as would-write', async () => {
+    const repo = await createTempRepo();
+    try {
+      await runGenerate({ cwd: repo.root, dryRun: false }, new FakeRenderTarget());
+      await appendFile(join(repo.root, '.claude/agents/reviewer.md'), ' ', 'utf8');
+      const before = await hashTree(repo.root);
+      const result = await runGenerate({ cwd: repo.root, dryRun: true }, new FakeRenderTarget());
+      const changed = result.files.filter((file) => file.status === 'would-write');
+      expect(changed.map((file) => file.path)).toEqual(['.claude/agents/reviewer.md']);
       expect(await hashTree(repo.root)).toBe(before);
     } finally {
       await repo.cleanup();

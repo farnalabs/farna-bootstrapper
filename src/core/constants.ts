@@ -54,7 +54,8 @@ export type ErrorCode =
   | 'F008_DECLARED_NOT_EMITTED'
   | 'F009_RENDER_FAILED'
   | 'F010_RENDERER_MISMATCH'
-  | 'F011_PERMISSION_UNMAPPED';
+  | 'F011_PERMISSION_UNMAPPED'
+  | 'F012_WRITE_FAILED';
 
 /** Exit code per diagnostic code. The table lives here once. */
 export const EXIT_BY_CODE: Record<ErrorCode, ExitCode> = {
@@ -66,6 +67,7 @@ export const EXIT_BY_CODE: Record<ErrorCode, ExitCode> = {
   F009_RENDER_FAILED: EXIT.renderFailed,
   F010_RENDERER_MISMATCH: EXIT.renderFailed,
   F011_PERMISSION_UNMAPPED: EXIT.refused,
+  F012_WRITE_FAILED: EXIT.renderFailed,
 };
 
 export type Severity = 'error' | 'high' | 'medium' | 'low' | 'info';

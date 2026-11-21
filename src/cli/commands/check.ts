@@ -1,8 +1,12 @@
 import type { Dirent } from 'node:fs';
 import { readdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { CLAUDE_AGENTS_DIR } from '../../core/constants.js';
+import { CLAUDE_AGENTS_DIR, LOCK_FILE, ROOT_DIR } from '../../core/constants.js';
+import { invalidConfig } from '../../core/errors.js';
 import { compareCodepoints } from '../../core/json.js';
+import { assertNoSymlink, containedTarget, lstatOrUndefined } from '../../core/paths.js';
+import { readLockfile } from '../../lock/lockfile.js';
+import { verifyRendererIdentity } from '../../render/identity.js';
 import type { RenderTarget } from '../../render/port.js';
 import { prepareRender } from '../../render/prepare.js';
 import type { Warning } from '../../report/warnings.js';
@@ -25,21 +29,31 @@ export type CheckResult = {
   warnings: Warning[];
 };
 
-async function readOptional(path: string): Promise<string | undefined> {
-  try {
-    return await readFile(path, 'utf8');
-  } catch (error) {
-    if (error instanceof Error && 'code' in error && error.code === 'ENOENT') {
-      return undefined;
-    }
-    throw error;
-  }
-}
+type AgentEntry = { path: string; regular: boolean };
 
-async function listAgentsDir(repoRoot: string): Promise<string[]> {
+/**
+ * List `.claude/agents`. Nothing is filtered out: a directory, a symbolic link
+ * or a device node is an entry the managed set does not contain, so it is
+ * unexpected rather than invisible.
+ */
+async function listAgentEntries(repoRoot: string): Promise<AgentEntry[]> {
+  const claude = await assertNoSymlink(join(repoRoot, '.claude'), '.claude');
+  if (claude !== undefined && !claude.isDirectory()) {
+    throw invalidConfig('.claude is not a directory', { subject: '.claude' });
+  }
+  const dir = join(repoRoot, CLAUDE_AGENTS_DIR);
+  const stats = await assertNoSymlink(dir, CLAUDE_AGENTS_DIR);
+  if (stats === undefined) {
+    return [];
+  }
+  if (!stats.isDirectory()) {
+    throw invalidConfig(`${CLAUDE_AGENTS_DIR} is not a directory`, {
+      subject: CLAUDE_AGENTS_DIR,
+    });
+  }
   let entries: Dirent[];
   try {
-    entries = await readdir(join(repoRoot, CLAUDE_AGENTS_DIR), { withFileTypes: true });
+    entries = await readdir(dir, { withFileTypes: true });
   } catch (error) {
     if (error instanceof Error && 'code' in error && error.code === 'ENOENT') {
       return [];
@@ -47,22 +61,34 @@ async function listAgentsDir(repoRoot: string): Promise<string[]> {
     throw error;
   }
   return entries
-    .filter((entry) => entry.isFile() || entry.isDirectory())
-    .map((entry) => `${CLAUDE_AGENTS_DIR}/${entry.name}`)
-    .sort(compareCodepoints);
+    .map((entry) => ({
+      path: `${CLAUDE_AGENTS_DIR}/${entry.name}`,
+      regular: entry.isFile(),
+    }))
+    .sort((a, b) => compareCodepoints(a.path, b.path));
 }
 
 /**
  * Regenerate into a disposable stage and compare the result with the working
  * tree. Never writes. Exit 0 when identical, 1 when anything drifted.
+ *
+ * The renderer identity recorded in the lockfile is checked first: a renderer
+ * that is not the one that produced the committed bytes fails F010 (exit 5)
+ * before any byte comparison, so drift is never blamed on the wrong cause.
  */
 export async function runCheck(repoRoot: string, renderer: RenderTarget): Promise<CheckResult> {
+  const lockfile = await readLockfile(repoRoot);
+  if (lockfile !== undefined) {
+    verifyRendererIdentity(lockfile.renderer, renderer.identity(), `${ROOT_DIR}/${LOCK_FILE}`);
+  }
+
   const prepared = await prepareRender(repoRoot, renderer);
   const drift: DriftItem[] = [];
 
   for (const file of prepared.files) {
-    const existing = await readOptional(join(repoRoot, file.path));
-    if (existing === undefined) {
+    const absolute = await containedTarget(repoRoot, file.path);
+    const stats = await lstatOrUndefined(absolute);
+    if (stats === undefined) {
       drift.push({
         code: 'F007_DRIFT',
         path: file.path,
@@ -71,6 +97,16 @@ export async function runCheck(repoRoot: string, renderer: RenderTarget): Promis
       });
       continue;
     }
+    if (!stats.isFile() || stats.isSymbolicLink()) {
+      drift.push({
+        code: 'F007_DRIFT',
+        path: file.path,
+        kind: 'modified',
+        detail: 'managed path is not a regular file',
+      });
+      continue;
+    }
+    const existing = await readFile(absolute, 'utf8');
     if (existing !== file.bytes) {
       drift.push({
         code: 'F007_DRIFT',
@@ -82,13 +118,15 @@ export async function runCheck(repoRoot: string, renderer: RenderTarget): Promis
   }
 
   const expected = new Set(prepared.files.map((file) => file.path));
-  for (const path of await listAgentsDir(repoRoot)) {
-    if (!expected.has(path)) {
+  for (const entry of await listAgentEntries(repoRoot)) {
+    if (!expected.has(entry.path)) {
       drift.push({
         code: 'F007_DRIFT',
-        path,
+        path: entry.path,
         kind: 'unexpected',
-        detail: 'path is not recorded as managed output',
+        detail: entry.regular
+          ? 'path is not recorded as managed output'
+          : 'path is not a regular managed file',
       });
     }
   }

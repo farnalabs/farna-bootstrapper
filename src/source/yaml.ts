@@ -1,4 +1,4 @@
-import { Alias, type Document, parseDocument, visit } from 'yaml';
+import { Alias, type Document, parseAllDocuments, visit } from 'yaml';
 import { invalidConfig } from '../core/errors.js';
 
 export type ParseYamlOptions = {
@@ -31,14 +31,26 @@ function assertNoExoticNodes(document: Document, subject: string): void {
 
 /**
  * Parse one plain YAML document with duplicate keys rejected, anchors,
- * aliases and custom tags refused. Returns the document's plain value.
+ * aliases and custom tags refused. A stream with a second document is refused:
+ * parsing only the first would silently discard everything after `---`.
+ * Returns the document's plain value.
  */
 export function parseYamlStrict<T = unknown>(text: string, options: ParseYamlOptions): T {
-  const document: Document = parseDocument(text, {
+  const documents: Document[] = parseAllDocuments(text, {
     uniqueKeys: true,
     schema: 'core',
     logLevel: 'silent',
   });
+  const document = documents[0];
+  if (documents.length !== 1 || document === undefined) {
+    throw invalidConfig(
+      `file contains ${documents.length} YAML documents; exactly one is required`,
+      {
+        subject: options.subject,
+        action: 'keep one document per file and put each additional declaration in its own file',
+      },
+    );
+  }
   for (const error of document.errors) {
     throw invalidConfig(error.message, { subject: options.subject });
   }

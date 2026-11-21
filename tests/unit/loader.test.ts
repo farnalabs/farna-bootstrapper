@@ -125,6 +125,75 @@ describe('source loader', () => {
     }
   });
 
+  it('rejects a persona file with more than one YAML document', async () => {
+    const repo = await createTempRepo();
+    try {
+      await writeFile(
+        join(repo.root, '.farna/personas/reviewer.yaml'),
+        [
+          'kind: persona',
+          'id: reviewer',
+          'displayName: Reviewer',
+          'purpose: Reviews a change.',
+          'resources: []',
+          '---',
+          'kind: persona',
+          'id: evil',
+          'displayName: Evil',
+          'purpose: The second persona is never read.',
+          'resources: []',
+          '',
+        ].join('\n'),
+        'utf8',
+      );
+      const error = await expectFarnaError(loadSource(repo.root), 'F001_INVALID_CONFIG');
+      expect(error.message).toContain('2 YAML documents');
+      expect(error.subject).toBe('.farna/personas/reviewer.yaml');
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
+  it('rejects a rule frontmatter description, which nothing would emit', async () => {
+    const repo = await createTempRepo();
+    try {
+      await writeFile(
+        join(repo.root, '.farna/resources/rules/house-style.md'),
+        [
+          '---',
+          'kind: rule',
+          'id: house-style',
+          'displayName: House style',
+          'description: Accepted and ignored before this fix.',
+          '---',
+          '',
+          'FBS_RULE_BUILDER_4a1c',
+          '',
+        ].join('\n'),
+        'utf8',
+      );
+      const error = await expectFarnaError(loadSource(repo.root), 'F001_INVALID_CONFIG');
+      expect(error.message).toContain('description');
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
+  it('allows two personas to share a display name, which is never emitted', async () => {
+    const repo = await createTempRepo();
+    try {
+      await writeFile(
+        join(repo.root, '.farna/personas/reviewer.yaml'),
+        'kind: persona\nid: reviewer\ndisplayName: Builder\npurpose: Reviews a change.\nresources:\n  - rule/review-checklist\n',
+        'utf8',
+      );
+      const source = await loadSource(repo.root);
+      expect(source.personas.map((persona) => persona.displayName)).toEqual(['Builder', 'Builder']);
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
   it('rejects an unsupported resource kind', async () => {
     const repo = await createTempRepo();
     try {

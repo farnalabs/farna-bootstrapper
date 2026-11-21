@@ -3,24 +3,28 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { runCheck } from '../../src/cli/commands/check.js';
 import { runGenerate } from '../../src/cli/commands/generate.js';
+import { installedRendererIdentity } from '../../src/render/identity.js';
 import { RENDERER_PIN, UpstreamRenderTarget } from '../../src/render/upstream.js';
 import { createTempRepo, hashTree, readText } from '../support/temp-repo.js';
 
-let rulesyncInstalled = true;
-try {
-  await import('rulesync');
-} catch {
-  rulesyncInstalled = false;
-}
-
-describe.skipIf(!rulesyncInstalled)('rulesync integration', () => {
-  it('pins the renderer version that is actually installed', async () => {
+/**
+ * The real, pinned renderer. There is no skip: a missing or broken `rulesync`
+ * fails collection loudly, because these are the only tests that can detect a
+ * renderer regression. CI asserts that the expected number of these tests ran.
+ */
+describe('rulesync integration', () => {
+  it('pins the renderer version and integrity that are actually installed', async () => {
     const manifest = JSON.parse(
       await readFile(join(process.cwd(), 'node_modules/rulesync/package.json'), 'utf8'),
     ) as { version: string };
     expect(manifest.version).toBe(RENDERER_PIN.version);
     expect(RENDERER_PIN.name).toBe('rulesync');
-    expect(RENDERER_PIN.integrity.startsWith('sha512-')).toBe(true);
+    expect(RENDERER_PIN.integrity).toMatch(/^sha512-/);
+
+    const installed = installedRendererIdentity('rulesync');
+    expect(installed.version).toBe(RENDERER_PIN.version);
+    expect(installed.integrity).toBe(RENDERER_PIN.integrity);
+    expect(await new UpstreamRenderTarget().identity()).toEqual(installed);
   });
 
   it('renders two isolated Claude Code agent files through the real renderer', async () => {

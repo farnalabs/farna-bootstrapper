@@ -1,7 +1,11 @@
+import { readFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import type { ResolvedSource } from '../compose/resolve.js';
 import {
+  LOCK_FILE,
   PRODUCT_NAME,
   PRODUCT_VERSION,
+  ROOT_DIR,
   SCHEMA_VERSION,
   type Severity,
   type WarningCode,
@@ -109,4 +113,39 @@ export function buildLockfile(
 
 export function serialiseLockfile(lock: Lockfile): string {
   return canonicalJsonFile(lock);
+}
+
+/**
+ * Read the committed lockfile only far enough to recover its renderer record.
+ * A missing, unreadable or malformed lockfile returns `undefined`: the byte
+ * comparison reports it as drift, and there is no identity to check.
+ */
+export async function readLockfile(repoRoot: string): Promise<Lockfile | undefined> {
+  let text: string;
+  try {
+    text = await readFile(join(repoRoot, ROOT_DIR, LOCK_FILE), 'utf8');
+  } catch {
+    return undefined;
+  }
+  let value: unknown;
+  try {
+    value = JSON.parse(text);
+  } catch {
+    return undefined;
+  }
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    return undefined;
+  }
+  const renderer = (value as Record<string, unknown>)['renderer'];
+  if (renderer === null || typeof renderer !== 'object' || Array.isArray(renderer)) {
+    return undefined;
+  }
+  const record = renderer as Record<string, unknown>;
+  if (typeof record['name'] !== 'string' || typeof record['version'] !== 'string') {
+    return undefined;
+  }
+  if (record['integrity'] !== undefined && typeof record['integrity'] !== 'string') {
+    return undefined;
+  }
+  return value as unknown as Lockfile;
 }

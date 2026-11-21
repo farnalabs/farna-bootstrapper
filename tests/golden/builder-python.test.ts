@@ -5,21 +5,15 @@ import { runGenerate } from '../../src/cli/commands/generate.js';
 import { UpstreamRenderTarget } from '../../src/render/upstream.js';
 import { createTempRepo, readText } from '../support/temp-repo.js';
 
-let rulesyncInstalled = true;
-try {
-  await import('rulesync');
-} catch {
-  rulesyncInstalled = false;
-}
-
 const GOLDEN = new URL('./builder-python.md', import.meta.url);
 
 /**
  * The composed persona's emitted bytes, pinned through the real renderer. A
  * renderer bump that changes the shape of `tools`/`disallowedTools` fails here,
- * which is the intended review event.
+ * which is the intended review event. There is no skip: a missing or broken
+ * renderer fails loudly, and CI asserts that these tests ran.
  */
-describe.skipIf(!rulesyncInstalled)('composed persona golden output', () => {
+describe('composed persona golden output', () => {
   it('renders builder-python byte for byte', async () => {
     const repo = await createTempRepo('composed');
     try {

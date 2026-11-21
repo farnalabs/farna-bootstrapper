@@ -1,5 +1,6 @@
 import { Command } from 'commander';
-import { PRODUCT_NAME, PRODUCT_VERSION } from '../core/constants.js';
+import { EXIT, PRODUCT_NAME, PRODUCT_VERSION, SCHEMA_VERSION } from '../core/constants.js';
+import { FarnaError } from '../core/errors.js';
 import type { RenderTarget } from '../render/port.js';
 import { formatCheck, formatGenerate, formatInit, formatJson } from '../report/format.js';
 import { runCheck } from './commands/check.js';
@@ -10,9 +11,75 @@ export type CliContext = {
   cwd: string;
   renderer: RenderTarget;
   stdout: (text: string) => void;
+  /** The process argv, so a pre-command `--json` can still be honoured. */
+  argv: readonly string[];
 };
 
-type CommonOptions = { json?: boolean };
+type CommandName = 'init' | 'generate' | 'check';
+
+type CommandOutcome = {
+  payload: Record<string, unknown>;
+  text: string;
+  exitCode: number;
+};
+
+/** The one machine-readable failure object: the same keys for every command. */
+export function failureObject(command: string | null, error: FarnaError): Record<string, unknown> {
+  return {
+    schemaVersion: SCHEMA_VERSION,
+    command,
+    ok: false,
+    exitCode: error.exitCode,
+    code: error.code,
+    subject: error.subject ?? null,
+    message: error.message,
+  };
+}
+
+/** The same failure object for a throw that carries no diagnostic code. */
+export function unexpectedFailureObject(
+  command: string | null,
+  message: string,
+): Record<string, unknown> {
+  return {
+    schemaVersion: SCHEMA_VERSION,
+    command,
+    ok: false,
+    exitCode: EXIT.invalidConfig,
+    code: null,
+    subject: null,
+    message,
+  };
+}
+
+/**
+ * Run one command and marshal its result. `--json` emits an object on stdout
+ * for a typed failure as well as for success; the human line always goes to
+ * stderr, and the exit code is always the diagnostic's own code.
+ */
+async function emit(
+  command: CommandName,
+  json: boolean,
+  context: CliContext,
+  run: () => Promise<CommandOutcome>,
+): Promise<void> {
+  try {
+    const outcome = await run();
+    context.stdout(json ? formatJson(outcome.payload) : outcome.text);
+    if (outcome.exitCode !== 0) {
+      process.exitCode = outcome.exitCode;
+    }
+  } catch (error) {
+    if (!(error instanceof FarnaError)) {
+      throw error;
+    }
+    if (json) {
+      context.stdout(formatJson(failureObject(command, error)));
+    }
+    process.stderr.write(`${error.format()}\n`);
+    process.exitCode = error.exitCode;
+  }
+}
 
 /** Commander wiring for the three commands this slice implements. */
 export function buildProgram(context: CliContext): Command {
@@ -34,9 +101,20 @@ export function buildProgram(context: CliContext): Command {
     .command('init')
     .description('create .farna/config.jsonc and the empty source directories')
     .option('--json', 'print one JSON object')
-    .action(async (options: CommonOptions) => {
-      const result = await runInit(context.cwd);
-      context.stdout(options.json === true ? formatJson(result) : formatInit(result));
+    .action(async (options: { json?: boolean }) => {
+      await emit('init', options.json === true, context, async () => {
+        const result = await runInit(context.cwd);
+        return {
+          payload: {
+            schemaVersion: SCHEMA_VERSION,
+            command: 'init',
+            ...result,
+            exitCode: EXIT.ok,
+          },
+          text: formatInit(result),
+          exitCode: EXIT.ok,
+        };
+      });
     });
 
   program
@@ -45,24 +123,60 @@ export function buildProgram(context: CliContext): Command {
     .option('--dry-run', 'print the plan without writing anything')
     .option('--json', 'print one JSON object')
     .action(async (options: { dryRun?: boolean; json?: boolean }) => {
-      const result = await runGenerate(
-        { cwd: context.cwd, dryRun: options.dryRun === true },
-        context.renderer,
-      );
-      context.stdout(options.json === true ? formatJson(result) : formatGenerate(result));
+      await emit('generate', options.json === true, context, async () => {
+        const result = await runGenerate(
+          { cwd: context.cwd, dryRun: options.dryRun === true },
+          context.renderer,
+        );
+        return {
+          payload: {
+            schemaVersion: SCHEMA_VERSION,
+            command: 'generate',
+            ...result,
+            exitCode: EXIT.ok,
+          },
+          text: formatGenerate(result),
+          exitCode: EXIT.ok,
+        };
+      });
     });
 
   program
     .command('check')
     .description('regenerate into a temporary directory and compare with the repository')
     .option('--json', 'print one JSON object')
-    .action(async (options: CommonOptions) => {
-      const result = await runCheck(context.cwd, context.renderer);
-      context.stdout(options.json === true ? formatJson(result) : formatCheck(result));
-      if (!result.ok) {
-        process.exitCode = result.exitCode;
-      }
+    .action(async (options: { json?: boolean }) => {
+      await emit('check', options.json === true, context, async () => {
+        const result = await runCheck(context.cwd, context.renderer);
+        const payload: Record<string, unknown> = {
+          schemaVersion: SCHEMA_VERSION,
+          command: 'check',
+          ...result,
+        };
+        if (!result.ok) {
+          // The same failure keys the typed-error path carries, so a consumer
+          // never has to special-case drift to learn it failed.
+          payload['code'] = 'F007_DRIFT';
+          payload['subject'] = result.drift[0]?.path ?? null;
+          payload['message'] = 'managed output drifted from a fresh render';
+        }
+        return { payload, text: formatCheck(result), exitCode: result.exitCode };
+      });
     });
+
+  // A listener here replaces Commander's default "unknown command" error and
+  // process exit, so the same machine-readable object can be emitted.
+  program.on('command:*', (operands: string[]) => {
+    const attempted = operands[0] ?? '';
+    const message = `unknown command "${attempted}"`;
+    if (context.argv.includes('--json')) {
+      context.stdout(
+        formatJson(unexpectedFailureObject(attempted === '' ? null : attempted, message)),
+      );
+    }
+    process.stderr.write(`${PRODUCT_NAME}: ${message}\n`);
+    process.exitCode = EXIT.invalidConfig;
+  });
 
   return program;
 }
