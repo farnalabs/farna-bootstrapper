@@ -7,7 +7,6 @@ import type {
   RenderRequest,
   RenderResult,
   RenderTarget,
-  RenderTargetName,
 } from '../../src/render/port.js';
 
 type ClaudeBlock = { model?: string; tools?: string[]; disallowedTools?: string[] };
@@ -83,8 +82,6 @@ function renderAgent(
  * way a renderer can weaken or invent a permission.
  */
 export class FakeRenderTarget implements RenderTarget {
-  readonly name: RenderTargetName = 'claudecode';
-
   constructor(
     private readonly mode: FakeMode = { kind: 'ok' },
     private readonly identityOverride?: RendererIdentity,

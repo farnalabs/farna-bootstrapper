@@ -1,21 +1,36 @@
 import type { Config } from '../config/schema.js';
-import { DEFAULT_TARGET, MAX_EXTENDS_DEPTH, SUPPORTED_RESOURCE_KINDS } from '../core/constants.js';
+import {
+  BOUNDARY_CAPABILITIES,
+  MAX_EXTENDS_DEPTH,
+  OPENCODE_WORKSPACE_KINDS,
+  SUPPORTED_RESOURCE_KINDS,
+  SUPPORTED_TARGETS,
+  type SupportedTarget,
+} from '../core/constants.js';
 import { conflict, invalidConfig } from '../core/errors.js';
 import { canonicalJson, compareCodepoints, sha256Hex } from '../core/json.js';
 import {
   emptyResolvedPermissions,
+  mapOpencodePermissions,
   mapPermissions,
   mergePermission,
+  type OpencodePermissionCategory,
+  type OpencodePermissionRecord,
   type PermissionContribution,
   permissionDigest,
   permissionResourceDigest,
   type ResolvedPermissions,
 } from '../permissions/permissions.js';
-import { sortWarnings, type Warning } from '../report/warnings.js';
+import { sortWarnings, type Warning, warning } from '../report/warnings.js';
 import type {
+  CommandResource,
+  HookResource,
   LoadedPersona,
+  McpResource,
   PermissionResource,
   RuleResource,
+  SkillFile,
+  SkillResource,
   SourceTree,
 } from '../source/load.js';
 
@@ -38,7 +53,64 @@ export type ResolvedPermission = {
   fromPersona: string;
 };
 
-export type ResolvedResource = ResolvedRule | ResolvedPermission;
+export type ResolvedCommand = {
+  kind: 'command';
+  id: string;
+  description?: string;
+  body: string;
+  sha256: string;
+  path: string;
+  fromPersona: string;
+};
+
+export type ResolvedSkill = {
+  kind: 'skill';
+  id: string;
+  description: string;
+  body: string;
+  files: SkillFile[];
+  sha256: string;
+  path: string;
+  fromPersona: string;
+};
+
+export type ResolvedMcp = {
+  kind: 'mcp';
+  id: string;
+  server: McpResource['server'];
+  sha256: string;
+  path: string;
+  fromPersona: string;
+};
+
+export type ResolvedHook = {
+  kind: 'hook';
+  id: string;
+  phase: HookResource['phase'];
+  matcher?: string;
+  command: string;
+  sha256: string;
+  path: string;
+  fromPersona: string;
+};
+
+export type ResolvedResource =
+  | ResolvedRule
+  | ResolvedPermission
+  | ResolvedCommand
+  | ResolvedSkill
+  | ResolvedMcp
+  | ResolvedHook;
+
+/**
+ * A hook plus whether this target can carry it. A hook OpenCode cannot express
+ * is kept in the resolved set (so the lockfile still records the declaration)
+ * but is never materialised; `reason` is what the warning prints.
+ */
+export type ResolvedHookOutcome = ResolvedHook & {
+  carried: boolean;
+  reason?: string;
+};
 
 export type ResolvedPersona = {
   id: string;
@@ -49,15 +121,25 @@ export type ResolvedPersona = {
   /** The full composition chain, base first, this persona last. */
   chain: string[];
   rules: ResolvedRule[];
-  /** Every resolved resource, rules before permissions, each sorted by id. */
+  mcp: ResolvedMcp[];
+  skills: ResolvedSkill[];
+  commands: ResolvedCommand[];
+  hooks: ResolvedHookOutcome[];
+  /** Every resolved resource, canonically ordered, each sorted by id. */
   resources: ResolvedResource[];
   permissions: ResolvedPermissions;
   /**
-   * The exact Claude Code entries, already sorted and capitalised. `allowlist`
-   * is true only when a contributing permission resource opted in: by default
-   * the entries are a deny-list, because `tools` is an allow-list in the target.
+   * The exact Claude Code entries, already sorted and capitalised. Empty on a
+   * target that is not Claude Code. `allowlist` is true only when a contributing
+   * permission resource opted in: by default the entries are a deny-list,
+   * because `tools` is an allow-list in the target.
    */
   claude: { allow: string[]; deny: string[]; allowlist: boolean };
+  /** The rulesync permission map and the records OpenCode emits from it. */
+  opencode: {
+    permission: OpencodePermissionCategory[];
+    records: OpencodePermissionRecord[];
+  };
   model?: string;
   path: string;
   /** Canonical digest of the persona's resolved resources. */
@@ -68,16 +150,41 @@ export type ResolvedPersona = {
 };
 
 export type ResolvedSource = {
-  target: string;
+  target: SupportedTarget;
   personas: ResolvedPersona[];
+  /** Every workspace resource any live persona declares, deduplicated by id. */
+  mcp: ResolvedMcp[];
+  skills: ResolvedSkill[];
+  commands: ResolvedCommand[];
+  hooks: ResolvedHookOutcome[];
   warnings: Warning[];
 };
 
-const KIND_ORDER: Record<string, number> = { rule: 0, permission: 1 };
+const KIND_ORDER: Record<string, number> = {
+  rule: 0,
+  permission: 1,
+  model: 2,
+  mcp: 3,
+  skill: 4,
+  command: 5,
+  hook: 6,
+};
 
 function splitRef(ref: string): { kind: string; id: string } {
   const separator = ref.indexOf('/');
   return { kind: ref.slice(0, separator), id: ref.slice(separator + 1) };
+}
+
+/** The one configured target. The config schema admits exactly one. */
+export function configuredTarget(config: Config): SupportedTarget {
+  const [id] = Object.keys(config.targets);
+  if (id === undefined || !(SUPPORTED_TARGETS as readonly string[]).includes(id)) {
+    throw invalidConfig('no supported target is configured', {
+      subject: '.farna/config.jsonc',
+      action: `configure exactly one of: ${SUPPORTED_TARGETS.join(', ')}`,
+    });
+  }
+  return id as SupportedTarget;
 }
 
 /**
@@ -119,16 +226,21 @@ function resolveChain(persona: LoadedPersona, byId: Map<string, LoadedPersona>):
   return chain;
 }
 
-function resolveModelClass(modelClass: string, subject: string, config: Config): string {
+function resolveModelClass(
+  modelClass: string,
+  subject: string,
+  config: Config,
+  target: SupportedTarget,
+): string {
   const mapping = config.models?.[modelClass];
   if (mapping === undefined) {
     throw invalidConfig(`model class "${modelClass}" is not declared in config.models`, {
       subject,
     });
   }
-  const modelId = mapping[DEFAULT_TARGET];
+  const modelId = mapping[target];
   if (modelId === undefined) {
-    throw invalidConfig(`model class "${modelClass}" has no "${DEFAULT_TARGET}" mapping`, {
+    throw invalidConfig(`model class "${modelClass}" has no "${target}" mapping`, {
       subject,
     });
   }
@@ -141,13 +253,17 @@ function resolveModelClass(modelClass: string, subject: string, config: Config):
  * changes the model. Two classes that resolve to the same model id are one
  * model and do not conflict.
  */
-function resolveModel(chain: LoadedPersona[], config: Config): string | undefined {
+function resolveModel(
+  chain: LoadedPersona[],
+  config: Config,
+  target: SupportedTarget,
+): string | undefined {
   const declared = chain
     .filter((persona) => persona.model !== undefined)
     .map((persona) => ({
       persona,
       modelClass: persona.model as string,
-      modelId: resolveModelClass(persona.model as string, persona.path, config),
+      modelId: resolveModelClass(persona.model as string, persona.path, config, target),
     }));
   const distinct = [...new Set(declared.map((entry) => entry.modelId))];
   if (distinct.length > 1) {
@@ -163,20 +279,25 @@ function resolveModel(chain: LoadedPersona[], config: Config): string | undefine
   return distinct[0];
 }
 
-function assertSupportedRef(persona: LoadedPersona, ref: string): { kind: string; id: string } {
-  const { kind, id } = splitRef(ref);
-  if (!SUPPORTED_RESOURCE_KINDS.includes(kind as (typeof SUPPORTED_RESOURCE_KINDS)[number])) {
-    throw invalidConfig(`resource kind "${kind}" is not implemented in this slice`, {
-      subject: persona.path,
-      action: 'this slice supports rule and permission references',
-    });
-  }
+function assertSupportedRef(persona: LoadedPersona, ref: string, target: SupportedTarget): void {
+  const { kind } = splitRef(ref);
   if (kind === 'model') {
     throw invalidConfig('model resources are expressed with the persona "model" key', {
       subject: persona.path,
     });
   }
-  return { kind, id };
+  if (!(SUPPORTED_RESOURCE_KINDS as readonly string[]).includes(kind)) {
+    throw invalidConfig(`unknown resource kind "${kind}"`, {
+      subject: persona.path,
+      action: `a resource reference names one of: ${SUPPORTED_RESOURCE_KINDS.join(', ')}`,
+    });
+  }
+  if (target === 'claudecode' && (OPENCODE_WORKSPACE_KINDS as readonly string[]).includes(kind)) {
+    throw invalidConfig(`the ${kind} resource kind is not carried by claudecode in this slice`, {
+      subject: persona.path,
+      action: `render this source for the opencode target, or remove the ${kind} reference`,
+    });
+  }
 }
 
 function addResource(resources: Map<string, ResolvedResource>, resource: ResolvedResource): void {
@@ -196,7 +317,7 @@ function addResource(resources: Map<string, ResolvedResource>, resource: Resolve
   resources.set(key, resource);
 }
 
-/** Sorted canonically: rules before permissions, then by codepoint id. */
+/** Sorted canonically: schema.md 1.3 resource-kind order, then codepoint id. */
 function sortResources(resources: ResolvedResource[]): ResolvedResource[] {
   return [...resources].sort((a, b) => {
     const byKind = (KIND_ORDER[a.kind] ?? 99) - (KIND_ORDER[b.kind] ?? 99);
@@ -204,33 +325,96 @@ function sortResources(resources: ResolvedResource[]): ResolvedResource[] {
   });
 }
 
+function severityOfDropped(capability: string): 'high' | 'medium' {
+  return (BOUNDARY_CAPABILITIES as readonly string[]).includes(capability) ? 'high' : 'medium';
+}
+
+/**
+ * The warning every OpenCode workspace resource emits. OpenCode configures MCP
+ * servers, skills, commands and hooks at the workspace level, so the resource is
+ * emitted once for every persona rather than scoped to the one that declared it.
+ */
+function workspaceWarning(
+  kind: 'mcp' | 'skill' | 'command' | 'hook',
+  id: string,
+  persona: string,
+): Warning {
+  const reasons: Record<'mcp' | 'skill' | 'command' | 'hook', string> = {
+    mcp: 'OpenCode configures MCP servers at the workspace level, not per agent',
+    skill: 'OpenCode carries skills at the workspace level only',
+    command: 'OpenCode carries commands at the workspace level only',
+    hook: 'OpenCode carries hooks at the workspace level only, as a generated plugin',
+  };
+  return warning({
+    code: 'W101_CAPABILITY_DROPPED',
+    persona,
+    target: 'opencode',
+    capability: kind,
+    severity: severityOfDropped(kind),
+    message: `${kind}/${id} is applied to the whole OpenCode workspace, not to persona ${persona} alone: ${reasons[kind]}`,
+  });
+}
+
+/**
+ * Why OpenCode cannot carry this hook, or `undefined` when it can. Measured at
+ * rulesync 43.11.0: `session-end` has no OpenCode event, and a matcher is
+ * honoured only on the tool events (`preToolUse`/`postToolUse`).
+ */
+function hookProblem(hook: ResolvedHook): string | undefined {
+  if (hook.phase === 'session-end') {
+    return 'OpenCode has no session-end event';
+  }
+  if (hook.matcher !== undefined && hook.phase !== 'before-tool' && hook.phase !== 'after-tool') {
+    return `OpenCode honours a matcher on tool events only, not on ${hook.phase}`;
+  }
+  return undefined;
+}
+
 function resolveOne(
   persona: LoadedPersona,
   chain: LoadedPersona[],
-  rulesById: Map<string, RuleResource>,
-  permissionsById: Map<string, PermissionResource>,
+  byKind: {
+    rules: Map<string, RuleResource>;
+    permissions: Map<string, PermissionResource>;
+    mcp: Map<string, McpResource>;
+    skills: Map<string, SkillResource>;
+    commands: Map<string, CommandResource>;
+    hooks: Map<string, HookResource>;
+  },
   config: Config,
+  target: SupportedTarget,
 ): ResolvedPersona {
-  const model = resolveModel(chain, config);
+  const model = resolveModel(chain, config, target);
   const resources = new Map<string, ResolvedResource>();
   const permissions = emptyResolvedPermissions();
   const warnings: Warning[] = [];
   const seenRefs = new Set<string>();
 
+  const missing = (kind: string, id: string, contributor: LoadedPersona): never => {
+    const dirs: Record<string, string> = {
+      rule: 'rules',
+      permission: 'permissions',
+      mcp: 'mcp',
+      skill: 'skills',
+      command: 'commands',
+      hook: 'hooks',
+    };
+    throw invalidConfig(`unknown ${kind} "${id}"`, {
+      subject: contributor.path,
+      action: `add the resource under .farna/resources/${dirs[kind] ?? kind}/`,
+    });
+  };
+
   for (const contributor of chain) {
     for (const ref of contributor.resources) {
-      const { kind, id } = assertSupportedRef(contributor, ref);
+      assertSupportedRef(contributor, ref, target);
+      const { kind, id } = splitRef(ref);
       const key = `${kind}/${id}`;
       const repeated = seenRefs.has(key);
       seenRefs.add(key);
+
       if (kind === 'rule') {
-        const rule = rulesById.get(id);
-        if (rule === undefined) {
-          throw invalidConfig(`unknown rule "${id}"`, {
-            subject: contributor.path,
-            action: 'add the rule file under .farna/resources/rules/',
-          });
-        }
+        const rule = byKind.rules.get(id) ?? missing('rule', id, contributor);
         addResource(resources, {
           kind: 'rule',
           id: rule.id,
@@ -242,37 +426,93 @@ function resolveOne(
         });
         continue;
       }
-      const permission = permissionsById.get(id);
-      if (permission === undefined) {
-        throw invalidConfig(`unknown permission "${id}"`, {
-          subject: contributor.path,
-          action: 'add the permission file under .farna/resources/permissions/',
+      if (kind === 'permission') {
+        const permission = byKind.permissions.get(id) ?? missing('permission', id, contributor);
+        if (permission.allowlist === true && target === 'opencode') {
+          throw invalidConfig(
+            'a permission resource opts into a tool allow-list, which OpenCode cannot express',
+            {
+              subject: permission.path,
+              action: `remove "allowlist" or render this persona for claudecode; OpenCode's permission records are a deny-list`,
+            },
+          );
+        }
+        addResource(resources, {
+          kind: 'permission',
+          id: permission.id,
+          sha256: permissionResourceDigest(
+            permission.tools,
+            permission.patterns,
+            permission.allowlist,
+          ),
+          path: permission.path,
+          fromPersona: contributor.id,
         });
+        if (!repeated) {
+          const contribution: PermissionContribution = {
+            id: permission.id,
+            tools: permission.tools,
+            patterns: permission.patterns ?? {},
+            allowlist: permission.allowlist,
+          };
+          mergePermission(permissions, contribution, {
+            persona: persona.id,
+            target,
+            warnings,
+          });
+        }
+        continue;
       }
+      if (kind === 'mcp') {
+        const server = byKind.mcp.get(id) ?? missing('mcp', id, contributor);
+        addResource(resources, {
+          kind: 'mcp',
+          id: server.id,
+          server: server.server,
+          sha256: server.sha256,
+          path: server.path,
+          fromPersona: contributor.id,
+        });
+        continue;
+      }
+      if (kind === 'skill') {
+        const skill = byKind.skills.get(id) ?? missing('skill', id, contributor);
+        addResource(resources, {
+          kind: 'skill',
+          id: skill.id,
+          description: skill.description,
+          body: skill.body,
+          files: skill.files,
+          sha256: skill.sha256,
+          path: skill.path,
+          fromPersona: contributor.id,
+        });
+        continue;
+      }
+      if (kind === 'command') {
+        const command = byKind.commands.get(id) ?? missing('command', id, contributor);
+        addResource(resources, {
+          kind: 'command',
+          id: command.id,
+          ...(command.description === undefined ? {} : { description: command.description }),
+          body: command.body,
+          sha256: command.sha256,
+          path: command.path,
+          fromPersona: contributor.id,
+        });
+        continue;
+      }
+      const hook = byKind.hooks.get(id) ?? missing('hook', id, contributor);
       addResource(resources, {
-        kind: 'permission',
-        id: permission.id,
-        sha256: permissionResourceDigest(
-          permission.tools,
-          permission.patterns,
-          permission.allowlist,
-        ),
-        path: permission.path,
+        kind: 'hook',
+        id: hook.id,
+        phase: hook.phase,
+        ...(hook.matcher === undefined ? {} : { matcher: hook.matcher }),
+        command: hook.command,
+        sha256: hook.sha256,
+        path: hook.path,
         fromPersona: contributor.id,
       });
-      if (!repeated) {
-        const contribution: PermissionContribution = {
-          id: permission.id,
-          tools: permission.tools,
-          patterns: permission.patterns ?? {},
-          allowlist: permission.allowlist,
-        };
-        mergePermission(permissions, contribution, {
-          persona: persona.id,
-          target: DEFAULT_TARGET,
-          warnings,
-        });
-      }
     }
   }
 
@@ -280,8 +520,58 @@ function resolveOne(
   const resolvedRules = sortedResources.filter(
     (resource): resource is ResolvedRule => resource.kind === 'rule',
   );
-  const mapped = mapPermissions(permissions, { persona: persona.id, target: DEFAULT_TARGET });
-  warnings.push(...mapped.warnings);
+  const resolvedMcp = sortedResources.filter(
+    (resource): resource is ResolvedMcp => resource.kind === 'mcp',
+  );
+  const resolvedSkills = sortedResources.filter(
+    (resource): resource is ResolvedSkill => resource.kind === 'skill',
+  );
+  const resolvedCommands = sortedResources.filter(
+    (resource): resource is ResolvedCommand => resource.kind === 'command',
+  );
+  const resolvedHooks: ResolvedHookOutcome[] = sortedResources
+    .filter((resource): resource is ResolvedHook => resource.kind === 'hook')
+    .map((hook) => {
+      const reason = hookProblem(hook);
+      return reason === undefined
+        ? { ...hook, carried: true }
+        : { ...hook, carried: false, reason };
+    });
+
+  for (const resource of [...resolvedMcp, ...resolvedSkills, ...resolvedCommands]) {
+    warnings.push(workspaceWarning(resource.kind, resource.id, persona.id));
+  }
+  for (const hook of resolvedHooks) {
+    if (hook.carried) {
+      warnings.push(workspaceWarning('hook', hook.id, persona.id));
+      continue;
+    }
+    warnings.push(
+      warning({
+        code: 'W101_CAPABILITY_DROPPED',
+        persona: persona.id,
+        target: 'opencode',
+        capability: 'hook',
+        severity: severityOfDropped('hook'),
+        message: `hook/${hook.id} cannot be carried for persona ${persona.id} on OpenCode: ${hook.reason ?? 'unsupported'}; it is not emitted`,
+      }),
+    );
+  }
+
+  const mapped =
+    target === 'claudecode'
+      ? mapPermissions(permissions, { persona: persona.id, target })
+      : undefined;
+  const mappedOpencode =
+    target === 'opencode'
+      ? mapOpencodePermissions(permissions, { persona: persona.id, target })
+      : undefined;
+  if (mapped !== undefined) {
+    warnings.push(...mapped.warnings);
+  }
+  if (mappedOpencode !== undefined) {
+    warnings.push(...mappedOpencode.warnings);
+  }
 
   const digest = sha256Hex(
     canonicalJson(
@@ -301,34 +591,79 @@ function resolveOne(
     ...(persona.extends === undefined ? {} : { extends: persona.extends }),
     chain: chain.map((entry) => entry.id),
     rules: resolvedRules,
+    mcp: resolvedMcp,
+    skills: resolvedSkills,
+    commands: resolvedCommands,
+    hooks: resolvedHooks,
     resources: sortedResources,
     permissions,
-    claude: { ...mapped.entries, allowlist: mapped.allowlist },
+    claude: {
+      allow: mapped?.entries.allow ?? [],
+      deny: mapped?.entries.deny ?? [],
+      allowlist: mapped?.allowlist ?? false,
+    },
+    opencode: {
+      permission: mappedOpencode?.source ?? [],
+      records: mappedOpencode?.records ?? [],
+    },
     ...(model === undefined ? {} : { model }),
     path: persona.path,
     digest,
-    permissionDigest: permissionDigest(permissions, mapped.allowlist),
+    permissionDigest: permissionDigest(permissions, mapped?.allowlist ?? false),
     warnings: sortWarnings(warnings),
   };
 }
 
+function unionAcrossPersonas<T extends { id: string; sha256: string }>(
+  kind: string,
+  personas: ResolvedPersona[],
+  select: (persona: ResolvedPersona) => T[],
+): T[] {
+  const byId = new Map<string, T>();
+  for (const persona of personas) {
+    for (const resource of select(persona)) {
+      const existing = byId.get(resource.id);
+      if (existing === undefined) {
+        byId.set(resource.id, resource);
+        continue;
+      }
+      if (existing.sha256 !== resource.sha256) {
+        throw conflict(`two personas disagree on ${kind}/${resource.id}`, {
+          subject: resource.id,
+        });
+      }
+    }
+  }
+  return [...byId.values()].sort((a, b) => compareCodepoints(a.id, b.id));
+}
+
 /**
  * Resolve every persona's composition chain into its resource set. The base
- * persona's rules and permissions are unioned in; the stricter permission value
- * wins; two different models are a conflict, never a silent override.
+ * persona's rules, permissions and workspace resources are unioned in; the
+ * stricter permission value wins; two different models are a conflict, never a
+ * silent override.
  */
 export function resolveSource(source: SourceTree, config: Config): ResolvedSource {
+  const target = configuredTarget(config);
   const byId = new Map(source.personas.map((persona) => [persona.id, persona]));
-  const rulesById = new Map(source.rules.map((rule) => [rule.id, rule]));
-  const permissionsById = new Map(
-    source.permissions.map((permission) => [permission.id, permission]),
-  );
+  const byKind = {
+    rules: new Map(source.rules.map((rule) => [rule.id, rule])),
+    permissions: new Map(source.permissions.map((permission) => [permission.id, permission])),
+    mcp: new Map(source.mcp.map((server) => [server.id, server])),
+    skills: new Map(source.skills.map((skill) => [skill.id, skill])),
+    commands: new Map(source.commands.map((command) => [command.id, command])),
+    hooks: new Map(source.hooks.map((hook) => [hook.id, hook])),
+  };
   const personas = source.personas.map((persona) =>
-    resolveOne(persona, resolveChain(persona, byId), rulesById, permissionsById, config),
+    resolveOne(persona, resolveChain(persona, byId), byKind, config, target),
   );
   return {
-    target: DEFAULT_TARGET,
+    target,
     personas,
+    mcp: unionAcrossPersonas('mcp', personas, (persona) => persona.mcp),
+    skills: unionAcrossPersonas('skill', personas, (persona) => persona.skills),
+    commands: unionAcrossPersonas('command', personas, (persona) => persona.commands),
+    hooks: unionAcrossPersonas('hook', personas, (persona) => persona.hooks),
     warnings: sortWarnings(personas.flatMap((persona) => persona.warnings)),
   };
 }

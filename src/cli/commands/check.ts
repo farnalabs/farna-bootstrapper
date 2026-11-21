@@ -9,7 +9,13 @@ import {
   isOsMetadataName,
   LOCK_PATH,
   MANAGED_FILE_MAX_BYTES,
+  OPENCODE_AGENTS_DIR,
+  OPENCODE_COMMANDS_DIR,
+  OPENCODE_DIR,
+  OPENCODE_PLUGINS_DIR,
+  OPENCODE_SKILLS_DIR,
   ROOT_DIR,
+  type SupportedTarget,
 } from '../../core/constants.js';
 import { invalidConfig } from '../../core/errors.js';
 import { describeFsError, readBoundedBytes } from '../../core/fs.js';
@@ -91,6 +97,75 @@ async function listAgentEntries(repoRoot: string): Promise<AgentEntry[]> {
 }
 
 /**
+ * List the OpenCode directories recursively: skills nest, and a nested file is
+ * a managed path like any other. The tool's own staging namespace and OS
+ * metadata are ignored; everything else is an entry the managed set must
+ * contain. A symbolic link or a non-regular file is reported as unexpected,
+ * never followed.
+ */
+async function listOpencodeEntries(repoRoot: string): Promise<AgentEntry[]> {
+  const root = await assertNoSymlink(join(repoRoot, OPENCODE_DIR), OPENCODE_DIR);
+  if (root === undefined) {
+    return [];
+  }
+  if (!root.isDirectory()) {
+    throw invalidConfig(`${OPENCODE_DIR} is not a directory`, { subject: OPENCODE_DIR });
+  }
+  const entries: AgentEntry[] = [];
+  const walk = async (directory: string): Promise<void> => {
+    const stats = await assertNoSymlink(join(repoRoot, directory), directory);
+    if (stats === undefined) {
+      return;
+    }
+    if (!stats.isDirectory()) {
+      throw invalidConfig(`${directory} is not a directory`, { subject: directory });
+    }
+    let listed: Dirent[];
+    try {
+      listed = await readdir(join(repoRoot, directory), { withFileTypes: true });
+    } catch (error) {
+      if (error instanceof Error && 'code' in error && error.code === 'ENOENT') {
+        return;
+      }
+      throw invalidConfig(`cannot read ${directory} (${describeFsError(error)})`, {
+        subject: directory,
+        action: 'make the directory readable and re-run check',
+        cause: error,
+      });
+    }
+    for (const entry of listed) {
+      if (isStagingName(entry.name) || isOsMetadataName(entry.name)) {
+        continue;
+      }
+      const path = `${directory}/${entry.name}`;
+      if (entry.isDirectory()) {
+        await walk(path);
+        continue;
+      }
+      entries.push({ path, regular: entry.isFile() });
+    }
+  };
+  for (const directory of [
+    OPENCODE_AGENTS_DIR,
+    OPENCODE_COMMANDS_DIR,
+    OPENCODE_SKILLS_DIR,
+    OPENCODE_PLUGINS_DIR,
+  ]) {
+    await walk(directory);
+  }
+  return entries.sort((a, b) => compareCodepoints(a.path, b.path));
+}
+
+async function listManagedEntries(
+  repoRoot: string,
+  target: SupportedTarget,
+): Promise<AgentEntry[]> {
+  return target === 'opencode'
+    ? await listOpencodeEntries(repoRoot)
+    : await listAgentEntries(repoRoot);
+}
+
+/**
  * Regenerate into a disposable stage and compare the result with the working
  * tree. Never writes. Exit 0 when identical, 1 when anything drifted.
  *
@@ -147,7 +222,7 @@ export async function runCheck(repoRoot: string, renderer: RenderTarget): Promis
   }
 
   const expected = new Set(prepared.files.map((file) => file.path));
-  for (const entry of await listAgentEntries(repoRoot)) {
+  for (const entry of await listManagedEntries(repoRoot, prepared.source.target)) {
     if (!expected.has(entry.path)) {
       drift.push({
         code: DRIFT_CODE,

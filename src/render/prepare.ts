@@ -9,7 +9,7 @@ import {
   type RenderedFile,
   serialiseLockfile,
 } from '../lock/lockfile.js';
-import { materialiseSourceTree } from '../materialise/source-tree.js';
+import { materialiseSourceTree, renderFeatures } from '../materialise/source-tree.js';
 import { sortWarnings, type Warning, warning } from '../report/warnings.js';
 import { loadSource } from '../source/load.js';
 import { verifyRender } from '../verify/containment.js';
@@ -38,7 +38,10 @@ export type PreparedRender = {
  * a mismatch is `F010`. The message names which lookup failed, so a reader never
  * has to guess between "no record at all" and "a record with no integrity".
  */
-export function rendererIntegrityWarning(identity: RendererIdentity): Warning | undefined {
+export function rendererIntegrityWarning(
+  identity: RendererIdentity,
+  target: string = DEFAULT_TARGET,
+): Warning | undefined {
   const record = integrityRecordOf(identity);
   if (record.verified) {
     return undefined;
@@ -51,14 +54,17 @@ export function rendererIntegrityWarning(identity: RendererIdentity): Warning | 
   return warning({
     code: 'W114_RENDERER_INTEGRITY_UNVERIFIED',
     persona: RENDERER_WARNING_SUBJECT,
-    target: DEFAULT_TARGET,
+    target,
     message: `${detail}, so the installed renderer's tarball integrity could not be verified; the pinned version is still enforced`,
   });
 }
 
 /** The renderer-level warnings for one run. */
-export function rendererWarnings(renderer: RenderTarget): Warning[] {
-  const entry = rendererIntegrityWarning(renderer.identity());
+export function rendererWarnings(
+  renderer: RenderTarget,
+  target: string = DEFAULT_TARGET,
+): Warning[] {
+  const entry = rendererIntegrityWarning(renderer.identity(), target);
   return entry === undefined ? [] : [entry];
 }
 
@@ -102,15 +108,16 @@ export async function prepareRender(
 ): Promise<PreparedRender> {
   const config = await loadConfig(repoRoot);
   const source = resolveSource(await loadSource(repoRoot), config);
-  const warnings = sortWarnings([...source.warnings, ...rendererWarnings(renderer)]);
+  const warnings = sortWarnings([...source.warnings, ...rendererWarnings(renderer, source.target)]);
 
   return withStage(async (stage) => {
     await materialiseSourceTree(stage.sourceRoot, source);
     const render = await renderer.generate({
-      target: DEFAULT_TARGET,
+      target: source.target,
       stageRoot: stage.root,
       sourceRoot: stage.sourceRoot,
       outputRoot: stage.outputRoot,
+      features: renderFeatures(source.target, source),
     });
     // One read per artefact: the bytes verification approved are the bytes
     // committed, never a second read of a stage a renderer could still touch.

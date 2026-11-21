@@ -36,6 +36,7 @@ const MANIFEST_PATH = join('scripts', 'expected-test-files.json');
 const REAL_RENDERER_SUITES = [
   { suffix: 'tests/integration/rulesync.test.ts', minimum: 4 },
   { suffix: 'tests/golden/builder-python.test.ts', minimum: 2 },
+  { suffix: 'tests/golden/opencode.test.ts', minimum: 3 },
 ];
 
 const reportPath = process.argv[2] ?? 'vitest-report.json';

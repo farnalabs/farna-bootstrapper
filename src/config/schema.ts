@@ -2,9 +2,10 @@ import { z } from 'zod';
 import { ID_RE, SCHEMA_VERSION, SUPPORTED_TARGETS } from '../core/constants.js';
 
 /**
- * One configured target. In this slice a target accepts no options: profile
- * mode and per-target filters are not implemented yet, so accepting them and
- * ignoring them would be a silent no-op. They are rejected until they work.
+ * One configured target. In this slice a target accepts no options:
+ * `targets.<t>.active` and `targets.<t>.exclude` are profile-mode and
+ * per-target-filter fields, which are not implemented yet. Accepting them and
+ * ignoring them would be a silent no-op, so they are rejected until they work.
  */
 const targetConfigSchema = z.strictObject({});
 
@@ -17,8 +18,13 @@ export const configSchema = z
       .refine((targets) => Object.keys(targets).length >= 1, 'at least one target is required')
       .refine((targets) => Object.keys(targets).length <= 8, 'at most eight targets are allowed')
       .refine(
-        (targets) => Object.keys(targets).every((id) => SUPPORTED_TARGETS.includes(id)),
+        (targets) =>
+          Object.keys(targets).every((id) => (SUPPORTED_TARGETS as readonly string[]).includes(id)),
         `this slice supports only: ${SUPPORTED_TARGETS.join(', ')}`,
+      )
+      .refine(
+        (targets) => Object.keys(targets).length === 1,
+        'this slice renders exactly one configured target per run; choose claudecode or opencode',
       ),
     models: z.record(z.string(), z.record(z.string(), z.string().min(1))).optional(),
   })

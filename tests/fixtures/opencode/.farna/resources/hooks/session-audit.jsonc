@@ -1,0 +1,6 @@
+{
+  "kind": "hook",
+  "id": "session-audit",
+  "phase": "session-end",
+  "command": "echo FBS_HOOK_SESSION_END_9e1f"
+}

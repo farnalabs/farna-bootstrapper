@@ -3,7 +3,11 @@ import { readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { ZodError } from 'zod';
 import {
+  COMMAND_FILE_EXT,
+  COMMANDS_DIR,
+  HOOKS_DIR,
   isOsMetadataName,
+  MCP_DIR,
   PERMISSION_FILE_EXT,
   PERMISSIONS_DIR,
   PERSONA_FILE_EXT,
@@ -12,20 +16,32 @@ import {
   ROOT_DIR,
   RULE_FILE_EXT,
   RULES_DIR,
+  SKILL_FILE_NAME,
+  SKILLS_DIR,
+  STRUCTURED_RESOURCE_FILE_EXT,
 } from '../core/constants.js';
-import { conflict, invalidConfig, pathUnsafe } from '../core/errors.js';
+import { conflict, invalidConfig, pathUnsafe, secretLiteral } from '../core/errors.js';
 import { readUtf8File } from '../core/fs.js';
-import { compareCodepoints, parseJsonc } from '../core/json.js';
+import { canonicalJson, compareCodepoints, parseJsonc, sha256Hex } from '../core/json.js';
 import { assertRealDirectory } from '../core/paths.js';
 import { permissionResourceDigest } from '../permissions/permissions.js';
 import { splitFrontmatter } from './frontmatter.js';
 import {
+  type CommandFrontmatter,
+  commandFrontmatterSchema,
+  type HookDeclaration,
+  hookSchema,
+  type McpDeclaration,
+  type McpServerDeclaration,
+  mcpSchema,
   type PermissionDeclaration,
   type PersonaDeclaration,
   permissionSchema,
   personaSchema,
   type RuleFrontmatter,
   ruleFrontmatterSchema,
+  type SkillFrontmatter,
+  skillFrontmatterSchema,
 } from './schema.js';
 import { parseYamlStrict } from './yaml.js';
 
@@ -45,6 +61,64 @@ export type PermissionResource = PermissionDeclaration & {
   path: string;
 };
 
+/**
+ * One extra file carried inside a skill directory. Content is strict UTF-8
+ * text: the managed-output pipeline compares and writes text, and decoding then
+ * re-encoding a valid UTF-8 file is byte-identical. A non-UTF-8 asset is refused
+ * (F001) rather than silently corrupted.
+ */
+export type SkillFile = {
+  /** Path relative to the skill directory, POSIX-spelled. */
+  path: string;
+  text: string;
+};
+
+export type CommandResource = {
+  kind: 'command';
+  id: string;
+  description?: string;
+  body: string;
+  /** Repository-relative path, for messages. */
+  path: string;
+  /** Content digest, for duplicate-id detection. */
+  sha256: string;
+};
+
+export type SkillResource = {
+  kind: 'skill';
+  id: string;
+  description: string;
+  body: string;
+  /** `SKILL.md` plus every other file, sorted by path. */
+  files: SkillFile[];
+  /** Repository-relative path of `SKILL.md`, for messages. */
+  path: string;
+  /** Content digest, for duplicate-id detection. */
+  sha256: string;
+};
+
+export type McpResource = {
+  kind: 'mcp';
+  id: string;
+  server: McpServerDeclaration;
+  /** Repository-relative path, for messages. */
+  path: string;
+  /** Content digest, for duplicate-id detection. */
+  sha256: string;
+};
+
+export type HookResource = {
+  kind: 'hook';
+  id: string;
+  phase: HookDeclaration['phase'];
+  matcher?: string;
+  command: string;
+  /** Repository-relative path, for messages. */
+  path: string;
+  /** Content digest, for duplicate-id detection. */
+  sha256: string;
+};
+
 export type LoadedPersona = PersonaDeclaration & {
   /** Repository-relative path, for messages. */
   path: string;
@@ -54,6 +128,10 @@ export type SourceTree = {
   personas: LoadedPersona[];
   rules: RuleResource[];
   permissions: PermissionResource[];
+  mcp: McpResource[];
+  skills: SkillResource[];
+  commands: CommandResource[];
+  hooks: HookResource[];
 };
 
 function relative(...segments: string[]): string {
@@ -112,8 +190,20 @@ async function listEntries(
     .sort((a, b) => compareCodepoints(a.name, b.name));
 }
 
-/** Only the resource kinds this milestone implements may exist on disk. */
-const SUPPORTED_RESOURCE_DIRS: readonly string[] = [RULES_DIR, PERMISSIONS_DIR];
+/**
+ * Only the resource kinds this milestone loads may exist on disk. A `models/`
+ * directory is not created by `init` and is refused when populated: a model is
+ * the persona's `model` class, and accepting a model resource file the tool
+ * then ignored would be the silent no-op the strict schema exists to prevent.
+ */
+const SUPPORTED_RESOURCE_DIRS: readonly string[] = [
+  RULES_DIR,
+  PERMISSIONS_DIR,
+  MCP_DIR,
+  SKILLS_DIR,
+  COMMANDS_DIR,
+  HOOKS_DIR,
+];
 
 async function assertSupportedResourceDirs(repoRoot: string): Promise<void> {
   const dirRelative = relative(RESOURCES_DIR);
@@ -314,6 +404,320 @@ async function loadPermissions(repoRoot: string): Promise<PermissionResource[]> 
     .sort((a, b) => compareCodepoints(a.id, b.id));
 }
 
+type ContentAddressed = { kind: string; id: string; sha256: string; path: string };
+
+/**
+ * Deduplicate by `(kind, id)`. Identical content is one resource; two different
+ * bodies with the same id are F005 naming both paths, never a silent winner.
+ */
+function dedupeById<T extends ContentAddressed>(kind: string, entries: T[]): T[] {
+  const byId = new Map<string, T>();
+  for (const entry of entries) {
+    const existing = byId.get(entry.id);
+    if (existing === undefined) {
+      byId.set(entry.id, entry);
+      continue;
+    }
+    if (existing.sha256 !== entry.sha256) {
+      throw conflict(`two ${kind} resources share the id "${entry.id}" with different content`, {
+        subject: entry.path,
+        action: `the same (kind, id) also appears in ${existing.path}; give one of them a different id`,
+      });
+    }
+  }
+  return [...byId.values()].sort((a, b) => compareCodepoints(a.id, b.id));
+}
+
+function parseResourceJsonc(text: string, path: string): unknown {
+  return parseJsonc(text, { subject: path });
+}
+
+async function loadCommands(repoRoot: string): Promise<CommandResource[]> {
+  const dirRelative = relative(RESOURCES_DIR, COMMANDS_DIR);
+  const entries = await listEntries(
+    join(repoRoot, ROOT_DIR, RESOURCES_DIR, COMMANDS_DIR),
+    dirRelative,
+    { optional: true },
+  );
+  const commands: CommandResource[] = [];
+  for (const entry of entries) {
+    const name = entry.name;
+    const path = `${dirRelative}/${name}`;
+    if (!entry.isFile()) {
+      throw invalidConfig('unexpected entry in resources/commands/', {
+        subject: path,
+        action: `a command is one ${COMMAND_FILE_EXT} file`,
+      });
+    }
+    if (!name.endsWith(COMMAND_FILE_EXT)) {
+      throw invalidConfig('unexpected file in resources/commands/', {
+        subject: path,
+        action: `command files use the ${COMMAND_FILE_EXT} extension`,
+      });
+    }
+    const text = await readUtf8File(
+      join(repoRoot, ROOT_DIR, RESOURCES_DIR, COMMANDS_DIR, name),
+      path,
+      { action: 'make the command file readable and re-run generate' },
+    );
+    const frontmatter = splitFrontmatter(text, path);
+    const raw = parseYamlStrict(frontmatter.text, { subject: `${path}:frontmatter` });
+    let parsed: CommandFrontmatter;
+    try {
+      parsed = commandFrontmatterSchema.parse(raw);
+    } catch (error) {
+      if (error instanceof ZodError) {
+        throw invalidConfig(describeZodError(error), { subject: `${path}:frontmatter` });
+      }
+      throw error;
+    }
+    if (frontmatter.body.trim() === '') {
+      throw invalidConfig('command body is empty', {
+        subject: path,
+        action: 'add the command prompt after the closing frontmatter delimiter',
+      });
+    }
+    commands.push({
+      kind: 'command',
+      id: parsed.id,
+      ...(parsed.description === undefined ? {} : { description: parsed.description }),
+      body: frontmatter.body,
+      path,
+      sha256: sha256Hex(
+        canonicalJson({ description: parsed.description ?? null, body: frontmatter.body }),
+      ),
+    });
+  }
+  return dedupeById('command', commands);
+}
+
+async function listSkillExtraFiles(skillRoot: string, skillRelative: string): Promise<SkillFile[]> {
+  const files: SkillFile[] = [];
+  const walk = async (current: string, prefix: string): Promise<void> => {
+    const entries = await readdir(current, { withFileTypes: true });
+    for (const entry of entries) {
+      if (isOsMetadataName(entry.name)) {
+        continue;
+      }
+      const relativePath = prefix === '' ? entry.name : `${prefix}/${entry.name}`;
+      // `SKILL.md` is the one file rewritten by the renderer; it is verified
+      // structurally, not carried byte for byte.
+      if (relativePath === SKILL_FILE_NAME) {
+        continue;
+      }
+      const subject = `${skillRelative}/${relativePath}`;
+      const absolute = join(current, entry.name);
+      if (entry.isSymbolicLink()) {
+        throw pathUnsafe(`symlink not allowed: ${subject}`, { subject });
+      }
+      if (entry.isDirectory()) {
+        await walk(absolute, relativePath);
+        continue;
+      }
+      if (!entry.isFile()) {
+        throw invalidConfig('unexpected entry in a skill directory', {
+          subject,
+          action: 'a skill directory holds regular files and directories only',
+        });
+      }
+      files.push({
+        path: relativePath,
+        text: await readUtf8File(absolute, subject, {
+          action: 'a skill file must be UTF-8 text; re-save it as UTF-8',
+        }),
+      });
+    }
+  };
+  await walk(skillRoot, '');
+  return files.sort((a, b) => compareCodepoints(a.path, b.path));
+}
+
+async function loadSkills(repoRoot: string): Promise<SkillResource[]> {
+  const dirRelative = relative(RESOURCES_DIR, SKILLS_DIR);
+  const entries = await listEntries(
+    join(repoRoot, ROOT_DIR, RESOURCES_DIR, SKILLS_DIR),
+    dirRelative,
+    { optional: true },
+  );
+  const skills: SkillResource[] = [];
+  for (const entry of entries) {
+    const dirName = entry.name;
+    const skillRelative = `${dirRelative}/${dirName}`;
+    if (!entry.isDirectory()) {
+      throw invalidConfig('unexpected entry in resources/skills/', {
+        subject: skillRelative,
+        action: `a skill is a directory named after its id, holding ${SKILL_FILE_NAME}`,
+      });
+    }
+    const skillRoot = join(repoRoot, ROOT_DIR, RESOURCES_DIR, SKILLS_DIR, dirName);
+    // The directory itself is checked before it is listed: a symlinked skill
+    // directory would otherwise compile bytes from anywhere on disk.
+    await assertRealDirectory(skillRoot, skillRelative);
+    const skillPath = `${skillRelative}/${SKILL_FILE_NAME}`;
+    const text = await readUtf8File(join(skillRoot, SKILL_FILE_NAME), skillPath, {
+      action: `a skill directory must hold ${SKILL_FILE_NAME}`,
+    });
+    const frontmatter = splitFrontmatter(text, skillPath);
+    const raw = parseYamlStrict(frontmatter.text, { subject: `${skillPath}:frontmatter` });
+    let parsed: SkillFrontmatter;
+    try {
+      parsed = skillFrontmatterSchema.parse(raw);
+    } catch (error) {
+      if (error instanceof ZodError) {
+        throw invalidConfig(describeZodError(error), { subject: `${skillPath}:frontmatter` });
+      }
+      throw error;
+    }
+    if (parsed.id !== dirName) {
+      throw invalidConfig(`id "${parsed.id}" does not match the skill directory "${dirName}"`, {
+        subject: skillPath,
+        action: 'rename the directory or change the id',
+      });
+    }
+    if (frontmatter.body.trim() === '') {
+      throw invalidConfig('skill body is empty', {
+        subject: skillPath,
+        action: 'add the skill text after the closing frontmatter delimiter',
+      });
+    }
+    const files = await listSkillExtraFiles(skillRoot, skillRelative);
+    skills.push({
+      kind: 'skill',
+      id: parsed.id,
+      description: parsed.description,
+      body: frontmatter.body,
+      files,
+      path: skillPath,
+      sha256: sha256Hex(
+        canonicalJson({
+          description: parsed.description,
+          body: frontmatter.body,
+          files: files.map((file) => ({ path: file.path, sha256: sha256Hex(file.text) })),
+        }),
+      ),
+    });
+  }
+  return dedupeById('skill', skills);
+}
+
+/**
+ * A literal in a credential position is F002. The message names the field and
+ * never echoes the value; the plan never sees a secret.
+ */
+function assertReferencesOnly(server: McpServerDeclaration, subject: string): void {
+  const fields: Record<string, unknown> | undefined =
+    server.type === 'stdio' ? server.env : server.headers;
+  for (const [field, value] of Object.entries(fields ?? {})) {
+    if (typeof value === 'string') {
+      throw secretLiteral(`a literal value is not allowed in "${field}"`, {
+        subject,
+        action: 'use { "fromEnv": "NAME" } so only the variable name is written, never the value',
+      });
+    }
+  }
+}
+
+async function loadMcpResources(repoRoot: string): Promise<McpResource[]> {
+  const dirRelative = relative(RESOURCES_DIR, MCP_DIR);
+  const entries = await listEntries(join(repoRoot, ROOT_DIR, RESOURCES_DIR, MCP_DIR), dirRelative, {
+    optional: true,
+  });
+  const servers: McpResource[] = [];
+  for (const entry of entries) {
+    const name = entry.name;
+    const path = `${dirRelative}/${name}`;
+    if (!entry.isFile()) {
+      throw invalidConfig('unexpected entry in resources/mcp/', {
+        subject: path,
+        action: `an MCP server is one ${STRUCTURED_RESOURCE_FILE_EXT} file`,
+      });
+    }
+    if (!name.endsWith(STRUCTURED_RESOURCE_FILE_EXT)) {
+      throw invalidConfig('unexpected file in resources/mcp/', {
+        subject: path,
+        action: `MCP files use the ${STRUCTURED_RESOURCE_FILE_EXT} extension`,
+      });
+    }
+    const text = await readUtf8File(join(repoRoot, ROOT_DIR, RESOURCES_DIR, MCP_DIR, name), path, {
+      action: 'make the MCP file readable and re-run generate',
+    });
+    let parsed: McpDeclaration;
+    try {
+      parsed = mcpSchema.parse(parseResourceJsonc(text, path));
+    } catch (error) {
+      if (error instanceof ZodError) {
+        throw invalidConfig(describeZodError(error), { subject: path });
+      }
+      throw error;
+    }
+    assertReferencesOnly(parsed.server, path);
+    servers.push({
+      kind: 'mcp',
+      id: parsed.id,
+      server: parsed.server,
+      path,
+      sha256: sha256Hex(canonicalJson({ server: parsed.server })),
+    });
+  }
+  return dedupeById('mcp', servers);
+}
+
+async function loadHooks(repoRoot: string): Promise<HookResource[]> {
+  const dirRelative = relative(RESOURCES_DIR, HOOKS_DIR);
+  const entries = await listEntries(
+    join(repoRoot, ROOT_DIR, RESOURCES_DIR, HOOKS_DIR),
+    dirRelative,
+    { optional: true },
+  );
+  const hooks: HookResource[] = [];
+  for (const entry of entries) {
+    const name = entry.name;
+    const path = `${dirRelative}/${name}`;
+    if (!entry.isFile()) {
+      throw invalidConfig('unexpected entry in resources/hooks/', {
+        subject: path,
+        action: `a hook is one ${STRUCTURED_RESOURCE_FILE_EXT} file`,
+      });
+    }
+    if (!name.endsWith(STRUCTURED_RESOURCE_FILE_EXT)) {
+      throw invalidConfig('unexpected file in resources/hooks/', {
+        subject: path,
+        action: `hook files use the ${STRUCTURED_RESOURCE_FILE_EXT} extension`,
+      });
+    }
+    const text = await readUtf8File(
+      join(repoRoot, ROOT_DIR, RESOURCES_DIR, HOOKS_DIR, name),
+      path,
+      { action: 'make the hook file readable and re-run generate' },
+    );
+    let parsed: HookDeclaration;
+    try {
+      parsed = hookSchema.parse(parseResourceJsonc(text, path));
+    } catch (error) {
+      if (error instanceof ZodError) {
+        throw invalidConfig(describeZodError(error), { subject: path });
+      }
+      throw error;
+    }
+    hooks.push({
+      kind: 'hook',
+      id: parsed.id,
+      phase: parsed.phase,
+      ...(parsed.matcher === undefined ? {} : { matcher: parsed.matcher }),
+      command: parsed.command,
+      path,
+      sha256: sha256Hex(
+        canonicalJson({
+          phase: parsed.phase,
+          matcher: parsed.matcher ?? null,
+          command: parsed.command,
+        }),
+      ),
+    });
+  }
+  return dedupeById('hook', hooks);
+}
+
 /** Enumerate and parse the whole source tree. A file that is present but unparsed is an error. */
 export async function loadSource(repoRoot: string): Promise<SourceTree> {
   // The source root itself is checked first: a symlinked `.farna` is refused
@@ -323,5 +727,9 @@ export async function loadSource(repoRoot: string): Promise<SourceTree> {
   const personas = (await loadPersonas(repoRoot)).sort((a, b) => compareCodepoints(a.id, b.id));
   const rules = (await loadRules(repoRoot)).sort((a, b) => compareCodepoints(a.id, b.id));
   const permissions = await loadPermissions(repoRoot);
-  return { personas, rules, permissions };
+  const mcp = await loadMcpResources(repoRoot);
+  const skills = await loadSkills(repoRoot);
+  const commands = await loadCommands(repoRoot);
+  const hooks = await loadHooks(repoRoot);
+  return { personas, rules, permissions, mcp, skills, commands, hooks };
 }

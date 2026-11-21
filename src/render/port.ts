@@ -1,4 +1,4 @@
-import type { DEFAULT_TARGET } from '../core/constants.js';
+import type { SupportedTarget } from '../core/constants.js';
 
 /**
  * The injection seam. Everything above this module works against
@@ -6,7 +6,19 @@ import type { DEFAULT_TARGET } from '../core/constants.js';
  * No renderer type crosses this boundary.
  */
 
-export type RenderTargetName = typeof DEFAULT_TARGET;
+export type RenderTargetName = SupportedTarget;
+
+/** The renderer features this product can select. Never the `*` wildcard. */
+export type RenderFeature =
+  | 'rules'
+  | 'ignore'
+  | 'mcp'
+  | 'subagents'
+  | 'commands'
+  | 'skills'
+  | 'hooks'
+  | 'permissions'
+  | 'checks';
 
 export type RenderRequest = {
   target: RenderTargetName;
@@ -20,6 +32,14 @@ export type RenderRequest = {
   sourceRoot: string;
   /** Absolute path to an empty directory the renderer writes into. */
   outputRoot: string;
+  /**
+   * The rulesync features this render needs. The product derives its own set
+   * from the materialised source rather than passing `*`, because the wildcard
+   * silently skips a feature the target does not support. Omitted means
+   * `['subagents']`, which is the whole set a Claude Code agent-mode render
+   * needs.
+   */
+  features?: readonly RenderFeature[];
 };
 
 export type RenderResult = {
@@ -75,7 +95,6 @@ export type RendererIdentity = {
 };
 
 export interface RenderTarget {
-  readonly name: RenderTargetName;
   /** The identity of the renderer actually loaded, used to verify the pin. */
   identity(): RendererIdentity;
   /**
