@@ -390,15 +390,30 @@ const OPENCODE_CATEGORY_ORDER: ReadonlyArray<{
   { key: 'task', action: 'subagent', product: ['task'] },
 ];
 
+/** The stricter of two declarations for one OpenCode resource, or the present one. */
+function stricterWinner(a: Winner | undefined, b: Winner | undefined): Winner | undefined {
+  if (a === undefined) {
+    return b;
+  }
+  if (b === undefined) {
+    return a;
+  }
+  return RANK[b.value] > RANK[a.value] ? b : a;
+}
+
 /**
  * Map a persona's resolved permission map onto OpenCode's ordered permission
  * records. Measured at rulesync 43.11.0: `bash` becomes `shell`, `task` becomes
  * `subagent`, and `write` folds into `edit` (there is no write category). The
- * fold is reported as W112 because an `allow` now also permits modifying
- * existing files. `ask` becomes deny (W111) because no ask effect is measured.
+ * fold is reported as W112 when a write-derived allow is emitted without a
+ * matching edit declaration. `ask` becomes deny (W111).
  *
- * The source map and the emitted records are produced together so the
- * containment gate asserts the same order the renderer preserves.
+ * OpenCode documents last-match-wins, so record order is semantic. The
+ * catch-all is always emitted first and the pattern resources keep the order
+ * they were declared in: sorting by codepoint could put an earlier allow after
+ * a later deny and silently turn a deny into an allow. The source map and the
+ * emitted records are produced together so the containment gate asserts the
+ * same order the renderer preserves.
  */
 export function mapOpencodePermissions(
   resolved: ResolvedPermissions,
@@ -423,85 +438,111 @@ export function mapOpencodePermissions(
     return 'deny';
   };
 
-  // W112 is the widening case only: a `write` declaration that contributes an
-  // `allow` while no `edit` declaration already states that intent. A `write`
-  // that resolves deny is folded into edit with no widening, so it is not
-  // reported: a stricter rule must never be presented as a loss.
-  const writePatterns = Object.values(resolved.patterns['write'] ?? {});
-  const editPatterns = Object.values(resolved.patterns['edit'] ?? {});
-  const writeAllows =
-    resolved.values['write']?.value === 'allow' ||
-    writePatterns.some((pattern) => pattern.value === 'allow');
-  const editAllows =
-    resolved.values['edit']?.value === 'allow' ||
-    editPatterns.some((pattern) => pattern.value === 'allow');
-  if (writeAllows && !editAllows) {
-    warnings.push(
-      warning({
-        code: 'W112_PERMISSION_LOSSY',
-        persona: context.persona,
-        target: context.target,
-        capability: 'permission',
-        message: `write is carried as edit on ${context.target}: an allow also permits modifying existing files; declare edit to state that intent`,
-      }),
-    );
-  }
-
   const source: OpencodePermissionCategory[] = [];
   const records: OpencodePermissionRecord[] = [];
   for (const mapping of OPENCODE_CATEGORY_ORDER) {
-    // Merge the product categories that share one OpenCode category, the
-    // stricter effect winning. `write` and `edit` are the only such pair.
-    const patterns = new Map<string, OpencodePermissionEffect>();
-    const recordPattern = (resource: string, effect: OpencodePermissionEffect): void => {
-      const existing = patterns.get(resource);
-      if (existing === undefined || (existing === 'allow' && effect === 'deny')) {
-        patterns.set(resource, effect);
-      }
+    // One entry per emitted resource, remembering which product categories
+    // declared it so the stricter value wins and W112 can be attributed.
+    const byResource = new Map<string, Partial<Record<PermissionCategory, Winner>>>();
+    const remember = (product: PermissionCategory, resource: string, declared: Winner): void => {
+      const bucket = byResource.get(resource) ?? {};
+      bucket[product] = declared;
+      byResource.set(resource, bucket);
     };
     for (const product of mapping.product) {
-      const declared = resolved.values[product];
-      if (declared !== undefined) {
-        recordPattern('*', effective(declared, product));
+      const categoryWinner = resolved.values[product];
+      if (categoryWinner !== undefined) {
+        remember(product, '*', categoryWinner);
       }
-      for (const [resource, declaredPattern] of Object.entries(resolved.patterns[product] ?? {})) {
-        recordPattern(resource, effective(declaredPattern, `${product}(${resource})`));
+      for (const [resource, declared] of Object.entries(resolved.patterns[product] ?? {})) {
+        remember(product, resource, declared);
       }
     }
-    if (patterns.size === 0) {
+    if (byResource.size === 0) {
       continue;
     }
-    // A deny catch-all wins: emitting an allow pattern after it would re-allow
-    // what the persona denied, and the harness, not this tool, would decide.
-    if (patterns.get('*') === 'deny') {
-      for (const [resource, effect] of [...patterns]) {
-        if (resource !== '*' && effect === 'allow') {
-          patterns.delete(resource);
-          warnings.push(
-            warning({
-              code: 'W106_DENY_WINS',
-              persona: context.persona,
-              target: context.target,
-              capability: 'permission',
-              severity: 'medium',
-              message: `${mapping.key} resolves deny, so the allow pattern "${resource}" is not emitted`,
-            }),
-          );
-        }
-      }
+
+    const catchAll = byResource.get('*');
+    const catchAllWinner = mapping.product
+      .map((product) => catchAll?.[product])
+      .reduce<Winner | undefined>((acc, entry) => stricterWinner(acc, entry), undefined);
+    const catchAllEffect =
+      catchAllWinner === undefined ? undefined : effective(catchAllWinner, mapping.key);
+
+    // The catch-all is first, then every pattern in its source declaration
+    // order. `byResource` is insertion-ordered and never codepoint-sorted.
+    const ordered: Array<[string, OpencodePermissionEffect]> = [];
+    if (catchAllEffect !== undefined) {
+      ordered.push(['*', catchAllEffect]);
     }
-    const ordered = [
-      ...(patterns.has('*') ? ([['*', patterns.get('*')]] as const) : []),
-      ...[...patterns.entries()]
-        .filter(([resource]) => resource !== '*')
-        .sort((a, b) => compareCodepoints(a[0], b[0])),
-    ];
-    const entry: OpencodePermissionCategory = { key: mapping.key, patterns: [] };
-    for (const [resource, effect] of ordered) {
-      if (effect === undefined) {
+    for (const [resource, winners] of byResource) {
+      if (resource === '*') {
         continue;
       }
-      entry.patterns.push([resource, effect]);
+      const merged = mapping.product
+        .map((product) => winners[product])
+        .reduce<Winner | undefined>((acc, entry) => stricterWinner(acc, entry), undefined);
+      if (merged === undefined) {
+        continue;
+      }
+      ordered.push([resource, effective(merged, `${mapping.key}(${resource})`)]);
+    }
+
+    // A deny catch-all wins: emitting an allow pattern after it would re-allow
+    // what the persona denied, and the harness, not this tool, would decide.
+    const emitted: Array<[string, OpencodePermissionEffect]> = [];
+    for (const [resource, effect] of ordered) {
+      if (resource !== '*' && catchAllEffect === 'deny' && effect === 'allow') {
+        warnings.push(
+          warning({
+            code: 'W106_DENY_WINS',
+            persona: context.persona,
+            target: context.target,
+            capability: 'permission',
+            severity: 'medium',
+            message: `${mapping.key} resolves deny, so the allow pattern "${resource}" is not emitted`,
+          }),
+        );
+        continue;
+      }
+      emitted.push([resource, effect]);
+    }
+
+    // W112 is computed from the emitted edit records, per resource: an allow
+    // that exists only because `write` folded into `edit` is a widening. A
+    // record whose emitted effect is deny is never a widening, and an unrelated
+    // edit allow elsewhere does not cover a resource it does not name.
+    if (mapping.key === 'edit') {
+      const editCatchAll = resolved.values['edit'];
+      for (const [resource, effect] of emitted) {
+        if (effect !== 'allow') {
+          continue;
+        }
+        const writeWinner =
+          resource === '*' ? resolved.values['write'] : resolved.patterns['write']?.[resource];
+        if (writeWinner?.value !== 'allow') {
+          continue;
+        }
+        const editWinner = resource === '*' ? editCatchAll : resolved.patterns['edit']?.[resource];
+        const coveredByEdit =
+          editWinner !== undefined || (resource !== '*' && editCatchAll?.value === 'allow');
+        if (coveredByEdit) {
+          continue;
+        }
+        warnings.push(
+          warning({
+            code: 'W112_PERMISSION_LOSSY',
+            persona: context.persona,
+            target: context.target,
+            capability: 'permission',
+            message: `write is carried as edit on ${context.target}: the allow for edit "${resource}" comes from write and an allow also permits modifying existing files; declare edit to state that intent`,
+          }),
+        );
+      }
+    }
+
+    const entry: OpencodePermissionCategory = { key: mapping.key, patterns: emitted };
+    for (const [resource, effect] of emitted) {
       records.push({ action: mapping.action, resource, effect });
     }
     source.push(entry);
@@ -510,13 +551,42 @@ export function mapOpencodePermissions(
   return { source, records, warnings };
 }
 
+/**
+ * The declared patterns as ordered `[pattern, value]` arrays. Object key order
+ * carries the source declaration order, and an array keeps it through
+ * `canonicalJson`, which sorts object keys but never array members. OpenCode's
+ * last-match-wins means two sources that differ only in order are different
+ * permissions, so the digest must be order-sensitive too.
+ */
+function orderedPatternEntries(
+  patterns: Partial<Record<PermissionCategory, Record<string, PermissionValue | Winner>>>,
+): Record<string, Array<[string, PermissionValue]>> {
+  const ordered: Record<string, Array<[string, PermissionValue]>> = {};
+  for (const category of PERMISSION_CATEGORIES) {
+    const bucket = patterns[category];
+    if (bucket === undefined) {
+      continue;
+    }
+    const entries: Array<[string, PermissionValue]> = [];
+    for (const [pattern, declared] of Object.entries(bucket)) {
+      entries.push([pattern, typeof declared === 'string' ? declared : declared.value]);
+    }
+    if (entries.length > 0) {
+      ordered[category] = entries;
+    }
+  }
+  return ordered;
+}
+
 /** The digest of one permission resource's declared content. */
 export function permissionResourceDigest(
   tools: PermissionTools,
   patterns: PermissionPatterns | undefined,
   allowlist: boolean,
 ): string {
-  return sha256Hex(canonicalJson({ tools, patterns: patterns ?? {}, allowlist }));
+  return sha256Hex(
+    canonicalJson({ tools, patterns: orderedPatternEntries(patterns ?? {}), allowlist }),
+  );
 }
 
 /**
@@ -534,19 +604,6 @@ export function permissionDigest(resolved: ResolvedPermissions, allowlist: boole
       values[category] = declared.value;
     }
   }
-  const patterns: Record<string, Record<string, string>> = {};
-  for (const category of PERMISSION_CATEGORIES) {
-    const bucket = resolved.patterns[category];
-    if (bucket === undefined) {
-      continue;
-    }
-    const entry: Record<string, string> = {};
-    for (const [pattern, declared] of Object.entries(bucket)) {
-      entry[pattern] = declared.value;
-    }
-    if (Object.keys(entry).length > 0) {
-      patterns[category] = entry;
-    }
-  }
+  const patterns = orderedPatternEntries(resolved.patterns);
   return sha256Hex(canonicalJson({ values, patterns, allowlist }));
 }

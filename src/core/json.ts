@@ -55,6 +55,43 @@ export function hasBom(text: string): boolean {
   return text.charCodeAt(0) === 0xfeff;
 }
 
+function findForbiddenKey(node: Node, pointer: string): string | undefined {
+  if (node.type === 'object') {
+    for (const property of node.children ?? []) {
+      if (property.type !== 'property') {
+        continue;
+      }
+      const [keyNode, valueNode] = property.children ?? [];
+      if (keyNode === undefined || valueNode === undefined) {
+        continue;
+      }
+      const key = String(keyNode.value);
+      if (key === '__proto__') {
+        return pointer === '' ? key : `${pointer}.${key}`;
+      }
+      const nested = findForbiddenKey(valueNode, pointer === '' ? key : `${pointer}.${key}`);
+      if (nested !== undefined) {
+        return nested;
+      }
+    }
+    return undefined;
+  }
+  if (node.type === 'array') {
+    const children = node.children ?? [];
+    for (let index = 0; index < children.length; index += 1) {
+      const child = children[index];
+      if (child === undefined) {
+        continue;
+      }
+      const nested = findForbiddenKey(child, `${pointer}[${index}]`);
+      if (nested !== undefined) {
+        return nested;
+      }
+    }
+  }
+  return undefined;
+}
+
 function findDuplicateKey(node: Node, pointer: string): string | undefined {
   if (node.type === 'object') {
     const seen = new Set<string>();
@@ -129,6 +166,14 @@ export function parseJsonc<T = unknown>(text: string, options: JsoncParseOptions
           ? 'file did not parse'
           : `${printParseErrorCode(first.error)} at offset ${first.offset}`;
       throw invalidConfig(detail, { subject: options.subject });
+    }
+    const forbidden = findForbiddenKey(tree, '');
+    if (forbidden !== undefined) {
+      throw invalidConfig(`forbidden key "${forbidden}"`, {
+        subject: options.subject,
+        action:
+          'rename the key: "__proto__" is never read or written, and accepting it would silently drop a declaration',
+      });
     }
     const duplicate = findDuplicateKey(tree, '');
     if (duplicate !== undefined) {

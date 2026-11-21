@@ -2,6 +2,7 @@ import { constants } from 'node:fs';
 import { type FileHandle, open } from 'node:fs/promises';
 import { SOURCE_MAX_BYTES } from './constants.js';
 import { invalidConfig, pathUnsafe } from './errors.js';
+import { hasBom } from './json.js';
 
 /**
  * The one place source bytes become text. `readFile(path, 'utf8')` replaces an
@@ -157,7 +158,18 @@ export async function readUtf8File(
 ): Promise<string> {
   const action = options.action ?? 'make the path readable and re-run';
   const bytes = await readBoundedBytes(path, subject, { action, maxBytes: SOURCE_MAX_BYTES });
-  return decodeUtf8(bytes, subject);
+  const text = decodeUtf8(bytes, subject);
+  // One rule for every source kind: a leading BOM is refused here rather than
+  // being accepted by one parser and rejected by another. Personas, rules,
+  // permissions, MCP, skills (including every asset), commands, hooks and the
+  // config all pass through this function.
+  if (hasBom(text)) {
+    throw invalidConfig('file starts with a UTF-8 BOM', {
+      subject,
+      action: 'save the file as UTF-8 without a BOM',
+    });
+  }
+  return text;
 }
 
 /** A one-line filesystem code, for a message; never the raw absolute path. */

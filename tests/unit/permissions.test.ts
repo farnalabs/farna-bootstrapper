@@ -7,11 +7,13 @@ import { FarnaError } from '../../src/core/errors.js';
 import { personaSourceFile } from '../../src/materialise/source-tree.js';
 import {
   emptyResolvedPermissions,
+  mapOpencodePermissions,
   mapPermissions,
   mergePermission,
   type PermissionContribution,
   type PermissionPatterns,
   type PermissionTools,
+  permissionDigest,
   type ResolvedPermissions,
 } from '../../src/permissions/permissions.js';
 import type { Warning } from '../../src/report/warnings.js';
@@ -59,6 +61,7 @@ function personaSource(
   allowlist: boolean,
 ): string {
   const source: SourceTree = {
+    warnings: [],
     personas: [
       {
         kind: 'persona',
@@ -162,6 +165,7 @@ describe('permission mapping', () => {
 
   it('records the effective allow-list in the digest, so a no-effect opt-in changes nothing', () => {
     const source = (allowlist: boolean): SourceTree => ({
+      warnings: [],
       personas: [
         {
           kind: 'persona',
@@ -329,6 +333,80 @@ describe('permission mapping', () => {
   });
 });
 
+describe('opencode permission records', () => {
+  function mapOpencode(
+    tools: PermissionTools,
+    patterns: PermissionPatterns = {},
+  ): ReturnType<typeof mapOpencodePermissions> {
+    const { permissions } = resolve([{ id: 'builder-default', tools, patterns, allowlist: false }]);
+    return mapOpencodePermissions(permissions, { persona: 'builder', target: 'opencode' });
+  }
+
+  it('keeps declaration order so a later deny stays last and wins', () => {
+    const mapped = mapOpencode({}, { edit: { 'a/**': 'allow', '**/secret/**': 'deny' } });
+    expect(mapped.records).toEqual([
+      { action: 'edit', resource: 'a/**', effect: 'allow' },
+      { action: 'edit', resource: '**/secret/**', effect: 'deny' },
+    ]);
+  });
+
+  it('emits the catch-all first and the patterns in source order after it', () => {
+    const mapped = mapOpencode(
+      { edit: 'allow' },
+      { edit: { 'a/**': 'allow', '**/secret/**': 'deny' } },
+    );
+    expect(mapped.records).toEqual([
+      { action: 'edit', resource: '*', effect: 'allow' },
+      { action: 'edit', resource: 'a/**', effect: 'allow' },
+      { action: 'edit', resource: '**/secret/**', effect: 'deny' },
+    ]);
+  });
+
+  it('warns W112 for a write-derived allow that no edit declaration covers', () => {
+    // An unrelated edit allow must not suppress the warning: the catch-all
+    // allow still comes only from `write`.
+    const mapped = mapOpencode({ write: 'allow' }, { edit: { 'src/**': 'allow' } });
+    const warnings = mapped.warnings.filter((entry) => entry.code === 'W112_PERMISSION_LOSSY');
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]?.message).toContain('edit "*"');
+  });
+
+  it('does not warn W112 when an edit declaration covers the write allow', () => {
+    const mapped = mapOpencode({ write: 'allow', edit: 'allow' });
+    expect(mapped.warnings.filter((entry) => entry.code === 'W112_PERMISSION_LOSSY')).toHaveLength(
+      0,
+    );
+  });
+
+  it('does not warn W112 when the emitted edit effect is deny', () => {
+    const mapped = mapOpencode({ write: 'allow', edit: 'deny' });
+    expect(mapped.records).toEqual([{ action: 'edit', resource: '*', effect: 'deny' }]);
+    expect(mapped.warnings.filter((entry) => entry.code === 'W112_PERMISSION_LOSSY')).toHaveLength(
+      0,
+    );
+  });
+
+  it('makes the permission digest order-sensitive', () => {
+    const first = resolve([
+      {
+        id: 'p',
+        tools: {},
+        patterns: { edit: { 'a/**': 'allow', '**/secret/**': 'deny' } },
+        allowlist: false,
+      },
+    ]).permissions;
+    const second = resolve([
+      {
+        id: 'p',
+        tools: {},
+        patterns: { edit: { '**/secret/**': 'deny', 'a/**': 'allow' } },
+        allowlist: false,
+      },
+    ]).permissions;
+    expect(permissionDigest(first, false)).not.toBe(permissionDigest(second, false));
+  });
+});
+
 describe('permission pattern grammar', () => {
   for (const [label, pattern] of [
     ['a closing parenthesis', 'rm -rf)'],
@@ -422,6 +500,7 @@ describe('permission source validation', () => {
 describe('permission source form', () => {
   it('never writes a product category into the renderer source tree', () => {
     const source: SourceTree = {
+      warnings: [],
       personas: [
         {
           kind: 'persona',

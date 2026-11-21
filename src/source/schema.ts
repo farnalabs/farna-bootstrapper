@@ -55,12 +55,15 @@ export const ruleFrontmatterSchema = z.strictObject({
   displayName: z.string().min(1).max(80).optional(),
 });
 
-/** A command's frontmatter is a rule's plus the optional one-line description
- * the OpenCode command file carries. */
+/**
+ * A command's `description` is required. OpenCode's command file carries it,
+ * and a command without one cannot be rendered honestly; the missing field is a
+ * deliberate F001 at the source boundary rather than a renderer error later.
+ */
 export const commandFrontmatterSchema = z.strictObject({
   kind: z.literal('command'),
   id: idSchema,
-  description: z.string().min(1).max(200).optional(),
+  description: z.string().min(1).max(200),
 });
 
 /**
@@ -91,11 +94,32 @@ export const envRefSchema = z.strictObject({
  */
 const envValueSchema = z.union([envRefSchema, z.string()]);
 
+/** Whitespace (including control whitespace) and other control characters. */
+function hasWhitespaceOrControl(value: string): boolean {
+  return [...value].some((character) => {
+    const code = character.codePointAt(0) ?? 0;
+    return code <= 0x20 || code === 0x7f;
+  });
+}
+
+const envKeySchema = z
+  .string()
+  .min(1)
+  .max(200)
+  .refine((key) => key !== '__proto__', '__proto__ is not a valid environment or header name');
+
 const stdioServerSchema = z.strictObject({
   type: z.literal('stdio'),
-  command: z.string().min(1).max(2048),
+  command: z
+    .string()
+    .min(1)
+    .max(2048)
+    .refine(
+      (command) => !hasWhitespaceOrControl(command),
+      'command must be the program only; put its arguments in args',
+    ),
   args: z.array(z.string().max(2048)).max(64).optional(),
-  env: z.record(z.string().min(1).max(200), envValueSchema).optional(),
+  env: z.record(envKeySchema, envValueSchema).optional(),
 });
 
 const httpServerSchema = z.strictObject({
@@ -111,7 +135,7 @@ const httpServerSchema = z.strictObject({
         return false;
       }
     }, 'an http MCP server needs an absolute http or https URL'),
-  headers: z.record(z.string().min(1).max(200), envValueSchema).optional(),
+  headers: z.record(envKeySchema, envValueSchema).optional(),
 });
 
 /**
@@ -148,6 +172,13 @@ export const hookSchema = z
     command: z.string().min(1).max(2000),
   })
   .superRefine((hook, ctx) => {
+    if (/[\n\r\0]/.test(hook.command)) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['command'],
+        message: 'command cannot contain a newline or NUL',
+      });
+    }
     if (hook.matcher === undefined) {
       return;
     }

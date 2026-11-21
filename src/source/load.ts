@@ -2,6 +2,7 @@ import type { Dirent } from 'node:fs';
 import { readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { ZodError } from 'zod';
+import type { WarningCode } from '../core/constants.js';
 import {
   COMMAND_FILE_EXT,
   COMMANDS_DIR,
@@ -76,7 +77,7 @@ export type SkillFile = {
 export type CommandResource = {
   kind: 'command';
   id: string;
-  description?: string;
+  description: string;
   body: string;
   /** Repository-relative path, for messages. */
   path: string;
@@ -124,7 +125,20 @@ export type LoadedPersona = PersonaDeclaration & {
   path: string;
 };
 
+/**
+ * A warning derived while reading a source file, before a persona or target is
+ * known. `resolveSource` stamps it with the standard source subject and the
+ * configured target, so a lockfile record is still shaped like every other
+ * warning. The only member today is W115, declared on an MCP URL.
+ */
+export type SourceWarning = {
+  code: WarningCode;
+  capability?: 'mcp';
+  message: string;
+};
+
 export type SourceTree = {
+  warnings: SourceWarning[];
   personas: LoadedPersona[];
   rules: RuleResource[];
   permissions: PermissionResource[];
@@ -213,7 +227,13 @@ async function assertSupportedResourceDirs(repoRoot: string): Promise<void> {
     optional: true,
   });
   for (const entry of entries) {
-    if (!entry.isDirectory() || !SUPPORTED_RESOURCE_DIRS.includes(entry.name)) {
+    if (!entry.isDirectory()) {
+      throw invalidConfig(`a file under ${dirRelative}/ is not source`, {
+        subject: `${dirRelative}/${entry.name}`,
+        action: `resource declarations live under a resource-kind directory: ${SUPPORTED_RESOURCE_DIRS.map((dir) => `resources/${dir}/`).join(' and ')}`,
+      });
+    }
+    if (!SUPPORTED_RESOURCE_DIRS.includes(entry.name)) {
       throw invalidConfig(`resource kind "${entry.name}" is not implemented in this slice`, {
         subject: `${dirRelative}/${entry.name}`,
         action: `this slice supports resource files under ${SUPPORTED_RESOURCE_DIRS.map((dir) => `resources/${dir}/`).join(' and ')}`,
@@ -480,12 +500,10 @@ async function loadCommands(repoRoot: string): Promise<CommandResource[]> {
     commands.push({
       kind: 'command',
       id: parsed.id,
-      ...(parsed.description === undefined ? {} : { description: parsed.description }),
+      description: parsed.description,
       body: frontmatter.body,
       path,
-      sha256: sha256Hex(
-        canonicalJson({ description: parsed.description ?? null, body: frontmatter.body }),
-      ),
+      sha256: sha256Hex(canonicalJson({ description: parsed.description, body: frontmatter.body })),
     });
   }
   return dedupeById('command', commands);
@@ -617,7 +635,48 @@ function assertReferencesOnly(server: McpServerDeclaration, subject: string): vo
   }
 }
 
-async function loadMcpResources(repoRoot: string): Promise<McpResource[]> {
+const CREDENTIAL_QUERY_KEYS: ReadonlySet<string> = new Set([
+  'token',
+  'api_key',
+  'apikey',
+  'access_token',
+  'secret',
+  'password',
+]);
+
+/**
+ * A credential in an MCP URL is refused (F002) or flagged (W115), never echoed.
+ * Userinfo is a literal in a credential position; a credential-shaped query
+ * parameter is a warning because the value is still in the URL, but a header
+ * reference is the supported form.
+ */
+function inspectMcpUrl(id: string, path: string, raw: string, warnings: SourceWarning[]): void {
+  const url = new URL(raw);
+  if (url.username !== '' || url.password !== '') {
+    throw secretLiteral('an MCP http URL carries userinfo credentials', {
+      subject: path,
+      action: 'move the credential into a header using { "fromEnv": "NAME" }',
+    });
+  }
+  const seen = new Set<string>();
+  for (const key of url.searchParams.keys()) {
+    const normalised = key.toLowerCase();
+    if (!CREDENTIAL_QUERY_KEYS.has(normalised) || seen.has(normalised)) {
+      continue;
+    }
+    seen.add(normalised);
+    warnings.push({
+      code: 'W115_CREDENTIAL_IN_URL',
+      capability: 'mcp',
+      message: `mcp/${id} URL query parameter "${key}" looks like a credential; use a header reference instead`,
+    });
+  }
+}
+
+async function loadMcpResources(
+  repoRoot: string,
+  warnings: SourceWarning[],
+): Promise<McpResource[]> {
   const dirRelative = relative(RESOURCES_DIR, MCP_DIR);
   const entries = await listEntries(join(repoRoot, ROOT_DIR, RESOURCES_DIR, MCP_DIR), dirRelative, {
     optional: true,
@@ -651,6 +710,9 @@ async function loadMcpResources(repoRoot: string): Promise<McpResource[]> {
       throw error;
     }
     assertReferencesOnly(parsed.server, path);
+    if (parsed.server.type === 'http') {
+      inspectMcpUrl(parsed.id, path, parsed.server.url, warnings);
+    }
     servers.push({
       kind: 'mcp',
       id: parsed.id,
@@ -724,12 +786,13 @@ export async function loadSource(repoRoot: string): Promise<SourceTree> {
   // even though its contents would list perfectly.
   await assertRealDirectory(join(repoRoot, ROOT_DIR), ROOT_DIR);
   await assertSupportedResourceDirs(repoRoot);
+  const warnings: SourceWarning[] = [];
   const personas = (await loadPersonas(repoRoot)).sort((a, b) => compareCodepoints(a.id, b.id));
   const rules = (await loadRules(repoRoot)).sort((a, b) => compareCodepoints(a.id, b.id));
   const permissions = await loadPermissions(repoRoot);
-  const mcp = await loadMcpResources(repoRoot);
+  const mcp = await loadMcpResources(repoRoot, warnings);
   const skills = await loadSkills(repoRoot);
   const commands = await loadCommands(repoRoot);
   const hooks = await loadHooks(repoRoot);
-  return { personas, rules, permissions, mcp, skills, commands, hooks };
+  return { warnings, personas, rules, permissions, mcp, skills, commands, hooks };
 }
