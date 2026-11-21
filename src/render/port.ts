@@ -34,10 +34,15 @@ export type RendererIdentity = {
   name: string;
   version: string;
   /**
-   * The tarball integrity npm recorded for the installed package. An installed
-   * package that records none has `undefined` here and is refused (F010), never
-   * silently skipped; the version is always read from the installed package,
-   * never from a compiled-in literal.
+   * The tarball integrity npm recorded for the installed package. A package
+   * that records none has `undefined` here: a global install writes no npm
+   * lockfile. The pinned target (`upstream.ts`) substitutes its compile-time
+   * pin when the version matches, so a global install is still checked by
+   * version and pin rather than refused; a version mismatch is always F010.
+   * `verifyRendererIdentity` itself refuses an `undefined` integrity, so a
+   * caller that has no pin cannot silently degrade to a version comparison.
+   * The version is always read from the installed package, never from a
+   * compiled-in literal.
    */
   integrity?: string | undefined;
 };

@@ -60,9 +60,11 @@ node scripts/assert-pack.mjs     # after a build: the tarball contains dist
 
 The golden test in `tests/golden/` and the integration test in `tests/integration/` drive the
 real, pinned renderer. They always run: a missing or broken `rulesync` fails collection loudly
-rather than skipping. CI enumerates `tests/**/*.test.ts` and asserts every file ran (so a deleted
-suite cannot hide behind the total), a minimum total test count (not an exact one), that no test
-is pending or `todo`, that `numPassedTests` accounts for the whole run, and that both
+rather than skipping. CI compares the test files on disk with the committed
+`scripts/expected-test-files.json` manifest, requires every manifest file to have run, and fails
+on either difference — so a deleted suite cannot hide behind the total, and a new suite is a
+deliberate, visible manifest edit. It also enforces a minimum total test count (not an exact one),
+that no test is pending or `todo`, that `numPassedTests` accounts for the whole run, and that both
 real-renderer suites ran. CI also type-checks `tests/`, audits dependencies at `moderate`, and proves that
 `npm pack` from a tree with `dist/` moved aside still contains the entry points, which can only
 happen if `prepack` builds them.
@@ -297,10 +299,13 @@ exercised without the network or the real renderer.
 
 `rulesync` is pinned to exactly `43.11.0` with a tarball integrity. The lockfile records that pin,
 and `check` compares it with the installed package before any byte comparison: a different name or
-version, a different integrity, or a **missing** integrity on either side fails `F010` with exit
-`5`. The check never degrades to a version-only comparison. The installed integrity is read from
-npm's `node_modules/.package-lock.json`, with the project `package-lock.json` as a fallback; an
-install that records none is refused rather than trusted.
+version fails `F010` with exit `5`, and so does a different npm-recorded integrity. The installed
+integrity is read from npm's `node_modules/.package-lock.json`, with the project
+`package-lock.json` as a fallback; a lockfile above 4 MiB is not read. When npm recorded no
+integrity at all — a global install has no lockfile — the compile-time pin stands in for it, so a
+global install works while the installed version is still checked and a mismatch is still `F010`.
+The check never degrades to a version-only comparison against an integrity it did read, and an
+integrity that is present on both sides is compared exactly.
 
 The renderer is imported **in-process**. The pin is provenance, not a sandbox: it ties the
 committed bytes to a published tarball, but a package patched in place with the same `package.json`
