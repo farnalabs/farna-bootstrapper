@@ -1,16 +1,29 @@
-import { appendFile, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { execFileSync } from 'node:child_process';
+import {
+  appendFile,
+  chmod,
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  symlink,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { runCheck } from '../../src/cli/commands/check.js';
 import { runGenerate } from '../../src/cli/commands/generate.js';
-import { LOCKFILE_MAX_BYTES } from '../../src/core/constants.js';
+import { LOCKFILE_MAX_BYTES, NPM_LOCKFILE_MAX_BYTES } from '../../src/core/constants.js';
 import { readLockfile } from '../../src/lock/lockfile.js';
 import { readRecordedIntegrity } from '../../src/render/identity.js';
 import type { RendererIdentity } from '../../src/render/port.js';
 import { assertPinned, RENDERER_PIN, resolvePinnedIdentity } from '../../src/render/upstream.js';
 import { FakeRenderTarget } from '../support/fake-renderer.js';
 import { createTempRepo, hashTree } from '../support/temp-repo.js';
+
+const isRoot = typeof process.getuid === 'function' && process.getuid() === 0;
+const skipSymlinks = process.platform === 'win32';
 
 const IDENTITY: RendererIdentity = {
   name: 'fake-renderer',
@@ -246,32 +259,93 @@ describe('the bounded npm integrity read', () => {
     return root;
   }
 
+  function packageDirOf(root: string): string {
+    return join(root, 'node_modules', 'rulesync');
+  }
+
+  /** A valid npm lock record whose padding pushes it past 5 MiB. */
+  function largeRecord(integrity: string): string {
+    return JSON.stringify({
+      packages: { 'node_modules/rulesync': { integrity } },
+      padding: 'x'.repeat(5 * 1024 * 1024),
+    });
+  }
+
   it('reads the integrity from an ancestor project lockfile', async () => {
     const root = await layout(
       JSON.stringify({ packages: { 'node_modules/rulesync': { integrity: 'sha512-small' } } }),
     );
     try {
-      expect(readRecordedIntegrity(join(root, 'node_modules', 'rulesync'), 'rulesync')).toBe(
-        'sha512-small',
+      expect(readRecordedIntegrity(packageDirOf(root), 'rulesync')).toBe('sha512-small');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('reads a 5 MiB record whose integrity matches the pin, and it passes', async () => {
+    // npm's record scales with the dependency tree. A real monorepo lockfile
+    // is over the 4 MiB derived-lockfile bound, so applying that bound here
+    // used to refuse a perfectly good install.
+    const pinIntegrity = RENDERER_PIN.integrity;
+    if (pinIntegrity === undefined) {
+      throw new Error('the renderer pin must carry an integrity');
+    }
+    const record = largeRecord(pinIntegrity);
+    expect(Buffer.byteLength(record)).toBeGreaterThan(LOCKFILE_MAX_BYTES);
+    expect(Buffer.byteLength(record)).toBeLessThan(NPM_LOCKFILE_MAX_BYTES);
+    const root = await layout(record);
+    try {
+      const recorded = readRecordedIntegrity(packageDirOf(root), RENDERER_PIN.name);
+      expect(recorded).toBe(RENDERER_PIN.integrity);
+      if (recorded === undefined) {
+        throw new Error('expected the large record to be read');
+      }
+      const resolved = resolvePinnedIdentity({
+        name: RENDERER_PIN.name,
+        version: RENDERER_PIN.version,
+        integrity: recorded,
+      });
+      expect(() => assertPinned(resolved)).not.toThrow();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('fails F010 for a 5 MiB record whose integrity differs from the pin', async () => {
+    const record = largeRecord('sha512-DIFFERENT-NOT-THE-PIN');
+    expect(Buffer.byteLength(record)).toBeGreaterThan(LOCKFILE_MAX_BYTES);
+    const root = await layout(record);
+    try {
+      const recorded = readRecordedIntegrity(packageDirOf(root), RENDERER_PIN.name);
+      expect(recorded).toBe('sha512-DIFFERENT-NOT-THE-PIN');
+      if (recorded === undefined) {
+        throw new Error('expected the large record to be read');
+      }
+      const resolved = resolvePinnedIdentity({
+        name: RENDERER_PIN.name,
+        version: RENDERER_PIN.version,
+        integrity: recorded,
+      });
+      expect(() => assertPinned(resolved)).toThrowError(
+        expect.objectContaining({ code: 'F010_RENDERER_MISMATCH' }),
       );
     } finally {
       await rm(root, { recursive: true, force: true });
     }
   });
 
-  it('refuses a lockfile over 4 MiB instead of falling back to the pin', async () => {
-    // 5 MiB of valid JSON whose integrity differs from the pin. The record is
-    // PRESENT, so it must be refused: skipping it would turn a differing
-    // integrity into a pass through the compile-time pin. Only a missing
-    // record may fall back (see the no-record test below).
+  it('refuses an npm record above the npm bound instead of falling back to the pin', async () => {
+    // The record is PRESENT, so it must be refused: skipping it would turn a
+    // differing integrity into a pass through the compile-time pin. Only a
+    // missing record may fall back (see the no-record test below).
     const oversized = JSON.stringify({
       packages: { 'node_modules/rulesync': { integrity: 'sha512-DIFFERENT-NOT-THE-PIN' } },
-      padding: 'x'.repeat(5 * 1024 * 1024),
+      padding: 'x'.repeat(NPM_LOCKFILE_MAX_BYTES),
     });
-    expect(Buffer.byteLength(oversized)).toBeGreaterThan(LOCKFILE_MAX_BYTES);
+    expect(Buffer.byteLength(oversized)).toBeGreaterThan(NPM_LOCKFILE_MAX_BYTES);
     const root = await layout(oversized);
     try {
-      const packageDir = join(root, 'node_modules', 'rulesync');
+      const packageDir = packageDirOf(root);
       let refusal: unknown;
       let message = '';
       try {
@@ -286,7 +360,116 @@ describe('the bounded npm integrity read', () => {
         subject: join(root, 'package-lock.json'),
       });
       expect(message).toContain(`${Buffer.byteLength(oversized)} bytes`);
-      expect(message).toContain(`${LOCKFILE_MAX_BYTES}-byte bound`);
+      expect(message).toContain(`${NPM_LOCKFILE_MAX_BYTES}-byte bound`);
+      expect(message).toContain('npm lock record');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('ignores an unrelated parent lockfile above the install root', async () => {
+    // The nearest ancestor owning node_modules is the install root. A
+    // package-lock.json above it describes a different install and must never
+    // be read, or a healthy project could be refused by an unrelated record.
+    const parent = await mkdtemp(join(tmpdir(), 'fbs-integrity-parent-'));
+    const root = join(parent, 'project');
+    const packageDir = packageDirOf(root);
+    try {
+      await mkdir(packageDir, { recursive: true });
+      await writeFile(
+        join(parent, 'package-lock.json'),
+        JSON.stringify({
+          packages: { 'node_modules/rulesync': { integrity: 'sha512-PARENT-UNRELATED' } },
+        }),
+        'utf8',
+      );
+      expect(readRecordedIntegrity(packageDir, 'rulesync')).toBeUndefined();
+    } finally {
+      await rm(parent, { recursive: true, force: true });
+    }
+  });
+
+  it('fails F010 for a symlinked lock record instead of following it', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'fbs-integrity-link-'));
+    const packageDir = packageDirOf(root);
+    const target = join(root, 'elsewhere.json');
+    try {
+      await mkdir(packageDir, { recursive: true });
+      await writeFile(
+        target,
+        JSON.stringify({
+          packages: { 'node_modules/rulesync': { integrity: RENDERER_PIN.integrity } },
+        }),
+        'utf8',
+      );
+      await symlink(target, join(root, 'package-lock.json'));
+      expect(() => readRecordedIntegrity(packageDir, 'rulesync')).toThrowError(
+        expect.objectContaining({
+          code: 'F010_RENDERER_MISMATCH',
+          subject: join(root, 'package-lock.json'),
+        }),
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it.skipIf(skipSymlinks)('fails F010 for a FIFO lock record and does not hang', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'fbs-integrity-fifo-'));
+    const packageDir = packageDirOf(root);
+    try {
+      await mkdir(packageDir, { recursive: true });
+      execFileSync('mkfifo', [join(root, 'package-lock.json')]);
+      expect(() => readRecordedIntegrity(packageDir, 'rulesync')).toThrowError(
+        expect.objectContaining({
+          code: 'F010_RENDERER_MISMATCH',
+          subject: join(root, 'package-lock.json'),
+        }),
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it.skipIf(isRoot)('fails F010 for a lock record that cannot be read (EACCES)', async () => {
+    const root = await layout(
+      JSON.stringify({ packages: { 'node_modules/rulesync': { integrity: 'sha512-small' } } }),
+    );
+    const lock = join(root, 'package-lock.json');
+    try {
+      await chmod(lock, 0o000);
+      expect(() => readRecordedIntegrity(packageDirOf(root), 'rulesync')).toThrowError(
+        expect.objectContaining({ code: 'F010_RENDERER_MISMATCH', subject: lock }),
+      );
+    } finally {
+      await chmod(lock, 0o600);
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('fails F010 for a lock record that is not valid JSON', async () => {
+    const root = await layout('{ this is not json');
+    try {
+      expect(() => readRecordedIntegrity(packageDirOf(root), 'rulesync')).toThrowError(
+        expect.objectContaining({
+          code: 'F010_RENDERER_MISMATCH',
+          subject: join(root, 'package-lock.json'),
+        }),
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('fails F010 for a lock record that is not a JSON object', async () => {
+    const root = await layout('[]');
+    try {
+      expect(() => readRecordedIntegrity(packageDirOf(root), 'rulesync')).toThrowError(
+        expect.objectContaining({
+          code: 'F010_RENDERER_MISMATCH',
+          subject: join(root, 'package-lock.json'),
+        }),
+      );
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -297,7 +480,7 @@ describe('the bounded npm integrity read', () => {
     // only fallback the pin may cover; an existing-but-unreadable record is
     // refused (above).
     const root = await mkdtemp(join(tmpdir(), 'fbs-integrity-none-'));
-    const packageDir = join(root, 'node_modules', 'rulesync');
+    const packageDir = packageDirOf(root);
     try {
       await mkdir(packageDir, { recursive: true });
       expect(readRecordedIntegrity(packageDir, 'rulesync')).toBeUndefined();

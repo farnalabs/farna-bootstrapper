@@ -1,7 +1,7 @@
-import { closeSync, constants, fstatSync, openSync, readFileSync } from 'node:fs';
+import { closeSync, constants, fstatSync, openSync, readFileSync, statSync } from 'node:fs';
 import { createRequire } from 'node:module';
-import { dirname, join } from 'node:path';
-import { LOCKFILE_MAX_BYTES } from '../core/constants.js';
+import { dirname, isAbsolute, join, relative } from 'node:path';
+import { LOCKFILE_MAX_BYTES, NPM_LOCKFILE_MAX_BYTES } from '../core/constants.js';
 import { FarnaError, rendererMismatch } from '../core/errors.js';
 import type { RendererIdentity } from './port.js';
 
@@ -68,14 +68,17 @@ function unreadableLockRecord(path: string, cause?: unknown): FarnaError {
  *
  * - no record at all (`ENOENT`) yields `undefined`, the one case where a global
  *   install's compile-time pin stands in for a missing integrity;
- * - a record over `LOCKFILE_MAX_BYTES` is refused (F010), naming the record and
- *   the bound, because a present-but-unverifiable integrity must fail exactly
- *   like a differing one rather than become a pass;
+ * - a record over `NPM_LOCKFILE_MAX_BYTES` is refused (F010), naming the record
+ *   and the bound, because a present-but-unverifiable integrity must fail
+ *   exactly like a differing one rather than become a pass;
  * - a record that exists but cannot be read (a symlink, a FIFO, an I/O or parse
  *   failure, a non-object) is refused the same way.
  *
  * The bound is applied before any allocation: this is the one synchronous read
- * of a repository-controlled path, so it cannot use `readBoundedBytes`.
+ * of a repository-controlled path, so it cannot use `readBoundedBytes`. It is
+ * `NPM_LOCKFILE_MAX_BYTES`, not the small derived-lockfile bound, because npm's
+ * record scales with the dependency tree and a legitimate monorepo lockfile can
+ * be several megabytes.
  */
 function readLockRecord(path: string): JsonObject | undefined {
   let fd: number;
@@ -95,12 +98,13 @@ function readLockRecord(path: string): JsonObject | undefined {
     if (!stats.isFile()) {
       throw unreadableLockRecord(path, new Error('it is not a regular file'));
     }
-    if (stats.size > LOCKFILE_MAX_BYTES) {
+    if (stats.size > NPM_LOCKFILE_MAX_BYTES) {
       throw rendererMismatch(
-        `${path} is ${stats.size} bytes, over the ${LOCKFILE_MAX_BYTES}-byte bound for a lock record; it is refused rather than read, so the installed renderer's integrity cannot be verified`,
+        `${path} is ${stats.size} bytes, over the ${NPM_LOCKFILE_MAX_BYTES}-byte bound for an npm lock record; it is refused rather than read, so the installed renderer's integrity cannot be verified`,
         {
           subject: path,
-          action: 're-install dependencies so npm writes a lock record inside the bound',
+          action:
+            'inspect the lock record for runaway content and restore it from version control; the bound is far above any real lockfile, so this is not a normal install',
         },
       );
     }
@@ -163,12 +167,57 @@ function integrityFromLock(lock: JsonObject | undefined, name: string): string |
   return typeof integrity === 'string' ? integrity : undefined;
 }
 
+/** True when `path` is a directory. A missing or unreadable entry is not. */
+function isDirectory(path: string): boolean {
+  try {
+    return statSync(path).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The install root that bounds the project-lockfile walk: the nearest ancestor
+ * that owns a `node_modules` directory. In a normal install that is the
+ * directory holding the project's `package-lock.json`.
+ *
+ * The walk must not climb above this boundary. An unrelated `package-lock.json`
+ * in a parent directory (a home directory, a parent monorepo) would otherwise
+ * be read as though it described this install and could refuse a healthy
+ * project. When no ancestor owns a `node_modules` directory, only the working
+ * tree bounds the walk; a package outside it is bounded by itself, so no
+ * unrelated parent record is consulted.
+ */
+function installRootFor(packageDir: string): string {
+  let current = dirname(packageDir);
+  for (;;) {
+    if (isDirectory(join(current, 'node_modules'))) {
+      return current;
+    }
+    const parent = dirname(current);
+    if (parent === current) {
+      break;
+    }
+    current = parent;
+  }
+  const cwd = process.cwd();
+  const fromCwd = relative(cwd, packageDir);
+  if (fromCwd !== '' && !fromCwd.startsWith('..') && !isAbsolute(fromCwd)) {
+    return cwd;
+  }
+  return packageDir;
+}
+
 /**
  * npm records the tarball integrity in `node_modules/.package-lock.json`; a
  * project lockfile is the fallback for layouts that do not write the hidden
  * one. Only a record that does not exist is skipped: a present record that
- * cannot be read, or is over `LOCKFILE_MAX_BYTES`, is refused with F010 instead
- * of being treated as an absent one and replaced by the compile-time pin.
+ * cannot be read, or is over `NPM_LOCKFILE_MAX_BYTES`, is refused with F010
+ * instead of being treated as an absent one and replaced by the compile-time
+ * pin.
+ *
+ * The project-lockfile walk stops at the install root (the nearest ancestor
+ * holding `node_modules`) and never reads an unrelated lockfile above it.
  *
  * @internal Exported so a test can prove the bound on an ancestor lockfile;
  * callers use `installedRendererIdentity`.
@@ -179,19 +228,22 @@ export function readRecordedIntegrity(packageDir: string, name: string): string 
   if (fromHidden !== undefined) {
     return fromHidden;
   }
+  const boundary = installRootFor(packageDir);
   let current = packageDir;
-  for (let depth = 0; depth < 8; depth += 1) {
+  for (;;) {
     const fromLock = integrityFromLock(readLockRecord(join(current, 'package-lock.json')), name);
     if (fromLock !== undefined) {
       return fromLock;
     }
+    if (current === boundary) {
+      return undefined;
+    }
     const parent = dirname(current);
     if (parent === current) {
-      break;
+      return undefined;
     }
     current = parent;
   }
-  return undefined;
 }
 
 /** Read the installed renderer's own package manifest and recorded integrity. */

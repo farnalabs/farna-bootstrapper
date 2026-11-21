@@ -79,13 +79,25 @@ export const GITATTRIBUTES_LINES: readonly string[] = [
 export const STAGING_INFIX = '.farna-tmp-';
 
 /**
- * A lockfile is derived and small. Both this product's own lockfile
- * (`.farna/lock.json`) and an npm lock record the installed renderer identity
- * is read from are refused rather than read above this bound: a present record
- * that cannot be read is never treated as absent. Only a genuinely missing npm
- * record (a global install) falls back to the compile-time pin.
+ * This product's own lockfile (`.farna/lock.json`) is derived and small: it
+ * records the config hash, the file list and the renderer pin, so it is refused
+ * rather than read above this bound. It also bounds the small package manifests
+ * read to locate the installed renderer; npm's lock records use the separate
+ * `NPM_LOCKFILE_MAX_BYTES` below.
  */
 export const LOCKFILE_MAX_BYTES = 4 * 1024 * 1024;
+
+/**
+ * npm's lock records (`node_modules/.package-lock.json` and a project
+ * `package-lock.json`) scale with the dependency tree: a monorepo lockfile can
+ * legitimately be several megabytes, far above this product's own derived
+ * lockfile. The bound is generous so a real record is read, and still finite so
+ * a repository-controlled path can never allocate without limit. A present
+ * record that cannot be read, or is above this bound, is refused (F010); only a
+ * genuinely missing npm record (a global install) falls back to the compile-time
+ * pin.
+ */
+export const NPM_LOCKFILE_MAX_BYTES = 64 * 1024 * 1024;
 
 /**
  * A managed file and a source file are bounded for the same reason: a

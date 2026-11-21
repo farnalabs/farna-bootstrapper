@@ -4,6 +4,7 @@ import { cp, mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from 'n
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { NPM_LOCKFILE_MAX_BYTES } from '../../src/core/constants.js';
 import { createTempRepo, hashTree } from '../support/temp-repo.js';
 
 /**
@@ -107,15 +108,17 @@ describe.skipIf(process.platform === 'win32')('install layouts', () => {
       await unpackInto(tarball, packageDir);
       await installDependencies(packageDir, true);
 
-      // A present lock record that is over the bound must be refused, not
+      // A present lock record that is over the npm bound must be refused, not
       // skipped: skipping it would let this differing integrity pass through
-      // the compile-time pin. 5 MiB of valid JSON keeps the record parseable,
-      // so only the size bound can be what refuses it.
+      // the compile-time pin. Valid JSON just past the bound keeps the record
+      // parseable, so only the size bound can be what refuses it. The bound is
+      // the npm-record bound, not the small derived-lockfile one: a 5 MiB
+      // monorepo record is legitimate and must be read.
       const record = JSON.stringify({
         packages: { 'node_modules/rulesync': { integrity: 'sha512-DIFFERENT-NOT-THE-PIN' } },
-        padding: 'x'.repeat(5 * 1024 * 1024),
+        padding: 'x'.repeat(NPM_LOCKFILE_MAX_BYTES),
       });
-      expect(Buffer.byteLength(record)).toBeGreaterThan(4 * 1024 * 1024);
+      expect(Buffer.byteLength(record)).toBeGreaterThan(NPM_LOCKFILE_MAX_BYTES);
       await writeFile(join(packageDir, 'node_modules', '.package-lock.json'), record, 'utf8');
 
       const before = await hashTree(repo.root);
