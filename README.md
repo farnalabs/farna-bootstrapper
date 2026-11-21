@@ -9,11 +9,13 @@ This repository is at **M3: OpenCode profile mode**. It implements two targets
 six resource kinds (`rule`, `permission`, `mcp`, `skill`, `command`, `hook`) plus a model class, and
 one base persona per composed persona (`extends`). Exactly one configured target is rendered per run.
 
-Profile mode makes exactly one persona live and lets it own the workspace at the repository root,
-so OpenCode's workspace resource kinds (`mcp`, `skill`, `command`, `hook`) are carried for that
-persona. Agent mode remains the default and still refuses one of those kinds (F001) rather than
-emitting it workspace-wide. Everything else is deliberately deferred; see
-[What this slice does not do](#what-this-slice-does-not-do).
+Profile mode makes exactly one persona live and lets it own the workspace: `opencode.jsonc` is
+written at the repository root, and its skills, commands and hooks under `.opencode/`. OpenCode's
+workspace resource kinds (`mcp`, `skill`, `command`, `hook`) are carried for that persona. Every
+other persona is resolved and validated but not live, and the run says so (`notLive` in the
+payload, the lockfile and the human report). Agent mode remains the default and still refuses one
+of those kinds (F001) rather than emitting it workspace-wide. Everything else is deliberately
+deferred; see [What this slice does not do](#what-this-slice-does-not-do).
 
 ## The loop
 
@@ -21,8 +23,8 @@ emitting it workspace-wide. Everything else is deliberately deferred; see
 2. `farna-bootstrapper generate` renders that target's artefacts and records what it wrote in
    `.farna/lock.json`. Claude Code gets one whole file per persona under `.claude/agents/`; OpenCode
    in agent mode gets one whole file per persona under `.opencode/agents/` and no workspace file;
-   OpenCode in profile mode gets the active persona's agent file plus its MCP, skill, command and
-   hook output at the repository root.
+   OpenCode in profile mode gets the active persona's agent file, its `opencode.jsonc` at the
+   repository root, and its skill, command and hook output under `.opencode/`.
 3. `farna-bootstrapper check` renders the same input into a temporary directory and compares it
    with the repository. Exit `0` when identical, `1` when anything drifted.
 
@@ -265,11 +267,12 @@ opencode, agent mode:
   .opencode/agents/<id>.md          one whole file per persona
 
 opencode, profile mode (active: <id>):
-  opencode.jsonc                    the active persona's MCP servers
+  opencode.jsonc                    the active persona's MCP servers, merged into the user's own keys
   .opencode/agents/<id>.md          only the active persona
   .opencode/skills/<skill-id>/**    the active persona's skills and their extra files
   .opencode/commands/<id>.md        the active persona's commands
   .opencode/plugins/rulesync-hooks.js   the active persona's carried hooks
+                                      (skills, commands and hooks are under .opencode/, not the root)
 
 both:
   .farna/lock.json                  the manifest and the source-derived warnings
@@ -316,8 +319,15 @@ you. Agent mode is the default when no active persona is set.
 materialised and verified: no other persona's agent file, MCP server, skill, command or hook is
 emitted, and the containment gate accepts only the active set. Every persona is still resolved, so
 a broken declaration anywhere in the source is still refused; only emission is scoped to the live
-persona. The lockfile records one `personas[]` entry, `mode: "profile"` and `activePersona: "<id>"`;
-in agent mode `mode` is `"agent"` and `activePersona` is `null`.
+persona. The lockfile records one `personas[]` entry, `mode: "profile"`, `activePersona: "<id>"` and
+`notLive: [<every other persona>]`; in agent mode `mode` is `"agent"`, `activePersona` is `null`
+and `notLive` is empty. `generate` and `check` print the not-live set, and `--json` carries it as
+`notLive`, so a deactivated persona is never silent.
+
+Selecting profile mode with `active` or `--persona` when no persona declares a capability that
+*requires* it (an MCP server or a hook, which OpenCode carries only at the workspace level) is a
+choice, and it is reported as `W109_PROFILE_BY_CHOICE` at info severity. A skill or command is
+content the target could in principle drop, so it does not force the mode.
 
 **The profile is the repository root.** It is never a cache directory and never a subdirectory
 below another config. The exact paths are in [Output layout](#output-layout).
@@ -334,33 +344,68 @@ A hook OpenCode cannot represent (`session-end`, or a matcher on a non-tool even
 
 A persona switch, a removed resource or a target edit leaves output the committed lockfile records
 but the current source no longer produces. `check` reports every such recorded path as
-`F007_DRIFT` drift with kind `unexpected`. A user file is never drift: `check` compares only the
-fresh plan and the recorded set, so an unrecorded file in a managed directory or at the repository
-root is ignored.
+`F007_DRIFT` drift with kind `unexpected`. An unrecorded file is ordinarily ignored, because it
+belongs to the user; the exception is a **plausible prior render** (see *Root cleanliness* below).
+
+`check` also compares a `configDigest` recorded in the lockfile: a change to the config or to **any**
+persona or resource file is drift even when the live persona renders no different byte, so an edit
+to a non-live persona's declaration cannot hide.
 
 `generate` may remove a recorded orphan, under four guards:
 
-1. it must be a relative, escape-free path in a managed location — one of `.claude/agents/`,
-   `.opencode/agents/`, `.opencode/commands/`, `.opencode/skills/`, `.opencode/plugins/`, or a
-   target's whole root config file (`opencode.jsonc`);
+1. it must exist and be a relative, escape-free path in a managed location — one of
+   `.claude/agents/`, `.opencode/agents/`, `.opencode/commands/`, `.opencode/skills/`,
+   `.opencode/plugins/`, or a target's whole root config file (`opencode.jsonc`). A recorded path
+   that is already **absent** is simply dropped from the new lockfile; the managed-location guard
+   applies only to a path that exists, so the action it prints can always be carried out;
 2. it must still be a **regular file**; a symbolic link is refused (`F003`) and never followed;
-3. its bytes must still equal the SHA-256 the lockfile recorded. A file edited since the last
-   generate is refused with `F007_DRIFT`: ownership can no longer be proven, so it is not deleted;
+3. its bytes must still equal the SHA-256 the lockfile recorded. The check is repeated immediately
+   before the `rm`, so a file changed between the preflight and the removal is refused rather than
+   deleted. A file edited since the last generate is refused with `F007_DRIFT`: ownership can no
+   longer be proven, so it is not deleted;
 4. it must be recorded. An unrecorded file is the user's and is never removed.
 
-The whole orphan set is preflighted before anything is written, so a refusal leaves the tree
-untouched. Removals happen before the new managed set is committed: a commit that then fails leaves
-the old artefacts visibly missing, which `check` reports, rather than leaving an unrecorded orphan
-that nothing could find again. An empty directory left after removing a skill's last file is not
-removed: the contract is to remove recorded regular files, not directories.
+A structured entry (`opencode.jsonc`) owns only its `mcp` key. It is removed only when the file
+carries nothing else; a file that also carries the user's own keys is refused, and once the user has
+removed the owned key itself the record is dropped and the file left alone.
 
-MCP environment values are references only. A resource declares
+The whole orphan set is preflighted before anything is written, so a refusal leaves the tree
+untouched. Removals happen before the new managed set is committed: a commit that then fails names
+the removals it already made, so the error never claims "nothing was written" for a tree that is
+partially updated. An empty directory left after removing a skill's last file is not removed: the
+contract is to remove recorded regular files, not directories.
+
+### Root cleanliness
+
+The lockfile is the only proof that a path is this tool's output. When a lockfile is lost, or when
+the source stops producing a path so nothing records it, a file left in a managed location may be a
+render from an earlier persona that is still live. In profile mode `check` reports every **plausible
+prior render** — a path any declared persona or resource could have produced (another persona's
+agent file, `opencode.jsonc`, the hooks plugin, a declared skill tree or command) — that is neither
+planned nor recorded, as `W107_OUTSIDE_OWNERSHIP` drift (exit `1`). `generate` refuses the same tree
+with `F007_DRIFT` rather than overwriting or ignoring it. Nothing unrecorded is ever deleted.
+
+A file under a name no declaration would emit (`.opencode/commands/custom.md`,
+`.opencode/skills/custom/`) is genuinely the user's and is not reported. Inside a **skill
+directory** this tool owns, however, an unrecorded file is an extra and is reported as
+`W107_OUTSIDE_OWNERSHIP` (never deleted).
+
+MCP `env` and `headers` values are references only. A resource declares
 `{ "fromEnv": "EXAMPLE_TOKEN" }`; the materialiser writes rulesync's canonical `${EXAMPLE_TOKEN}`.
 A literal value in a credential position is `F002_SECRET_LITERAL` and is never echoed. An MCP
 `http` URL may not carry userinfo (`F002`, never echoed); a credential-shaped query parameter
 (`token`, `api_key`, `apikey`, `access_token`, `secret`, `password`) is reported as
 `W115_CREDENTIAL_IN_URL` and never echoed either. A stdio `command` is the program only: whitespace
 and control characters are refused (F001) with a message to put the arguments in `args`.
+
+`args` accepts literals, because a command genuinely needs them (`-y`, `serve`, a path). A literal
+that *looks like a credential* (`sk-`, `ghp_`, `glpat-`, `npm_`, `AKIA`, a JWT, or a long token-shaped
+string with letters and digits) is reported as `W116_SECRET_IN_ARGS` at high severity, naming the
+argument's position and never echoing the value: it would otherwise be written verbatim into
+`opencode.jsonc`. A `{ "fromEnv": "NAME" }` reference inside `args` cannot be expressed — rulesync
+43.11.0 accepts only string arguments and copies them into the emitted command verbatim, so the
+reference would reach the server as the unexpanded text `${NAME}` — and is refused (F001) with the
+supported alternative: put the credential in `env` or `headers`.
 
 The workspace resource kinds are **not** carried by `claudecode` either. A persona that references
 one is refused (F001) rather than silently losing it.
@@ -455,6 +500,8 @@ Only harness-specific category names reach the renderer source tree; a product c
 never written there, and a test asserts it.
 
 Warnings are printed by `generate` and `check`, and recorded in `.farna/lock.json`.
+`W107_OUTSIDE_OWNERSHIP` is reported by `check` as a drift item rather than a source warning: it
+describes the working tree (a plausible prior render or an extra skill file), not the source.
 
 ## Layout
 
@@ -470,7 +517,9 @@ src/
   render/         port.ts (the seam), upstream.ts (the only rulesync import),
                   identity.ts (installed vs pinned renderer), prepare.ts (the pipeline),
                   stage.ts (the disposable stage), commit.ts (the write), staging.ts,
-                  orphans.ts (recorded-orphan preflight and removal)
+                  orphans.ts (recorded-orphan preflight and removal), generate-lock.ts,
+                  structured.ts (key-level ownership of opencode.jsonc),
+                  root-cleanliness.ts (plausible prior renders and skill-tree extras)
   verify/         containment and cross-persona isolation gates
   lock/           lockfile construction and validated reading
   core/           constants, typed errors, paths, strict UTF-8 reads, canonical JSON
@@ -596,7 +645,8 @@ Deliberately out of scope, by milestone:
   now removes every recorded orphan in a managed location, but an orphan outside every managed
   location is refused rather than deleted; an empty directory left after a skill's last file is
   removed is not swept
-- structured or region ownership; only whole files (and, for a skill, a whole tree) are owned
+- region ownership (`CLAUDE.md`, `AGENTS.md`); `opencode.jsonc` is the only structured file, and the
+  only key it owns is `mcp`. Every other managed path is a whole file or a whole tree
 - the weekly renderer-sync bot and the two compiled binaries
 
 ## Residual risks and known gaps
@@ -621,17 +671,29 @@ These are deliberate limits of the current controls, stated rather than implied 
   cleanup failure is a warning naming the leftover path and never replaces the renderer's own error.
 - **Lockfile read.** `.farna` must be a real directory and `.farna/lock.json` a real regular file of
   at most 4 MiB, opened with `O_NOFOLLOW`. A symlink, FIFO or oversized file is a typed refusal
-  rather than a follow or a hang. A malformed document is reported as drift, never consumed
-  partially.
+  rather than a follow or a hang. A lockfile that is **present but malformed or of an incompatible
+  version** is a typed F001 naming `.farna/lock.json` with the delete-and-regenerate recovery; it is
+  never treated as "no records". A lockfile written before profile mode existed (no `mode`, no
+  `activePersona`) is still accepted and normalised to agent mode, so its recorded paths are not
+  silently forgotten.
+- **One `generate` at a time.** `.farna/.generate.lock` is taken exclusively (`O_EXCL`, owner pid
+  recorded) around the whole read → plan → remove → commit sequence, and released in a `finally`.
+  A second live run is a typed F001 ("lock held"). A lock whose owner pid is dead, or that is older
+  than the age bound, is reclaimed.
+- **Generated modes are explicit.** Managed files are created `0644` and managed directories
+  `0755`, then re-asserted with `chmod`; the process umask no longer decides whether generated
+  output is group- or world-writable.
 - **Staging leftovers.** A killed `generate` can leave `.<target>.farna-tmp-*` siblings. They are
-  ignored by `check` and swept at the start of the next `generate`; a leftover that cannot be
-  removed is best-effort and never a managed path.
+  ignored by `check` and swept at the start of the next `generate`; a leftover in a directory the
+  next plan does not touch (an unplanned directory) is not swept and is left on disk. Removal is
+  best-effort and a leftover is never a managed path.
 - **Orphan removal is preflighted, not transactional.** The whole orphan set is checked before the
   first write, and removals run before the new set is committed. A filesystem failure while
-  removing, or a commit failure after a removal, leaves a mixed tree: the removed paths are still
-  recorded by the old lockfile, so `check` reports them, and re-running `generate` completes the
-  switch. A recorded orphan replaced by a directory, a symlink or edited bytes is refused rather
-  than guessed at, and must be removed deliberately.
+  removing, or a commit failure after a removal, leaves a mixed tree: the failure message names the
+  paths already removed, `check` reports them, and re-running `generate` completes the switch. A
+  recorded orphan replaced by a directory, a symlink or edited bytes is refused rather than guessed
+  at, and must be removed deliberately. The bytes are re-read and re-hashed immediately before each
+  `rm`, so the window between the preflight and the removal cannot delete a file that changed.
 - **An empty directory is left after a skill's last file is removed.** Only recorded regular files
   are removed; the now-empty `<skill>/` (or `scripts/`) directory is harmless and carries no
   declaration.
@@ -644,12 +706,22 @@ These are deliberate limits of the current controls, stated rather than implied 
 - **Windows-specific test skips.** The symlink regression tests are skipped on Windows because
   creating a symlink needs a privilege the runner does not grant. CI runs them on Linux; the guard
   code itself is platform-independent.
-- **Unrecorded files are never drift.** `check` compares only the paths in the fresh plan (missing
-  or changed) and the paths the committed lockfile records (an output the source no longer
-  produces). A file the user keeps in a managed directory or at the repository root is not this
-  tool's output, so it is neither reported nor followed; a repository may keep its own
-  `opencode.jsonc` and its own commands. A symlink at a *managed* path is still drift, and a
-  symlinked ancestor is still refused.
+- **Unrecorded files are not drift unless they look like a prior render.** `check` compares the
+  paths in the fresh plan (missing or changed), the paths the committed lockfile records (an output
+  the source no longer produces), and, in profile mode, a plausible prior render that is neither
+  (see *Root cleanliness*). A file the user keeps under a name no declaration would emit is not this
+  tool's output, so it is neither reported nor followed; a repository may keep its own commands and
+  its own skill directories. A symlink at a *managed* path is still drift, and a symlinked ancestor
+  is still refused.
+- **The hooks plugin is verified by structure, with one provenance gap.** Containment compares the
+  commands, events and matchers the plugin registers. rulesync writes the escaped form `\`` for a
+  backtick in a hook command; the gate unescapes it before comparing, because it is the renderer's
+  representation of the same command. The parser matches rulesync 43.11.0's two registration shapes
+  and cannot recognise a registration emitted as a template literal under a future renderer, so a
+  plugin that keeps the same commands but changes its registration shape is caught only by `check`
+  against a fresh render of the pinned renderer. A change to rulesync's generated helper code that
+  keeps the same registrations is likewise caught only by `check`, not by a committed plugin
+  golden.
 - **The hooks plugin is verified by structure, not by a committed golden.** Containment asserts the
   exact commands, events and matchers; a change to rulesync's generated helper code that keeps the
   same commands and events is caught only by `check` against a fresh render of the pinned renderer,
@@ -715,10 +787,13 @@ extend them further. The differences, all deliberate:
     source that reorders two patterns has a different digest: OpenCode's last-match-wins makes
     order semantic. The target mapping is code, not source; the digest changes when the source
     changes.
-11. **W106, W111, W112, W113, W114 and W115 are emitted in this milestone.** The full codes are
-    `W106_DENY_WINS`, `W111_ASK_DOWNGRADED`, `W112_PERMISSION_LOSSY` (OpenCode's `write` fold only;
-    `write` is native on Claude Code), `W113_ALLOW_LIST_NARROWS`,
-    `W114_RENDERER_INTEGRITY_UNVERIFIED` and `W115_CREDENTIAL_IN_URL`. W101 is emitted in profile
+11. **W101, W106, W107, W109, W111, W112, W113, W114, W115 and W116 are emitted in this
+    milestone.** The full codes are `W101_CAPABILITY_DROPPED`, `W106_DENY_WINS`,
+    `W107_OUTSIDE_OWNERSHIP` (a plausible prior render or an extra skill-tree file, reported by
+    `check` as drift), `W109_PROFILE_BY_CHOICE` (profile selected where no persona forces it, info),
+    `W111_ASK_DOWNGRADED`, `W112_PERMISSION_LOSSY` (OpenCode's `write` fold only; `write` is native
+    on Claude Code), `W113_ALLOW_LIST_NARROWS`, `W114_RENDERER_INTEGRITY_UNVERIFIED`,
+    `W115_CREDENTIAL_IN_URL` and `W116_SECRET_IN_ARGS`. W101 is emitted in profile
     mode when the active persona declares a hook OpenCode cannot represent; agent mode refuses a
     hook reference before representability is considered, so it has no W101 to report. W113 is emitted whenever a resource opts into the `tools`
     allow-list: it names the tools the narrowing removes, and an opt-in whose categories all
@@ -746,14 +821,16 @@ extend them further. The differences, all deliberate:
     emitted either, so a uniqueness rejection would have been a false rejection of valid input.
 15. **A YAML file with more than one document is refused (F001).** Parsing only the first document
     would silently discard every persona after the first `---`.
-16. **`generate` and `init` are atomic for a caught failure.** The managed output is staged in
-    sibling temporary files and renamed only after every write has succeeded, and a rename failure
-    restores what it already replaced (reporting any restore it could not complete). Created
-    directories are recorded one level at a time and removed on failure; a directory the rollback
-    could not remove is named in the error instead of the error claiming a clean tree. A crash
-    between renames is not atomic; `init` preflights the one path that can fail on an ordinary
-    filesystem state, writes it with `O_EXCL` under an unpredictable name, and rolls back what it
-    created.
+16. **`generate` and `init` are atomic for a caught failure, and honest after a removal.**
+    The managed output is staged in sibling temporary files and renamed only after every write has
+    succeeded, and a rename failure restores what it already replaced (reporting any restore it
+    could not complete). Created directories are recorded one level at a time and removed on
+    failure; a directory the rollback could not remove is named in the error instead of the error
+    claiming a clean tree. Orphan removal runs **before** the commit, so a commit failure after a
+    removal names the paths already removed instead of claiming "nothing was written"; the tree is
+    partially updated and `check` reports it. A crash between renames is not atomic; `init`
+    preflights the one path that can fail on an ordinary filesystem state, writes it with `O_EXCL`
+    under an unpredictable name, and rolls back what it created.
 17. **Exactly one target is rendered per run.** `targets` admits one entry; a second is F001.
     Rendering both in one run needs a per-target lockfile and mode plan, which is later work. The
     committed lockfile records the target that produced it, and `check` compares the bytes.
@@ -762,7 +839,8 @@ extend them further. The differences, all deliberate:
     live personas would hand every persona the declarer's resource, with no per-recipient record
     and no opt-out, so agent mode refuses a reference with F001 naming the resource, the declaring
     persona and "requires profile mode". Profile mode (this milestone) resolves only the active
-    persona and emits its four kinds at the repository root.
+    persona and emits its config at the repository root and its skills, commands and hooks under
+    `.opencode/`.
 19. **The OpenCode per-agent `task` category is authored as `task`, not `agent`.** The design's
     canonical mapping authors `task` as rulesync's `agent`. Measured at rulesync 43.11.0, the
     per-agent V2 raise path translates `task` to `subagent` but passes `agent` through
@@ -793,23 +871,34 @@ extend them further. The differences, all deliberate:
     `active`. This build records `activePersona` because the brief for M3 names it, and because the
     field is the persona id while the config field it comes from is also called `active`; two
     different scopes with one name invites a consumer to read the wrong one. `mode` is `agent` or
-    `profile`; `agent-with-loss` and `refuse` are not yet produced by this build.
+    `profile`; `agent-with-loss` and `refuse` are not yet produced by this build. `notLive` records
+    the resolved-but-not-live personas, and `configDigest` records the config plus every persona and
+    resource file. Both are optional on read so a pre-M3 lockfile still parses; a legacy lockfile is
+    normalised to `mode: "agent"` and `activePersona: null`. A structured entry records `shape` and
+    `ownedKeys`, and its `sha256`/`size` describe the owned subset, not the whole file.
 26. **Profile mode is OpenCode-only in this build.** The design allows `active` on any target. This
     build refuses it on `claudecode`, whose only workspace-only capability is `command` (content,
     so it does not force a profile). Accepting a setting that does nothing would be the silent
     no-op the strict schema exists to prevent.
 27. **Orphan removal is limited to recorded regular files in managed locations.** A recorded path
     is removable only when it is in a managed directory (or is a target's whole root config file),
-    is still a regular file, and still has the recorded SHA-256. A symlink is refused and never
-    followed; a directory, an edited file or an unrecorded user file is never removed. The whole
+    is still a regular file, and still has the recorded SHA-256, re-checked immediately before the
+    `rm`. A symlink is refused and never followed; a directory, an edited file or an unrecorded
+    user file is never removed; an absent recorded path is dropped from the new lockfile. The whole
     set is preflighted before any write, and removals run before the new set is committed so a
-    failed commit is visible as missing artefacts rather than as an unrecorded leftover.
-28. **Profile mode keeps the persona's permissions in its per-agent file.** The design's
-    `schema.md` 4.5.2 describes the workspace permissions array as the profile-mode carrier. This
-    build's only ownership shape is the whole file, and the per-agent permission array is the
-    matrix's native per-persona carrier on OpenCode; a shared permissions block would be a
-    structured merge this milestone does not implement. The workspace `opencode.jsonc` carries only
-    `mcp`. Profile mode therefore does not widen or share any permission across personas.
+    failed commit is reported as a partial update rather than as an unrecorded leftover.
+28. **`opencode.jsonc` is structured, not whole-file.** The design's ownership model has five
+    shapes; this build implements `whole`, `tree` and `structured`. `opencode.jsonc` owns the `mcp`
+    key only: `generate` reads the existing document, replaces that key, and preserves every other
+    key (`$schema`, `theme`, `instructions`, the user's own providers). `check` compares the owned
+    key only, so a foreign-key edit is not drift, and the lockfile records the owned subset's digest
+    rather than the whole file, so two roots with the same source still produce identical lockfile
+    bytes. An existing `opencode.jsonc` the lockfile does not record is never taken over. Region
+    ownership (`CLAUDE.md`, `AGENTS.md`) is still later work, and the persona's permissions stay in
+    its per-agent file: the per-agent permission array is the matrix's native per-persona carrier on
+    OpenCode, and a shared permissions block would be a second structured key this milestone does
+    not implement. The workspace `opencode.jsonc` therefore carries only `mcp` and profile mode does
+    not widen or share any permission across personas.
 29. **The active persona's OpenCode frontmatter keeps `mode: subagent`.** Profile mode changes
     which personas are emitted, not the shape of the per-agent file. Promoting the live persona to
     a primary mode is a product decision about how the session starts, and is not made here.
