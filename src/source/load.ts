@@ -1,15 +1,19 @@
 import type { Dirent } from 'node:fs';
-import { readdir, readFile } from 'node:fs/promises';
+import { readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { ZodError } from 'zod';
 import {
+  PERMISSION_FILE_EXT,
   PERMISSIONS_DIR,
+  PERSONA_FILE_EXT,
   PERSONAS_DIR,
   RESOURCES_DIR,
   ROOT_DIR,
+  RULE_FILE_EXT,
   RULES_DIR,
 } from '../core/constants.js';
 import { conflict, invalidConfig, pathUnsafe } from '../core/errors.js';
+import { readUtf8File } from '../core/fs.js';
 import { compareCodepoints, parseJsonc } from '../core/json.js';
 import { assertRealDirectory } from '../core/paths.js';
 import { permissionResourceDigest } from '../permissions/permissions.js';
@@ -34,6 +38,8 @@ export type RuleResource = {
 };
 
 export type PermissionResource = PermissionDeclaration & {
+  /** True when the resource opts its persona into Claude Code's `tools` allow-list. */
+  allowlist: boolean;
   /** Repository-relative path, for messages. */
   path: string;
 };
@@ -126,16 +132,18 @@ async function loadPersonas(repoRoot: string): Promise<LoadedPersona[]> {
     if (!entry.isFile()) {
       throw invalidConfig('unexpected entry in personas/', {
         subject: path,
-        action: 'a persona is one .yaml file',
+        action: `a persona is one ${PERSONA_FILE_EXT} file`,
       });
     }
-    if (!name.endsWith('.yaml')) {
+    if (!name.endsWith(PERSONA_FILE_EXT)) {
       throw invalidConfig('unexpected file in personas/', {
         subject: path,
-        action: 'persona files use the .yaml extension',
+        action: `persona files use the ${PERSONA_FILE_EXT} extension`,
       });
     }
-    const text = await readFile(join(repoRoot, ROOT_DIR, PERSONAS_DIR, name), 'utf8');
+    const text = await readUtf8File(join(repoRoot, ROOT_DIR, PERSONAS_DIR, name), path, {
+      action: 'make the persona file readable and re-run generate',
+    });
     const raw = parseYamlStrict(text, { subject: path });
     let persona: PersonaDeclaration;
     try {
@@ -146,7 +154,7 @@ async function loadPersonas(repoRoot: string): Promise<LoadedPersona[]> {
       }
       throw error;
     }
-    const stem = name.slice(0, -'.yaml'.length);
+    const stem = name.slice(0, -PERSONA_FILE_EXT.length);
     if (persona.id !== stem) {
       throw invalidConfig(`id "${persona.id}" does not match the file name "${stem}"`, {
         subject: path,
@@ -171,16 +179,20 @@ async function loadRules(repoRoot: string): Promise<RuleResource[]> {
     if (!entry.isFile()) {
       throw invalidConfig('unexpected entry in resources/rules/', {
         subject: path,
-        action: 'a rule is one .md file',
+        action: `a rule is one ${RULE_FILE_EXT} file`,
       });
     }
-    if (!name.endsWith('.md')) {
+    if (!name.endsWith(RULE_FILE_EXT)) {
       throw invalidConfig('unexpected file in resources/rules/', {
         subject: path,
-        action: 'rule files use the .md extension',
+        action: `rule files use the ${RULE_FILE_EXT} extension`,
       });
     }
-    const text = await readFile(join(repoRoot, ROOT_DIR, RESOURCES_DIR, RULES_DIR, name), 'utf8');
+    const text = await readUtf8File(
+      join(repoRoot, ROOT_DIR, RESOURCES_DIR, RULES_DIR, name),
+      path,
+      { action: 'make the rule file readable and re-run generate' },
+    );
     const frontmatter = splitFrontmatter(text, path);
     const raw = parseYamlStrict(frontmatter.text, { subject: `${path}:frontmatter` });
     let parsed: RuleFrontmatter;
@@ -192,7 +204,7 @@ async function loadRules(repoRoot: string): Promise<RuleResource[]> {
       }
       throw error;
     }
-    const stem = name.slice(0, -'.md'.length);
+    const stem = name.slice(0, -RULE_FILE_EXT.length);
     if (parsed.id !== stem) {
       throw invalidConfig(`id "${parsed.id}" does not match the file name "${stem}"`, {
         subject: path,
@@ -230,18 +242,19 @@ async function loadPermissions(repoRoot: string): Promise<PermissionResource[]> 
     if (!entry.isFile()) {
       throw invalidConfig('unexpected entry in resources/permissions/', {
         subject: path,
-        action: 'a permission is one .jsonc file',
+        action: `a permission is one ${PERMISSION_FILE_EXT} file`,
       });
     }
-    if (!name.endsWith('.jsonc')) {
+    if (!name.endsWith(PERMISSION_FILE_EXT)) {
       throw invalidConfig('unexpected file in resources/permissions/', {
         subject: path,
-        action: 'permission files use the .jsonc extension',
+        action: `permission files use the ${PERMISSION_FILE_EXT} extension`,
       });
     }
-    const text = await readFile(
+    const text = await readUtf8File(
       join(repoRoot, ROOT_DIR, RESOURCES_DIR, PERMISSIONS_DIR, name),
-      'utf8',
+      path,
+      { action: 'make the permission file readable and re-run generate' },
     );
     const raw = parseJsonc(text, { subject: path });
     let parsed: PermissionDeclaration;
@@ -258,9 +271,14 @@ async function loadPermissions(repoRoot: string): Promise<PermissionResource[]> 
       id: parsed.id,
       tools: parsed.tools,
       ...(parsed.patterns === undefined ? {} : { patterns: parsed.patterns }),
+      allowlist: parsed.allowlist === true,
       path,
     };
-    const contentDigest = permissionResourceDigest(resource.tools, resource.patterns);
+    const contentDigest = permissionResourceDigest(
+      resource.tools,
+      resource.patterns,
+      resource.allowlist,
+    );
     const existing = byId.get(resource.id);
     if (existing === undefined) {
       byId.set(resource.id, { ...resource, contentDigest });
@@ -281,20 +299,6 @@ async function loadPermissions(repoRoot: string): Promise<PermissionResource[]> 
     .sort((a, b) => compareCodepoints(a.id, b.id));
 }
 
-function assertUniqueIds(source: SourceTree): void {
-  // A persona id cannot collide: `loadPersonas` requires `id` to equal the
-  // file stem, and one directory cannot hold two files with one stem. The
-  // display name is a human label and is deliberately not constrained: two
-  // personas may share a label while keeping distinct ids.
-  const ruleIds = new Set<string>();
-  for (const rule of source.rules) {
-    if (ruleIds.has(rule.id)) {
-      throw conflict(`two rules share the id "${rule.id}"`, { subject: rule.path });
-    }
-    ruleIds.add(rule.id);
-  }
-}
-
 /** Enumerate and parse the whole source tree. A file that is present but unparsed is an error. */
 export async function loadSource(repoRoot: string): Promise<SourceTree> {
   // The source root itself is checked first: a symlinked `.farna` is refused
@@ -304,7 +308,5 @@ export async function loadSource(repoRoot: string): Promise<SourceTree> {
   const personas = (await loadPersonas(repoRoot)).sort((a, b) => compareCodepoints(a.id, b.id));
   const rules = (await loadRules(repoRoot)).sort((a, b) => compareCodepoints(a.id, b.id));
   const permissions = await loadPermissions(repoRoot);
-  const source: SourceTree = { personas, rules, permissions };
-  assertUniqueIds(source);
-  return source;
+  return { personas, rules, permissions };
 }

@@ -101,8 +101,10 @@ export function installedRendererIdentity(name: string): RendererIdentity {
 
 /**
  * Compare the renderer recorded in the lockfile with the one that is installed.
- * A differing version always fails; a differing integrity fails when both
- * sides recorded one.
+ * A differing name or version always fails, and so does a missing integrity on
+ * either side: the check never silently degrades to a version comparison. The
+ * lockfile records the build's pin, so this compares the installed package
+ * against that pin.
  */
 export function verifyRendererIdentity(
   recorded: RendererIdentity,
@@ -127,11 +129,25 @@ export function verifyRendererIdentity(
       },
     );
   }
-  if (
-    recorded.integrity !== undefined &&
-    installed.integrity !== undefined &&
-    recorded.integrity !== installed.integrity
-  ) {
+  if (recorded.integrity === undefined) {
+    throw rendererMismatch(
+      `the lockfile records no integrity for ${recorded.name} ${recorded.version}, so the committed bytes cannot be tied to a pinned renderer`,
+      {
+        subject,
+        action: 'delete the lockfile and re-run generate to record the pinned renderer',
+      },
+    );
+  }
+  if (installed.integrity === undefined) {
+    throw rendererMismatch(
+      `the installed ${installed.name} ${installed.version} records no tarball integrity, so it cannot be checked against the lockfile`,
+      {
+        subject,
+        action: 're-install dependencies with npm so the integrity is recorded',
+      },
+    );
+  }
+  if (recorded.integrity !== installed.integrity) {
     throw rendererMismatch(
       `the lockfile records ${recorded.name} integrity ${recorded.integrity} but the installed package is ${installed.integrity}`,
       {

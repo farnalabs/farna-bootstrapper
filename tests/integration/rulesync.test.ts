@@ -5,7 +5,7 @@ import { runCheck } from '../../src/cli/commands/check.js';
 import { runGenerate } from '../../src/cli/commands/generate.js';
 import { installedRendererIdentity } from '../../src/render/identity.js';
 import { RENDERER_PIN, UpstreamRenderTarget } from '../../src/render/upstream.js';
-import { createTempRepo, hashTree, readText } from '../support/temp-repo.js';
+import { createEmptyTempDir, createTempRepo, hashTree, readText } from '../support/temp-repo.js';
 
 /**
  * The real, pinned renderer. There is no skip: a missing or broken `rulesync`
@@ -54,9 +54,11 @@ describe('rulesync integration', () => {
       expect(reviewer).not.toContain('FBS_RULE_BUILDER_4a1c');
 
       const lock = JSON.parse(await readText(repo.root, '.farna/lock.json')) as {
-        renderer: { name: string; version: string };
+        renderer: { name: string; version: string; integrity: string };
       };
-      expect(lock.renderer).toMatchObject({ name: 'rulesync', version: RENDERER_PIN.version });
+      // The lockfile records the build's pin, not the integrity this machine's
+      // package manager happened to write, so two machines agree byte for byte.
+      expect(lock.renderer).toEqual(RENDERER_PIN);
     } finally {
       await repo.cleanup();
     }
@@ -68,7 +70,11 @@ describe('rulesync integration', () => {
       await mkdir(join(repo.root, '.farna/resources/permissions'), { recursive: true });
       await writeFile(
         join(repo.root, '.farna/resources/permissions/locked.jsonc'),
-        JSON.stringify({ kind: 'permission', id: 'locked', tools: { read: 'allow' } }, null, 2),
+        JSON.stringify(
+          { kind: 'permission', id: 'locked', tools: { read: 'allow' }, allowlist: true },
+          null,
+          2,
+        ),
         'utf8',
       );
       await writeFile(
@@ -97,6 +103,35 @@ describe('rulesync integration', () => {
       expect(check.exitCode).toBe(0);
     } finally {
       await repo.cleanup();
+    }
+  }, 30_000);
+
+  it('ignores an ambient rulesync config in the working directory', async () => {
+    const ambient = await createEmptyTempDir();
+    const repo = await createTempRepo();
+    const previous = process.cwd();
+    try {
+      // `delete` and `dryRun` are the two options an ambient file could use to
+      // change the run. With the stage as the renderer's working directory they
+      // are never read.
+      await writeFile(
+        join(ambient.root, 'rulesync.jsonc'),
+        JSON.stringify({ dryRun: true, delete: true, check: true }),
+        'utf8',
+      );
+      process.chdir(ambient.root);
+      const result = await runGenerate(
+        { cwd: repo.root, dryRun: false },
+        new UpstreamRenderTarget(),
+      );
+      expect(result.files.every((file) => file.status === 'written')).toBe(true);
+      const builder = await readText(repo.root, '.claude/agents/builder.md');
+      expect(builder).toContain('name: builder');
+      expect(previous).not.toBe('');
+    } finally {
+      process.chdir(previous);
+      await repo.cleanup();
+      await ambient.cleanup();
     }
   }, 30_000);
 

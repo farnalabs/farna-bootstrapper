@@ -1,5 +1,11 @@
 import { Command } from 'commander';
-import { EXIT, PRODUCT_NAME, PRODUCT_VERSION, SCHEMA_VERSION } from '../core/constants.js';
+import {
+  DRIFT_CODE,
+  EXIT,
+  PRODUCT_NAME,
+  PRODUCT_VERSION,
+  SCHEMA_VERSION,
+} from '../core/constants.js';
 import { FarnaError } from '../core/errors.js';
 import type { RenderTarget } from '../render/port.js';
 import { formatCheck, formatGenerate, formatInit, formatJson } from '../report/format.js';
@@ -50,6 +56,20 @@ export function unexpectedFailureObject(
     subject: null,
     message,
   };
+}
+
+/**
+ * Strip the repository root from a message that escaped as an untyped error, so
+ * the one failure with no diagnostic code still names a repository-relative
+ * subject rather than leaking an absolute path. Both separators are handled:
+ * the message may come from a platform library or from a tool.
+ */
+export function redactRoot(message: string, root: string): string {
+  const withoutTrailing = root.endsWith('/') || root.endsWith('\\') ? root.slice(0, -1) : root;
+  return message
+    .replaceAll(`${withoutTrailing}/`, '')
+    .replaceAll(`${withoutTrailing}\\`, '')
+    .replaceAll(withoutTrailing, '.');
 }
 
 /**
@@ -162,7 +182,7 @@ export function buildProgram(context: CliContext): Command {
         if (!result.ok) {
           // The same failure keys the typed-error path carries, so a consumer
           // never has to special-case drift to learn it failed.
-          payload['code'] = 'F007_DRIFT';
+          payload['code'] = DRIFT_CODE;
           payload['subject'] = result.drift[0]?.path ?? null;
           payload['message'] = 'managed output drifted from a fresh render';
         }

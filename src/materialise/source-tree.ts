@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { stringify } from 'yaml';
 import type { ResolvedPersona, ResolvedSource } from '../compose/resolve.js';
 import { DEFAULT_TARGET } from '../core/constants.js';
+import type { RenderTargetName } from '../render/port.js';
 
 /**
  * Join rule bodies into the persona body, in canonical order. The rule body
@@ -23,12 +24,27 @@ export function personaBody(persona: ResolvedPersona): string {
   return `${sections.join('\n\n')}\n`;
 }
 
+/**
+ * Whether this persona's source form carries `tools`. The target reads it as an
+ * allow-list, so it is emitted only when a permission resource opted in: a bare
+ * `read: allow` must not silently remove Glob, Grep, WebFetch and every other
+ * tool the product does not model.
+ */
+export function emitsTools(persona: ResolvedPersona): boolean {
+  return persona.claude.allowlist && persona.claude.allow.length > 0;
+}
+
+export type ClaudeBlock = {
+  model?: string;
+  tools?: string[];
+  disallowedTools?: string[];
+};
+
 export type PersonaFrontmatter = {
   name: string;
   targets: string[];
   description: string;
-  claudecode?: { model?: string; tools?: string[]; disallowedTools?: string[] };
-};
+} & Partial<Record<RenderTargetName, ClaudeBlock>>;
 
 /**
  * The renderer source form for the Claude Code per-agent block. `tools` and
@@ -36,22 +52,25 @@ export type PersonaFrontmatter = {
  * `Edit`, `Read`, `Write`, and `Bash(P)` for a pattern), never a product category.
  */
 export function personaFrontmatter(persona: ResolvedPersona): PersonaFrontmatter {
-  const claudecode: NonNullable<PersonaFrontmatter['claudecode']> = {};
+  const block: ClaudeBlock = {};
   if (persona.model !== undefined) {
-    claudecode.model = persona.model;
+    block.model = persona.model;
   }
-  if (persona.claude.allow.length > 0) {
-    claudecode.tools = persona.claude.allow;
+  if (emitsTools(persona)) {
+    block.tools = persona.claude.allow;
   }
   if (persona.claude.deny.length > 0) {
-    claudecode.disallowedTools = persona.claude.deny;
+    block.disallowedTools = persona.claude.deny;
   }
-  return {
+  const frontmatter: PersonaFrontmatter = {
     name: persona.id,
     targets: [DEFAULT_TARGET],
     description: persona.purpose,
-    ...(Object.keys(claudecode).length === 0 ? {} : { claudecode }),
   };
+  if (Object.keys(block).length > 0) {
+    frontmatter[DEFAULT_TARGET] = block;
+  }
+  return frontmatter;
 }
 
 export function personaSourceFile(persona: ResolvedPersona): string {

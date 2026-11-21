@@ -75,6 +75,44 @@ describe('source loader', () => {
     }
   });
 
+  for (const [label, relative, load] of [
+    ['a persona', '.farna/personas/builder.yaml', loadSource],
+    ['a rule', '.farna/resources/rules/house-style.md', loadSource],
+    ['a permission', '.farna/resources/permissions/builder-default.jsonc', loadSource],
+    ['the config', '.farna/config.jsonc', loadConfig],
+  ] as const) {
+    it(`refuses invalid UTF-8 in ${label} with the file and offset`, async () => {
+      const repo = await createTempRepo('composed');
+      try {
+        // 0xE9 is a three-byte lead at EOF: a lone byte the utf8 decoder must
+        // never replace with U+FFFD.
+        await writeFile(join(repo.root, relative), Buffer.from([0xe9]));
+        const error = await expectFarnaError(load(repo.root), 'F001_INVALID_CONFIG');
+        expect(error.subject).toBe(relative);
+        expect(error.message).toContain('not valid UTF-8');
+        expect(error.message).toContain('byte offset 0');
+      } finally {
+        await repo.cleanup();
+      }
+    });
+  }
+
+  it('refuses invalid UTF-8 after valid bytes at the exact offset', async () => {
+    const repo = await createTempRepo();
+    try {
+      const prefix =
+        'kind: persona\nid: builder\ndisplayName: Builder\npurpose: Writes code.\nresources: []\n';
+      await writeFile(
+        join(repo.root, '.farna/personas/builder.yaml'),
+        Buffer.concat([Buffer.from(prefix, 'utf8'), Buffer.from([0xe9, 0x0a])]),
+      );
+      const error = await expectFarnaError(loadSource(repo.root), 'F001_INVALID_CONFIG');
+      expect(error.message).toContain(`byte offset ${prefix.length}`);
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
   it('rejects a config that starts with a BOM', async () => {
     const repo = await createTempRepo();
     try {
@@ -235,6 +273,21 @@ describe('source loader', () => {
       );
       const error = await expectFarnaError(loadSource(repo.root), 'F001_INVALID_CONFIG');
       expect(error.message).toContain('anchors are not allowed');
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
+  it('rejects a targets key this slice does not implement', async () => {
+    const repo = await createTempRepo();
+    try {
+      await writeFile(
+        join(repo.root, '.farna/config.jsonc'),
+        '{"schemaVersion":1,"targets":{"opencode":{}}}\n',
+        'utf8',
+      );
+      const error = await expectFarnaError(loadConfig(repo.root), 'F001_INVALID_CONFIG');
+      expect(error.message).toContain('this slice supports only: claudecode');
     } finally {
       await repo.cleanup();
     }

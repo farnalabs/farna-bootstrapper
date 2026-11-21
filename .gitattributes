@@ -1,0 +1,5 @@
+# `check` compares bytes. A checkout that rewrites these files to CRLF (a
+# Windows machine with core.autocrlf=true) would report drift the source never
+# declared, so the two committed artefacts are pinned to LF.
+/.claude/agents/** text eol=lf
+/.farna/lock.json text eol=lf

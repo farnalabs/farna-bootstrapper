@@ -88,11 +88,11 @@ describe('render gates', () => {
     try {
       const { error, before, after } = await captureFailure(repo.root, {
         kind: 'drop-tools',
-        persona: 'builder',
+        persona: 'builder-python',
       });
       expect(error.code).toBe('F008_DECLARED_NOT_EMITTED');
       expect(error.message).toContain('tools');
-      expect(error.subject).toBe('.claude/agents/builder.md');
+      expect(error.subject).toBe('.claude/agents/builder-python.md');
       expect(after).toBe(before);
     } finally {
       await repo.cleanup();

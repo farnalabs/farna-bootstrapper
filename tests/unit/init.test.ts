@@ -1,7 +1,7 @@
-import { mkdir, readFile, rmdir, stat, symlink, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, readFile, rmdir, stat, symlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { runInit } from '../../src/cli/commands/init.js';
+import { runInit, writeGitignore } from '../../src/cli/commands/init.js';
 import { loadConfig } from '../../src/config/load.js';
 import { FarnaError } from '../../src/core/errors.js';
 import { createEmptyTempDir, hashTree, listFiles, readText } from '../support/temp-repo.js';
@@ -34,9 +34,50 @@ describe('init', () => {
       const gitignore = await readText(repo.root, '.gitignore');
       expect(gitignore).toContain('.farna/local.jsonc');
       expect(gitignore).toContain('.farna/.journal.json');
+      // The rename moved a file this run created, never a link it followed.
+      expect((await lstat(join(repo.root, '.gitignore'))).isSymbolicLink()).toBe(false);
       expect(result.nextStep).toContain('farna-bootstrapper generate');
     } finally {
       await repo.cleanup();
+    }
+  });
+
+  it('does not write a dangling $schema URL into the config', async () => {
+    const repo = await createEmptyTempDir();
+    try {
+      await runInit(repo.root);
+      const config = await readFile(join(repo.root, '.farna/config.jsonc'), 'utf8');
+      expect(config).not.toContain('$schema');
+      expect(config).not.toContain('https://');
+      expect(config).toContain('"schemaVersion": 1');
+      expect(config).toContain('"claudecode": {}');
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
+  it('never follows a pre-planted staging symlink over .gitignore', async () => {
+    const repo = await createEmptyTempDir();
+    const outside = await createEmptyTempDir();
+    try {
+      const victim = join(outside.root, 'victim');
+      await writeFile(victim, 'VICTIM ORIGINAL', 'utf8');
+      await writeFile(join(repo.root, '.gitignore'), 'keep-me\n', 'utf8');
+      // The old name was predictable (`.gitignore.farna-tmp-<pid>`), so an
+      // attacker could plant exactly this link. The seam reproduces it.
+      const planted = join(repo.root, '.gitignore.farna-tmp-planted');
+      await symlink(victim, planted, 'file');
+
+      await expect(
+        writeGitignore(join(repo.root, '.gitignore'), 'replacement\n', () => planted),
+      ).rejects.toMatchObject({ code: 'F001_INVALID_CONFIG', subject: '.gitignore' });
+
+      expect(await readFile(victim, 'utf8')).toBe('VICTIM ORIGINAL');
+      expect((await lstat(join(repo.root, '.gitignore'))).isSymbolicLink()).toBe(false);
+      expect(await readFile(join(repo.root, '.gitignore'), 'utf8')).toBe('keep-me\n');
+    } finally {
+      await repo.cleanup();
+      await outside.cleanup();
     }
   });
 

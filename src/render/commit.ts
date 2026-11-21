@@ -1,8 +1,8 @@
-import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, rename, rm, rmdir, writeFile } from 'node:fs/promises';
-import { basename, dirname, isAbsolute, join, posix } from 'node:path';
+import { dirname, isAbsolute, join, posix } from 'node:path';
 import { pathUnsafe, writeFailed } from '../core/errors.js';
 import { containedTarget, lstatOrUndefined } from '../core/paths.js';
+import { stagingName, sweepStaging } from './staging.js';
 
 /** A managed path is relative, POSIX-spelled, and cannot escape the root. */
 export function assertSafeRelativePath(path: string): void {
@@ -23,7 +23,8 @@ export type CommitResult = {
 
 /**
  * The filesystem calls a commit makes. The seam exists so the rename-failure
- * path can be tested deterministically; production always uses the defaults.
+ * and partial-mkdir paths can be tested deterministically; production always
+ * uses the defaults.
  */
 export type CommitOperations = {
   mkdir: (path: string) => Promise<void>;
@@ -34,8 +35,11 @@ export type CommitOperations = {
 };
 
 const defaultOperations: CommitOperations = {
+  // One level at a time. A recursive mkdir can create ancestors and then throw,
+  // leaving directories the rollback has no record of; the caller records each
+  // successful level instead.
   mkdir: async (path) => {
-    await mkdir(path, { recursive: true });
+    await mkdir(path);
   },
   writeFile: async (path, data) => {
     await writeFile(path, data, 'utf8');
@@ -66,7 +70,7 @@ export type ManagedTarget = {
 export async function inspectManagedTarget(repoRoot: string, path: string): Promise<ManagedTarget> {
   assertSafeRelativePath(path);
   const target = await containedTarget(repoRoot, path);
-  const stats = await lstatOrUndefined(target);
+  const stats = await lstatOrUndefined(target, path);
   if (stats?.isSymbolicLink()) {
     throw pathUnsafe(`refusing to write through a symbolic link: ${path}`, {
       subject: path,
@@ -93,6 +97,7 @@ export async function inspectManagedTarget(repoRoot: string, path: string): Prom
 
 type PlannedFile = ManagedTarget & { bytes: string };
 type StagedFile = PlannedFile & { temporary: string };
+type CreatedDirectory = { path: string; subject: string };
 
 async function removeTemporaryFiles(
   staged: readonly StagedFile[],
@@ -112,11 +117,12 @@ async function removeTemporaryFiles(
  * this function never renders and never decides whether the output is correct.
  *
  * The whole set is preflighted (no symlinked ancestor, no directory in the way)
- * and staged into sibling temporary files before the first rename. A failure
- * while staging removes the temporaries and leaves the tree untouched. A rename
- * failure restores the files this call already replaced and reports any file it
- * could not restore by name: the diagnostic never claims a restore it did not
- * achieve.
+ * and the tool's own staging namespace is swept before anything is staged, so a
+ * killed earlier run cannot leave a permanent red `check`. A failure while
+ * staging removes the temporaries and the directories this call created; the
+ * diagnostic names any directory it could not remove rather than claiming a
+ * clean tree. A rename failure restores the files this call already replaced and
+ * reports any file it could not restore by name.
  */
 export async function commitFiles(
   repoRoot: string,
@@ -129,6 +135,17 @@ export async function commitFiles(
     planned.push({ ...(await inspectManagedTarget(repoRoot, file.path)), bytes: file.bytes });
   }
 
+  // Sweep our own namespace in every managed directory. Only directories the
+  // plan already validated are touched, and only names matching this tool's
+  // staging shape.
+  const stagingDirectories = new Map<string, string>();
+  for (const item of planned) {
+    stagingDirectories.set(dirname(item.target), posix.dirname(item.path));
+  }
+  for (const directory of stagingDirectories.keys()) {
+    await sweepStaging(directory);
+  }
+
   const statuses: CommitResult['statuses'] = planned.map((item) => ({
     path: item.path,
     status: item.existing === item.bytes ? 'unchanged' : 'written',
@@ -136,13 +153,13 @@ export async function commitFiles(
   const writes = planned.filter((item) => item.existing !== item.bytes);
 
   const staged: StagedFile[] = [];
-  const createdDirectories: string[] = [];
+  const createdDirectories: CreatedDirectory[] = [];
 
-  const ensureDirectory = async (directory: string): Promise<void> => {
+  const ensureDirectory = async (directory: string, subject: string): Promise<void> => {
     const missing: string[] = [];
     let current = directory;
     for (;;) {
-      if ((await lstatOrUndefined(current)) !== undefined) {
+      if ((await lstatOrUndefined(current, subject)) !== undefined) {
         break;
       }
       missing.push(current);
@@ -152,40 +169,52 @@ export async function commitFiles(
       }
       current = parent;
     }
-    if (missing.length === 0) {
-      return;
+    // Parent first, recording each level the moment it is created: a failure on
+    // a deeper level leaves the earlier levels known to the rollback.
+    for (const level of [...missing].reverse()) {
+      await operations.mkdir(level);
+      createdDirectories.push({ path: level, subject });
     }
-    await operations.mkdir(directory);
-    createdDirectories.push(...missing);
   };
 
-  const removeCreatedDirectories = async (): Promise<void> => {
-    for (const directory of [...createdDirectories].sort((a, b) => b.length - a.length)) {
+  const removeCreatedDirectories = async (): Promise<string[]> => {
+    const failed: string[] = [];
+    for (const directory of [...createdDirectories].sort((a, b) => b.path.length - a.path.length)) {
       try {
-        await operations.removeDirectory(directory);
+        await operations.removeDirectory(directory.path);
       } catch {
-        // A non-empty directory means something else wrote to it.
+        // A non-empty directory means something other than generate wrote to
+        // it; name it rather than claiming the tree is clean.
+        failed.push(directory.subject);
       }
     }
+    return failed;
   };
 
   let stagingPath = writes[0]?.path ?? '';
   try {
     for (const item of writes) {
       stagingPath = item.path;
-      await ensureDirectory(dirname(item.target));
-      const temporary = join(
-        dirname(item.target),
-        `.${basename(item.target)}.farna-tmp-${process.pid}-${randomUUID()}`,
-      );
-      await operations.writeFile(temporary, item.bytes);
+      await ensureDirectory(dirname(item.target), posix.dirname(item.path));
+      const temporary = join(dirname(item.target), stagingName(item.target));
+      // Record before writing, so a write that creates then fails is still
+      // removed by the catch below.
       staged.push({ ...item, temporary });
+      await operations.writeFile(temporary, item.bytes);
     }
   } catch (error) {
     await removeTemporaryFiles(staged, operations);
-    await removeCreatedDirectories();
-    throw writeFailed(`cannot stage ${stagingPath}; nothing was written`, {
+    const leftBehind = await removeCreatedDirectories();
+    const outcome =
+      leftBehind.length === 0
+        ? 'nothing was written'
+        : `no managed file was written, but these directories could not be removed: ${leftBehind.join(', ')}`;
+    throw writeFailed(`cannot stage ${stagingPath}; ${outcome}`, {
       subject: stagingPath,
+      action:
+        leftBehind.length === 0
+          ? 'fix the filesystem and re-run generate'
+          : 'remove the named directories and re-run generate',
       cause: error,
     });
   }
@@ -216,7 +245,7 @@ export async function commitFiles(
         restoreFailures.push(`${item.path} (${detail})`);
       }
     }
-    await removeCreatedDirectories();
+    const leftBehind = await removeCreatedDirectories();
 
     const outcome =
       restoreFailures.length > 0
@@ -224,7 +253,11 @@ export async function commitFiles(
         : replaced.length > 0
           ? 'earlier files were restored'
           : 'no earlier file was replaced';
-    throw writeFailed(`cannot write ${renamePath}; ${outcome}`, {
+    const directories =
+      leftBehind.length === 0
+        ? ''
+        : `; these directories could not be removed: ${leftBehind.join(', ')}`;
+    throw writeFailed(`cannot write ${renamePath}; ${outcome}${directories}`, {
       subject: renamePath,
       action:
         restoreFailures.length > 0

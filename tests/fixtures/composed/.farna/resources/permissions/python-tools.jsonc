@@ -1,6 +1,9 @@
 {
   "kind": "permission",
   "id": "python-tools",
+  // Opt in to the target's tools allow-list. Without this the permission is a
+  // deny-list and a partial allow set never removes an unmodelled tool.
+  "allowlist": true,
   "tools": {
     "read": "allow",
     "shell": "allow",

@@ -2,6 +2,7 @@ import type { Stats } from 'node:fs';
 import { lstat, realpath } from 'node:fs/promises';
 import { join, sep } from 'node:path';
 import { invalidConfig, pathUnsafe } from './errors.js';
+import { inspectionFailed } from './fs.js';
 
 /**
  * Every filesystem path this tool reads for source or writes as output is
@@ -10,14 +11,22 @@ import { invalidConfig, pathUnsafe } from './errors.js';
  * is the repository it reads and writes.
  */
 
-async function lstatOrUndefined(path: string): Promise<Stats | undefined> {
+/**
+ * `lstat` a path. A missing path is `undefined`; any other failure (a path that
+ * cannot be inspected because a parent denies search permission, say) is a
+ * typed error naming the repository-relative subject when one is supplied.
+ */
+async function lstatOrUndefined(path: string, subject?: string): Promise<Stats | undefined> {
   try {
     return await lstat(path);
   } catch (error) {
     if (error instanceof Error && 'code' in error && error.code === 'ENOENT') {
       return undefined;
     }
-    throw error;
+    if (subject === undefined) {
+      throw error;
+    }
+    inspectionFailed(subject, error);
   }
 }
 
@@ -27,7 +36,7 @@ async function lstatOrUndefined(path: string): Promise<Stats | undefined> {
  * "optional" means different things to a source directory and an output file.
  */
 export async function assertNoSymlink(path: string, subject: string): Promise<Stats | undefined> {
-  const stats = await lstatOrUndefined(path);
+  const stats = await lstatOrUndefined(path, subject);
   if (stats?.isSymbolicLink() === true) {
     throw pathUnsafe(`symlink not allowed: ${subject}`, {
       subject,

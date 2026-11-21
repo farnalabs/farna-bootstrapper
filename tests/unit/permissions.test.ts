@@ -40,10 +40,52 @@ function resolve(contributions: PermissionContribution[]): {
   return { permissions, warnings };
 }
 
-function map(tools: PermissionTools, patterns: PermissionPatterns = {}) {
-  const { permissions, warnings } = resolve([{ id: 'builder-default', tools, patterns }]);
+function map(tools: PermissionTools, patterns: PermissionPatterns = {}, allowlist = false) {
+  const { permissions, warnings } = resolve([
+    { id: 'builder-default', tools, patterns, allowlist },
+  ]);
   const mapped = mapPermissions(permissions, { persona: 'builder', target: 'claudecode' });
-  return { entries: mapped.entries, warnings: [...warnings, ...mapped.warnings] };
+  return {
+    entries: mapped.entries,
+    allowlist: mapped.allowlist,
+    warnings: [...warnings, ...mapped.warnings],
+  };
+}
+
+/** One persona whose only permission is the resource under test. */
+function personaSource(
+  tools: PermissionTools,
+  patterns: PermissionPatterns,
+  allowlist: boolean,
+): string {
+  const source: SourceTree = {
+    personas: [
+      {
+        kind: 'persona',
+        id: 'builder',
+        displayName: 'Builder',
+        purpose: 'Writes code.',
+        resources: ['permission/builder-default'],
+        path: '.farna/personas/builder.yaml',
+      },
+    ],
+    rules: [],
+    permissions: [
+      {
+        kind: 'permission',
+        id: 'builder-default',
+        tools,
+        ...(Object.keys(patterns).length === 0 ? {} : { patterns }),
+        allowlist,
+        path: '.farna/resources/permissions/builder-default.jsonc',
+      },
+    ],
+  };
+  const persona = resolveSource(source, CONFIG).personas[0];
+  if (persona === undefined) {
+    throw new Error('the fixture produced no persona');
+  }
+  return personaSourceFile(persona);
 }
 
 function codes(warnings: readonly Warning[]): string[] {
@@ -51,6 +93,39 @@ function codes(warnings: readonly Warning[]): string[] {
 }
 
 describe('permission mapping', () => {
+  it('defaults to a deny-list: a partial allow set emits no tools', () => {
+    const { entries, allowlist } = map({ read: 'allow', shell: 'deny' });
+    expect(entries.allow).toEqual(['Read']);
+    expect(entries.deny).toEqual(['Bash']);
+    expect(allowlist).toBe(false);
+    const frontmatter = personaSource({ read: 'allow', shell: 'deny' }, {}, false);
+    expect(frontmatter).not.toContain('tools:');
+    expect(frontmatter).toContain('disallowedTools:');
+  });
+
+  it('emits tools and warns W113 only when a resource opts in', () => {
+    const { allowlist, warnings } = map({ read: 'allow' }, {}, true);
+    expect(allowlist).toBe(true);
+    const narrowing = warnings.filter((entry) => entry.code === 'W113_ALLOW_LIST_NARROWS');
+    expect(narrowing).toHaveLength(1);
+    expect(narrowing[0]?.message).toContain('Glob');
+    expect(narrowing[0]?.message).toContain('Read');
+
+    const frontmatter = personaSource({ read: 'allow' }, {}, true);
+    expect(frontmatter).toContain('tools:');
+    expect(frontmatter).toContain('- Read');
+  });
+
+  it('treats two symmetric declarations differently, not as one allow-list', () => {
+    // The same declaration, once implicit (deny-list) and once explicit
+    // (allow-list). The lens report's failure was that the first silently
+    // became the second.
+    const implicit = personaSource({ read: 'allow' }, {}, false);
+    const explicit = personaSource({ read: 'allow' }, {}, true);
+    expect(implicit).not.toContain('tools:');
+    expect(explicit).toContain('tools:');
+  });
+
   it('emits the exact Claude Code byte form for a catch-all', () => {
     const { entries } = map({
       read: 'allow',
@@ -169,6 +244,44 @@ describe('permission mapping', () => {
   });
 });
 
+describe('permission pattern grammar', () => {
+  for (const [label, pattern] of [
+    ['a closing parenthesis', 'rm -rf)'],
+    ['a comma', 'a,b'],
+    ['a newline', `line${String.fromCharCode(10)}break`],
+    ['a control character', `a${String.fromCharCode(0)}b`],
+    ['leading whitespace', ' rm *'],
+    ['trailing whitespace', 'rm * '],
+  ] as const) {
+    it(`refuses ${label} in a pattern with F001 and a grammar message`, async () => {
+      const repo = await createTempRepo('composed');
+      try {
+        await writeFile(
+          join(repo.root, '.farna/resources/permissions/bad.jsonc'),
+          `${JSON.stringify(
+            {
+              kind: 'permission',
+              id: 'bad',
+              tools: { shell: 'allow' },
+              patterns: { shell: { [pattern]: 'allow' } },
+            },
+            null,
+            2,
+          )}\n`,
+          'utf8',
+        );
+        await expect(loadSource(repo.root)).rejects.toMatchObject({
+          code: 'F001_INVALID_CONFIG',
+          subject: '.farna/resources/permissions/bad.jsonc',
+        });
+        await expect(loadSource(repo.root)).rejects.toThrow(/not representable|whitespace|control/);
+      } finally {
+        await repo.cleanup();
+      }
+    });
+  }
+});
+
 describe('permission source validation', () => {
   it('rejects a category outside the canonical vocabulary with F001', async () => {
     const repo = await createTempRepo('composed');
@@ -248,6 +361,7 @@ describe('permission source form', () => {
           kind: 'permission',
           id: 'builder-default',
           tools: { read: 'allow', write: 'allow', edit: 'allow', shell: 'allow', task: 'deny' },
+          allowlist: true,
           path: '.farna/resources/permissions/builder-default.jsonc',
         },
       ],

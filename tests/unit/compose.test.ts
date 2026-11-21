@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 import { runGenerate } from '../../src/cli/commands/generate.js';
 import { resolveSource } from '../../src/compose/resolve.js';
 import { loadConfig } from '../../src/config/load.js';
+import { MAX_EXTENDS_DEPTH } from '../../src/core/constants.js';
 import { FarnaError } from '../../src/core/errors.js';
 import { loadSource } from '../../src/source/load.js';
 import { FakeRenderTarget } from '../support/fake-renderer.js';
@@ -60,6 +61,7 @@ describe('persona composition', () => {
       expect(python.claude).toEqual({
         allow: ['Bash', 'Bash(pytest *)', 'Edit', 'Read', 'Write'],
         deny: ['Agent'],
+        allowlist: true,
       });
     } finally {
       await repo.cleanup();
@@ -289,6 +291,69 @@ describe('persona composition', () => {
       const error = await failure(resolvedPersonas(repo.root));
       expect(error.code).toBe('F001_INVALID_CONFIG');
       expect(error.message).toContain('extends cycle: builder -> builder-python -> builder');
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
+  it('resolves two model classes that name the same id without a conflict', async () => {
+    const repo = await createTempRepo('composed');
+    try {
+      await writeFile(
+        join(repo.root, '.farna/config.jsonc'),
+        JSON.stringify(
+          {
+            schemaVersion: 1,
+            targets: { claudecode: {} },
+            models: {
+              standard: { claudecode: 'claude-sonnet-4-5' },
+              fast: { claudecode: 'claude-sonnet-4-5' },
+            },
+          },
+          null,
+          2,
+        ),
+        'utf8',
+      );
+      await writeFile(
+        join(repo.root, '.farna/personas/builder-python.yaml'),
+        [
+          'kind: persona',
+          'id: builder-python',
+          'displayName: Python Builder',
+          'purpose: Writes Python and runs the Python checks.',
+          'extends: builder',
+          'model: fast',
+          'resources:',
+          '  - rule/python-style',
+          '',
+        ].join('\n'),
+        'utf8',
+      );
+      const source = await resolvedPersonas(repo.root);
+      const python = source.personas.find((persona) => persona.id === 'builder-python');
+      // Two names, one concrete model: the model is inherited, not conflicted.
+      expect(python?.model).toBe('claude-sonnet-4-5');
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
+  it('refuses an extends chain deeper than MAX_EXTENDS_DEPTH', async () => {
+    const repo = await createTempRepo();
+    try {
+      const depth = MAX_EXTENDS_DEPTH + 2;
+      for (let index = 0; index < depth; index += 1) {
+        const extendsLine = index === 0 ? '' : `extends: chain-${index - 1}\n`;
+        await writeFile(
+          join(repo.root, `.farna/personas/chain-${index}.yaml`),
+          `kind: persona\nid: chain-${index}\ndisplayName: Chain ${index}\npurpose: A chain link.\n${extendsLine}resources: []\n`,
+          'utf8',
+        );
+      }
+      const error = await failure(resolvedPersonas(repo.root));
+      expect(error.code).toBe('F001_INVALID_CONFIG');
+      expect(error.message).toContain(`deeper than ${MAX_EXTENDS_DEPTH}`);
     } finally {
       await repo.cleanup();
     }
