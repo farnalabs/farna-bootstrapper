@@ -44,15 +44,16 @@ jobs:
         run: npm test -- --reporter=default --reporter=json --outputFile=vitest-report.json
 
       # A green run proves nothing if a suite silently skipped or failed to
-      # collect. This asserts the exact test count and that both real-renderer
-      # suites executed.
-      - name: Assert the expected tests ran
+      # collect. This asserts a minimum test count and that both real-renderer
+      # suites executed. Adding tests does not require editing the gate.
+      - name: Assert the minimum tests and real-renderer suites ran
         run: node scripts/assert-test-count.mjs vitest-report.json
 
-      # Both runtime advisories (zod, yaml) were reachable from files this tool
-      # parses; the gate fails on a high or critical advisory in any dependency.
+      # The input boundary is YAML and JSONC parsing, so a moderate parser
+      # advisory (stack overflow, DoS) is a real denial of service. Gate at
+      # moderate; the lock currently reports zero advisories at every level.
       - name: Audit dependencies
-        run: npm audit --audit-level=high
+        run: npm audit --audit-level=moderate
 
       # `dist/` is gitignored, so without `prepack` a tarball from a clean
       # clone contains no code. This proves the published package has its
