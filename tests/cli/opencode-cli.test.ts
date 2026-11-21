@@ -100,6 +100,48 @@ describe('the built CLI on the opencode target', () => {
     }
   }, 120_000);
 
+  it('generates profile mode and --persona overrides the configured active', async () => {
+    const repo = await createTempRepo('profile');
+    try {
+      const generated = await runCli(repo.root, ['generate', '--persona', 'reviewer', '--json']);
+      expect(generated.code).toBe(0);
+      const body = parseObject(generated.stdout);
+      expect(body).toMatchObject({
+        schemaVersion: 1,
+        command: 'generate',
+        ok: true,
+        exitCode: 0,
+        target: 'opencode',
+        mode: 'profile',
+        activePersona: 'reviewer',
+        dryRun: false,
+      });
+      const files = arrayOf<{ path: string }>(body, 'files').map((file) => file.path);
+      expect(files).toContain('.opencode/agents/reviewer.md');
+      expect(files).not.toContain('.opencode/agents/builder.md');
+      expect(files).toContain('opencode.jsonc');
+
+      const clean = await runCli(repo.root, ['check', '--persona', 'reviewer', '--json']);
+      expect(clean.code).toBe(0);
+      expect(parseObject(clean.stdout)).toMatchObject({
+        ok: true,
+        mode: 'profile',
+        activePersona: 'reviewer',
+      });
+    } finally {
+      await repo.cleanup();
+    }
+  }, 120_000);
+
+  it('documents profile mode and --persona in help', async () => {
+    const root = await runCli(ROOT, ['--help']);
+    expect(root.code).toBe(0);
+    expect(root.stdout).toContain('Profile mode');
+    const generate = await runCli(ROOT, ['generate', '--help']);
+    expect(generate.code).toBe(0);
+    expect(generate.stdout).toContain('--persona');
+  }, 120_000);
+
   it('dry-runs without writing and reports the plan', async () => {
     const repo = await createTempRepo('opencode');
     try {

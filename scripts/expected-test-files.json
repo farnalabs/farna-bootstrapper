@@ -23,6 +23,7 @@
     "tests/unit/opencode-target.test.ts",
     "tests/unit/path-safety.test.ts",
     "tests/unit/permissions.test.ts",
+    "tests/unit/profile-mode.test.ts",
     "tests/unit/redact.test.ts",
     "tests/unit/render-lock.test.ts",
     "tests/unit/renderer-identity.test.ts",

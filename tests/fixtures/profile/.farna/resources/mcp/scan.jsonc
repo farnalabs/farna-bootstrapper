@@ -1,0 +1,12 @@
+{
+  "kind": "mcp",
+  "id": "scan",
+  "server": {
+    "type": "stdio",
+    "command": "npx",
+    "args": ["-y", "example-security-mcp"],
+    "env": {
+      "EXAMPLE_TOKEN": { "fromEnv": "EXAMPLE_TOKEN" }
+    }
+  }
+}
