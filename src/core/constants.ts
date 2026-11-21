@@ -97,10 +97,12 @@ export const LOCKFILE_MAX_BYTES = 4 * 1024 * 1024;
  * The renderer's entry is searched for under any `packages` key ending in
  * `node_modules/<renderer-name>`, so a nested install
  * (`node_modules/<product>/node_modules/<renderer>`) is read rather than
- * mistaken for an absent record. Only a record with no renderer entry anywhere
- * in it (a global install that wrote no npm lockfile) falls back to the
- * compile-time pin. A present record that cannot be read, or is above this
- * bound, is refused (F010) instead of falling back.
+ * mistaken for an absent record. The installed version is enforced regardless;
+ * a found entry's integrity is compared with the pin; a record with no renderer
+ * entry anywhere in it (a global install that wrote no npm lockfile) yields
+ * `W114_RENDERER_INTEGRITY_UNVERIFIED` and never substitutes the compile-time
+ * pin as a verified integrity. A present record that cannot be read, or is
+ * above this bound, is refused (F010) instead of warning.
  */
 export const NPM_LOCKFILE_MAX_BYTES = 64 * 1024 * 1024;
 
