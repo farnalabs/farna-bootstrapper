@@ -115,6 +115,22 @@ describe('render gates', () => {
     }
   });
 
+  it('a renderer that invents a tools field the persona does not declare is refused', async () => {
+    const repo = await createTempRepo();
+    try {
+      const { error, before, after } = await captureFailure(repo.root, {
+        kind: 'invent-tools',
+        persona: 'builder',
+      });
+      expect(error.code).toBe('F008_DECLARED_NOT_EMITTED');
+      expect(error.message).toContain('carries "tools"');
+      expect(error.subject).toBe('.claude/agents/builder.md');
+      expect(after).toBe(before);
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
   it('a renderer that swaps two personas permission blocks is refused', async () => {
     const repo = await createTempRepo('composed');
     try {

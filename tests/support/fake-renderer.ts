@@ -20,6 +20,7 @@ export type FakeMode =
   | { kind: 'extra-file' }
   | { kind: 'drop-tools'; persona: string }
   | { kind: 'drop-deny'; persona: string }
+  | { kind: 'invent-tools'; persona: string }
   | { kind: 'swap-tools'; from: string; into: string }
   | { kind: 'inject-body'; persona: string; text: string }
   | { kind: 'empty' }
@@ -124,6 +125,9 @@ export class FakeRenderTarget implements RenderTarget {
       }
       if (mode.kind === 'drop-deny' && mode.persona === doc.name) {
         delete block.disallowedTools;
+      }
+      if (mode.kind === 'invent-tools' && mode.persona === doc.name) {
+        block.tools = ['Read'];
       }
       if (mode.kind === 'swap-tools' && mode.into === doc.name && donor !== undefined) {
         const donorBlock = claudeBlock(donor);

@@ -7,11 +7,13 @@
  */
 import { execFileSync } from 'node:child_process';
 
+const NPM = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+
 const REQUIRED = ['dist/cli/main.js', 'dist/index.js', 'dist/index.d.ts', 'package.json'];
 
 let raw;
 try {
-  raw = execFileSync('npm', ['pack', '--dry-run', '--json'], {
+  raw = execFileSync(NPM, ['pack', '--dry-run', '--json'], {
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'inherit'],
   });
