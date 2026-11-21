@@ -1,0 +1,30 @@
+{
+  "files": [
+    "tests/cli/cli.test.ts",
+    "tests/golden/builder-python.test.ts",
+    "tests/integration/install.test.ts",
+    "tests/integration/rulesync.test.ts",
+    "tests/unit/assert-pack.test.ts",
+    "tests/unit/assert-test-count.test.ts",
+    "tests/unit/capture.test.ts",
+    "tests/unit/check.test.ts",
+    "tests/unit/commit-atomic.test.ts",
+    "tests/unit/compose.test.ts",
+    "tests/unit/error-codes.test.ts",
+    "tests/unit/fs-errors.test.ts",
+    "tests/unit/generate-gates.test.ts",
+    "tests/unit/generate.test.ts",
+    "tests/unit/init.test.ts",
+    "tests/unit/json.test.ts",
+    "tests/unit/loader.test.ts",
+    "tests/unit/lockfile.test.ts",
+    "tests/unit/path-safety.test.ts",
+    "tests/unit/permissions.test.ts",
+    "tests/unit/redact.test.ts",
+    "tests/unit/render-lock.test.ts",
+    "tests/unit/renderer-identity.test.ts",
+    "tests/unit/repo-hygiene.test.ts",
+    "tests/unit/stage.test.ts",
+    "tests/unit/staging.test.ts"
+  ]
+}

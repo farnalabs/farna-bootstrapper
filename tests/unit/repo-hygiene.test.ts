@@ -1,4 +1,6 @@
-import { readFile } from 'node:fs/promises';
+import { readdir, readFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { configSchema } from '../../src/config/schema.js';
 import {
@@ -11,9 +13,19 @@ import {
 } from '../../src/core/constants.js';
 
 const SOURCE = new URL('../../src/', import.meta.url);
+const ROOT = fileURLToPath(new URL('../../', import.meta.url));
 
 async function source(path: string): Promise<string> {
   return await readFile(new URL(path, SOURCE), 'utf8');
+}
+
+/** Every test file the checkout contains, repository-relative, slash-spelled. */
+async function testFilesOnDisk(): Promise<string[]> {
+  const entries = await readdir(join(ROOT, 'tests'), { recursive: true });
+  return entries
+    .filter((entry) => entry.endsWith('.test.ts'))
+    .map((entry) => `tests/${entry}`.replaceAll('\\', '/'))
+    .sort();
 }
 
 describe('constants and package metadata', () => {
@@ -58,6 +70,16 @@ describe('constants and package metadata', () => {
     for (const code of WARNING_CODES) {
       expect(readme, `README does not document ${code}`).toContain(code);
     }
+  });
+
+  it('keeps the committed test-file manifest equal to the files on disk', async () => {
+    // This is the test that fails when the disk set changes without the
+    // manifest: a new suite must be added deliberately, and a deleted one
+    // cannot simply disappear.
+    const manifest = JSON.parse(
+      await readFile(join(ROOT, 'scripts', 'expected-test-files.json'), 'utf8'),
+    ) as { files: string[] };
+    expect([...manifest.files].sort()).toEqual(await testFilesOnDisk());
   });
 
   it('ships no dangling schema URL in the source', async () => {
