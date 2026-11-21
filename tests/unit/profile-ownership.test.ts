@@ -554,6 +554,34 @@ describe('reporting', () => {
     );
   });
 
+  it('says where each workspace kind is written, in init and in --help', async () => {
+    const { runInit } = await import('../../src/cli/commands/init.js');
+    const { buildProgram } = await import('../../src/cli/program.js');
+    const repo = await createEmptyTempDir();
+    try {
+      const init = await runInit(repo.root);
+      expect(init.nextStep).toContain('under .opencode/');
+      expect(init.nextStep).not.toContain('emitted at the repository root');
+
+      const program = buildProgram({
+        cwd: repo.root,
+        renderer: new UpstreamRenderTarget(),
+        stdout: () => undefined,
+        argv: ['node', 'farna-bootstrapper'],
+      });
+      const help: string[] = [];
+      program.configureOutput({
+        writeOut: (text) => help.push(text),
+        writeErr: () => undefined,
+      });
+      program.outputHelp();
+      expect(help.join('')).toContain('under .opencode/');
+      expect(help.join('')).not.toContain('emitted there');
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
   it('escapes a control character in a printed subject', () => {
     const failure = new FarnaError('F001_INVALID_CONFIG', 'subject is unsafe', {
       subject: 'a\u001b[31mb',
