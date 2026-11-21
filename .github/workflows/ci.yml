@@ -37,14 +37,23 @@ jobs:
       - name: Type check
         run: npm run typecheck
 
+      # `dist/` is gitignored, so a tarball from a clean clone contains no code.
+      # The gate moves any existing `dist/` aside before `npm pack`, so it can
+      # only pass when `prepack` builds the entry points. It runs before the
+      # explicit build for the same reason: a stale earlier build must not be
+      # able to satisfy it.
+      - name: Assert the published tarball contains dist
+        run: node scripts/assert-pack.mjs
+
       - name: Build
         run: npm run build
 
       - name: Test
         run: npm test -- --reporter=default --reporter=json --outputFile=vitest-report.json
 
-      # A green run proves nothing if a suite silently skipped or failed to
-      # collect. This asserts a minimum test count and that both real-renderer
+      # A green run proves nothing if a suite silently skipped, failed to
+      # collect, or left a `todo`. This asserts a minimum test count, that
+      # `numPassedTests` accounts for the whole run, and that both real-renderer
       # suites executed. Adding tests does not require editing the gate.
       - name: Assert the minimum tests and real-renderer suites ran
         run: node scripts/assert-test-count.mjs vitest-report.json
@@ -55,8 +64,3 @@ jobs:
       - name: Audit dependencies
         run: npm audit --audit-level=moderate
 
-      # `dist/` is gitignored, so without `prepack` a tarball from a clean
-      # clone contains no code. This proves the published package has its
-      # entry points.
-      - name: Assert the published tarball contains dist
-        run: node scripts/assert-pack.mjs

@@ -1,0 +1,104 @@
+import { execFile } from 'node:child_process';
+import { existsSync } from 'node:fs';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { promisify } from 'node:util';
+import { describe, expect, it } from 'vitest';
+
+const execFileAsync = promisify(execFile);
+const SCRIPT = fileURLToPath(new URL('../../scripts/assert-pack.mjs', import.meta.url));
+
+const BUILD_SCRIPT = `import { mkdirSync, writeFileSync } from 'node:fs';
+mkdirSync('dist/cli', { recursive: true });
+writeFileSync('dist/cli/main.js', '#!/usr/bin/env node\\n');
+writeFileSync('dist/index.js', 'export {};\\n');
+writeFileSync('dist/index.d.ts', 'export {};\\n');
+`;
+
+type Fixture = {
+  root: string;
+  cleanup: () => Promise<void>;
+};
+
+async function fixture(options: { prepack: boolean; staleDist: boolean }): Promise<Fixture> {
+  const root = await mkdtemp(join(tmpdir(), 'fbs-pack-'));
+  await writeFile(
+    join(root, 'package.json'),
+    `${JSON.stringify(
+      {
+        name: 'pack-fixture',
+        version: '0.0.0',
+        files: ['dist', 'package.json'],
+        ...(options.prepack ? { scripts: { prepack: 'node build.mjs' } } : {}),
+      },
+      null,
+      2,
+    )}\n`,
+    'utf8',
+  );
+  await writeFile(join(root, 'build.mjs'), BUILD_SCRIPT, 'utf8');
+  if (options.staleDist) {
+    await mkdir(join(root, 'dist/cli'), { recursive: true });
+    await writeFile(join(root, 'dist/cli/main.js'), 'stale\n', 'utf8');
+    await writeFile(join(root, 'dist/index.js'), 'stale\n', 'utf8');
+    await writeFile(join(root, 'dist/index.d.ts'), 'stale\n', 'utf8');
+  }
+  return {
+    root,
+    cleanup: async () => {
+      await rm(root, { recursive: true, force: true });
+    },
+  };
+}
+
+async function runGate(root: string): Promise<{ code: number; stderr: string }> {
+  try {
+    const result = await execFileAsync(process.execPath, [SCRIPT], { cwd: root, timeout: 120_000 });
+    return { code: 0, stderr: result.stderr };
+  } catch (error) {
+    const failure = error as { code?: number; stderr?: string };
+    return {
+      code: typeof failure.code === 'number' ? failure.code : 1,
+      stderr: failure.stderr ?? '',
+    };
+  }
+}
+
+describe('the published-tarball gate', () => {
+  it('passes when prepack builds the entry points', async () => {
+    const project = await fixture({ prepack: true, staleDist: false });
+    try {
+      expect(existsSync(join(project.root, 'dist'))).toBe(false);
+      const result = await runGate(project.root);
+      expect(result.code).toBe(0);
+    } finally {
+      await project.cleanup();
+    }
+  });
+
+  it('fails when prepack is missing, even with a stale dist on disk', async () => {
+    const project = await fixture({ prepack: false, staleDist: true });
+    try {
+      const result = await runGate(project.root);
+      expect(result.code).toBe(1);
+      expect(result.stderr).toContain('prepack');
+      // The caller's build is restored, not deleted by the gate.
+      expect(existsSync(join(project.root, 'dist/cli/main.js'))).toBe(true);
+    } finally {
+      await project.cleanup();
+    }
+  });
+
+  it('fails when prepack is missing and there is no dist at all', async () => {
+    const project = await fixture({ prepack: false, staleDist: false });
+    try {
+      const result = await runGate(project.root);
+      expect(result.code).toBe(1);
+      expect(result.stderr).toContain('missing from the tarball');
+    } finally {
+      await project.cleanup();
+    }
+  });
+});

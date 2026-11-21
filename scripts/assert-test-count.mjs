@@ -1,12 +1,13 @@
 /**
  * CI gate for the test run.
  *
- * A green `vitest run` can hide three things this gate closes:
+ * A green `vitest run` can hide four things this gate closes:
  *
  * 1. a suite that silently stopped collecting, so the run shrank;
  * 2. a real-renderer suite that did not run (those are the only tests that can
- *    detect a renderer regression); and
- * 3. a silently skipped test on the platform CI runs on.
+ *    detect a renderer regression);
+ * 3. a silently skipped test on the platform CI runs on; and
+ * 4. a `test.todo`, which is collected and green but asserts nothing.
  *
  * It asserts a minimum, not an exact total, so adding coverage is a one-file
  * change. Raise MIN_TOTAL deliberately when the floor moves; never lower it to
@@ -16,7 +17,7 @@
  */
 import { readFileSync } from 'node:fs';
 
-const MIN_TOTAL = 127;
+const MIN_TOTAL = 180;
 
 const REAL_RENDERER_SUITES = [
   { suffix: 'tests/integration/rulesync.test.ts', minimum: 4 },
@@ -34,6 +35,7 @@ try {
 }
 
 const failures = [];
+const todo = typeof report.numTodoTests === 'number' ? report.numTodoTests : 0;
 if (typeof report.numTotalTests !== 'number' || report.numTotalTests < MIN_TOTAL) {
   failures.push(
     `expected at least ${MIN_TOTAL} tests, the report has ${report.numTotalTests}; a suite was removed or did not collect`,
@@ -47,10 +49,34 @@ if (process.platform !== 'win32' && report.numPendingTests > 0) {
     `${report.numPendingTests} test(s) are pending on ${process.platform}; a silent skip is not a pass`,
   );
 }
+// `numPassedTests` must account for the whole run. A report whose totals do not
+// add up is a fabricated or truncated report, not a green one.
+const accounted =
+  (typeof report.numPassedTests === 'number' ? report.numPassedTests : -1) +
+  (typeof report.numFailedTests === 'number' ? report.numFailedTests : 0) +
+  (typeof report.numPendingTests === 'number' ? report.numPendingTests : 0) +
+  todo;
+if (accounted !== report.numTotalTests) {
+  failures.push(
+    `numPassedTests does not account for the total: passed/failed/pending/todo sum to ${accounted}, the report has ${report.numTotalTests}`,
+  );
+}
+
+if (todo > 0) {
+  failures.push(
+    `${todo} test(s) are TODO on ${process.platform}; a todo is collected but asserts nothing`,
+  );
+}
 
 const testResults = Array.isArray(report.testResults) ? report.testResults : [];
 for (const suite of REAL_RENDERER_SUITES) {
-  const result = testResults.find((entry) => String(entry.name).endsWith(suite.suffix));
+  const result = testResults.find((entry) =>
+    // Vitest reports the platform path; a Windows checkout spells it with
+    // backslashes, which must not make a suite look as though it never ran.
+    String(entry.name)
+      .replaceAll('\\', '/')
+      .endsWith(suite.suffix),
+  );
   if (result === undefined) {
     failures.push(`real-renderer suite did not run: ${suite.suffix}`);
     continue;
@@ -80,5 +106,5 @@ const pending =
     ? ` (${report.numPendingTests} platform skip(s), tolerated on Windows)`
     : '';
 console.log(
-  `test-count: ${report.numTotalTests} tests passed (minimum ${MIN_TOTAL})${pending}; real-renderer suites ran (${REAL_RENDERER_SUITES.map((suite) => `${suite.suffix}:>=${suite.minimum}`).join(', ')})`,
+  `test-count: ${report.numPassedTests} of ${report.numTotalTests} tests passed (minimum ${MIN_TOTAL})${pending}; real-renderer suites ran (${REAL_RENDERER_SUITES.map((suite) => `${suite.suffix}:>=${suite.minimum}`).join(', ')})`,
 );
