@@ -116,9 +116,10 @@ export function buildProgram(context: CliContext): Command {
       'after',
       `\nThe OpenCode target supports OpenCode ${OPENCODE_SUPPORTED_MAJOR}.x only; the 1.x layout is unsupported.
 \nProfile mode: pass --persona <id> to generate or check, or set "active" under a target
-in .farna/config.jsonc. Exactly one persona is live and owns the workspace at the
-repository root, so its MCP servers, skills, commands and hooks are emitted there.
-Profile mode is supported for the opencode target; agent mode remains the default.`,
+in .farna/config.jsonc. Exactly one persona is live and owns the workspace: its
+opencode.jsonc is written at the repository root, and its skills, commands and hooks
+under .opencode/. Profile mode is supported for the opencode target; agent mode
+remains the default.`,
     )
     .version(
       // The compiled-in pin, never the installed renderer: `--version` and
@@ -202,7 +203,7 @@ Profile mode is supported for the opencode target; agent mode remains the defaul
         if (!result.ok) {
           // The same failure keys the typed-error path carries, so a consumer
           // never has to special-case drift to learn it failed.
-          payload['code'] = DRIFT_CODE;
+          payload['code'] = result.drift[0]?.code ?? DRIFT_CODE;
           payload['subject'] = result.drift[0]?.path ?? null;
           payload['message'] = 'managed output drifted from a fresh render';
         }

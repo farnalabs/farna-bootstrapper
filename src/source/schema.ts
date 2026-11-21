@@ -118,7 +118,15 @@ const stdioServerSchema = z.strictObject({
       (command) => !hasWhitespaceOrControl(command),
       'command must be the program only; put its arguments in args',
     ),
-  args: z.array(z.string().max(2048)).max(64).optional(),
+  // An argument is either a literal the server needs (`-y`, a path) or an
+  // environment reference. `args` is not a declared credential position, so a
+  // literal is allowed — but a credential-shaped one is reported as W116 rather
+  // than silently written into `opencode.jsonc`, and `{ "fromEnv": "NAME" }` is
+  // the supported way to pass a secret.
+  args: z
+    .array(z.union([envRefSchema, z.string().max(2048)]))
+    .max(64)
+    .optional(),
   env: z.record(envKeySchema, envValueSchema).optional(),
 });
 
@@ -139,10 +147,15 @@ const httpServerSchema = z.strictObject({
 });
 
 /**
- * One MCP server declaration. `env` and `headers` values are environment
- * references only; the materialiser writes rulesync's canonical `${NAME}`
- * reference, which the OpenCode adapter converts to `{env:NAME}`, so no secret
- * value is ever read by this tool or written into an artefact.
+ * One MCP server declaration. `env`, `headers` **and `args`** values may be
+ * environment references; the materialiser writes rulesync's canonical
+ * `${NAME}` reference, which the OpenCode adapter converts to `{env:NAME}`, so
+ * no secret value is ever read by this tool or written into an artefact.
+ *
+ * `env` and `headers` accept references only: a literal there is `F002`. `args`
+ * also accepts literals because a command genuinely needs them (`-y`, `serve`,
+ * a path), and a credential-shaped literal is reported as
+ * `W116_SECRET_IN_ARGS` instead of being refused.
  */
 export const mcpSchema = z.strictObject({
   kind: z.literal('mcp'),

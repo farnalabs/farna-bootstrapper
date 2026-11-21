@@ -673,6 +673,97 @@ function inspectMcpUrl(id: string, path: string, raw: string, warnings: SourceWa
   }
 }
 
+/** The prefixes a published credential uses. A value with one is never a normal argument. */
+const SECRET_PREFIXES: readonly string[] = [
+  'sk-',
+  'sk_',
+  'ghp_',
+  'gho_',
+  'ghu_',
+  'ghs_',
+  'github_pat_',
+  'xoxb-',
+  'xoxp-',
+  'xoxa-',
+  'xoxr-',
+  'xoxs-',
+  'glpat-',
+  'npm_',
+  'AKIA',
+  'AIza',
+];
+
+/**
+ * Whether a literal argument looks like a credential rather than a flag or a
+ * path. Deliberately conservative in the "looks like" direction: a false
+ * positive costs a warning the author can silence by using a reference, while a
+ * false negative writes a secret into a committed file.
+ */
+export function looksSecretShaped(value: string): boolean {
+  if (SECRET_PREFIXES.some((prefix) => value.startsWith(prefix))) {
+    return true;
+  }
+  // A JWT: three base64url segments, the first a JSON header.
+  if (/^eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\./.test(value)) {
+    return true;
+  }
+  // A long token-shaped string with both letters and digits: not a path, not a
+  // flag, not a URL, and far longer than any ordinary argument.
+  return (
+    value.length >= 32 &&
+    /^[A-Za-z0-9_+/=-]+$/.test(value) &&
+    /[0-9]/.test(value) &&
+    /[A-Za-z]/.test(value)
+  );
+}
+
+/**
+ * A `{ fromEnv }` reference inside `args` cannot be expressed: rulesync 43.11.0
+ * accepts only string arguments and copies them into the emitted command
+ * verbatim, so a reference would reach the server as the literal text `${NAME}`
+ * and silently not expand. Refusing is the honest outcome; `env` and `headers`
+ * are the supported credential channels.
+ */
+function assertArgsExpressible(server: McpServerDeclaration, subject: string): void {
+  if (server.type !== 'stdio' || server.args === undefined) {
+    return;
+  }
+  for (const [index, argument] of server.args.entries()) {
+    if (typeof argument === 'string') {
+      continue;
+    }
+    throw invalidConfig(
+      `an MCP args reference cannot be expressed: rulesync only carries string arguments`,
+      {
+        subject,
+        action: `put the credential in the server's "env" or "headers" as { "fromEnv": "NAME" }, or pass argument ${index + 1} as a literal; a reference inside "args" reaches the server as unexpanded text`,
+      },
+    );
+  }
+}
+
+/**
+ * An MCP `args` entry is not a declared credential position, so a literal is
+ * allowed. A credential-shaped one is reported (W116) and never echoed: it
+ * would otherwise be written verbatim into `opencode.jsonc`, contradicting the
+ * "references only" posture the rest of the MCP surface follows.
+ */
+function inspectMcpArgs(id: string, server: McpServerDeclaration, warnings: SourceWarning[]): void {
+  if (server.type !== 'stdio' || server.args === undefined) {
+    return;
+  }
+  server.args.forEach((argument, index) => {
+    if (typeof argument !== 'string' || !looksSecretShaped(argument)) {
+      return;
+    }
+    warnings.push({
+      code: 'W116_SECRET_IN_ARGS',
+      capability: 'mcp',
+      message: `mcp/${id} argument ${index + 1} looks like a literal credential; use { "fromEnv": "NAME" } so no secret is written into opencode.jsonc`,
+    });
+  });
+}
+
 async function loadMcpResources(
   repoRoot: string,
   warnings: SourceWarning[],
@@ -710,6 +801,8 @@ async function loadMcpResources(
       throw error;
     }
     assertReferencesOnly(parsed.server, path);
+    assertArgsExpressible(parsed.server, path);
+    inspectMcpArgs(parsed.id, parsed.server, warnings);
     if (parsed.server.type === 'http') {
       inspectMcpUrl(parsed.id, path, parsed.server.url, warnings);
     }

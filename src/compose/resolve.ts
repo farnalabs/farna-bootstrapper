@@ -6,6 +6,7 @@ import {
   MODE_PROFILE,
   OPENCODE_TARGET,
   OPENCODE_WORKSPACE_KINDS,
+  PROFILE_FORCING_KINDS,
   PROFILE_TARGETS,
   type RenderMode,
   SUPPORTED_RESOURCE_KINDS,
@@ -164,6 +165,8 @@ export type ResolvedSource = {
   mode: RenderMode;
   /** The active persona id in profile mode; `null` in agent mode. */
   active: string | null;
+  /** Every persona resolved but not live, sorted. Empty in agent mode. */
+  notLive: string[];
   personas: ResolvedPersona[];
   /** Every workspace resource any live persona declares, deduplicated by id. */
   mcp: ResolvedMcp[];
@@ -695,6 +698,17 @@ export function resolveSource(
   );
   const byId = new Map(source.personas.map((persona) => [persona.id, persona]));
 
+  // The committed selection is validated even when `--persona` overrides it: a
+  // `targets.<target>.active` that names no persona is a broken config, and the
+  // flag must not mask it. The user commits this value; a run that ignores it
+  // leaves the next run (without the flag) broken with no warning here.
+  if (configuredActive !== undefined && !byId.has(configuredActive)) {
+    throw invalidConfig(`targets.${target}.active "${configuredActive}" names no persona`, {
+      subject: CONFIG_PATH,
+      action: 'declare the persona under .farna/personas/, or remove the active key',
+    });
+  }
+
   if (active !== null) {
     if (!targetSupportsProfile(target)) {
       throw invalidConfig(`the ${target} target does not support profile mode`, {
@@ -721,12 +735,48 @@ export function resolveSource(
   const resolved = source.personas.map((persona) =>
     resolveOne(persona, resolveChain(persona, byId), byKind, config, target, mode),
   );
+  const notLive =
+    active === null
+      ? []
+      : resolved
+          .map((persona) => persona.id)
+          .filter((id) => id !== active)
+          .sort(compareCodepoints);
+  // Profile mode is forced only when a persona declares a boundary capability
+  // the target carries at the workspace level and nowhere else. Otherwise the
+  // selection is a choice, and every other persona is silently not live unless
+  // the run says so: that is W109, at info severity.
+  const forced = resolved.some((persona) =>
+    persona.resources.some((resource) =>
+      (PROFILE_FORCING_KINDS as readonly string[]).includes(resource.kind),
+    ),
+  );
+  // The message describes the resolved state, not the invocation: the same
+  // source and config must produce the same lockfile whether the persona came
+  // from `active` or from `--persona`, or `check` would report drift for an
+  // identical selection.
+  const profileWarnings =
+    mode === MODE_PROFILE && !forced
+      ? [
+          warning({
+            code: 'W109_PROFILE_BY_CHOICE',
+            persona: active ?? SOURCE_WARNING_SUBJECT,
+            target,
+            message: `profile mode is active for ${target}${active === null ? '' : ` as ${active}`}, but no persona declares a capability that requires it; agent mode is the default${
+              notLive.length === 0
+                ? ''
+                : `, and ${notLive.join(', ')} ${notLive.length === 1 ? 'is' : 'are'} not live`
+            }`,
+          }),
+        ]
+      : [];
   const personas = active === null ? resolved : resolved.filter((persona) => persona.id === active);
   if (active === null) {
     return {
       target,
       mode,
       active,
+      notLive,
       personas,
       mcp: unionAcrossPersonas('mcp', personas, (persona) => persona.mcp),
       skills: unionAcrossPersonas('skill', personas, (persona) => persona.skills),
@@ -750,6 +800,7 @@ export function resolveSource(
     target,
     mode,
     active,
+    notLive,
     personas,
     // Profile mode: the live persona's own resources, never a union across the
     // personas that are not live. Anything else would leak a resource the
@@ -758,6 +809,10 @@ export function resolveSource(
     skills: live.skills,
     commands: live.commands,
     hooks: live.hooks,
-    warnings: sortWarnings([...sourceWarnings, ...personas.flatMap((persona) => persona.warnings)]),
+    warnings: sortWarnings([
+      ...sourceWarnings,
+      ...personas.flatMap((persona) => persona.warnings),
+      ...profileWarnings,
+    ]),
   };
 }

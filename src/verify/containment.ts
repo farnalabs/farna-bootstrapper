@@ -18,6 +18,7 @@ import { compareCodepoints } from '../core/json.js';
 import { lstatOrUndefined } from '../core/paths.js';
 import { emitsTools, personaBody, resourceBody } from '../materialise/source-tree.js';
 import type { RenderResult } from '../render/port.js';
+import type { SourceTree } from '../source/load.js';
 
 export function expectedAgentPath(target: string, personaId: string): string {
   const directory = target === 'opencode' ? OPENCODE_AGENTS_DIR : CLAUDE_AGENTS_DIR;
@@ -465,6 +466,11 @@ async function verifyCommand(
   return new Map([[path, text]]);
 }
 
+/** The renderer writes `\`` for every backtick; compare the command it meant. */
+function unescapeRendererBackticks(value: string): string {
+  return value.replaceAll('\\`', '`');
+}
+
 const HOOK_EVENT_BY_PHASE: Record<string, string> = {
   'before-tool': 'preToolUse',
   'after-tool': 'postToolUse',
@@ -515,7 +521,12 @@ function verifyHookPlugin(source: ResolvedSource, text: string, subject: string)
     const raw = match[1] ?? '""';
     let command: string;
     try {
-      command = JSON.parse(raw) as string;
+      // rulesync escapes every backtick in the command it writes into the
+      // plugin, so the parsed string carries a `\`` where the source declared
+      // `` ` ``. The escape is the renderer's representation of the same
+      // command, not an added or dropped instruction: without this the gate
+      // refused any hook whose command uses command substitution.
+      command = unescapeRendererBackticks(JSON.parse(raw) as string);
     } catch {
       throw declaredNotEmitted('hooks plugin contains an unreadable command', { subject });
     }
@@ -533,7 +544,7 @@ function verifyHookPlugin(source: ResolvedSource, text: string, subject: string)
     let matcher: string | undefined;
     for (const candidate of block.matchAll(matcherMatch)) {
       try {
-        matcher = JSON.parse(`"${candidate[1] ?? ''}"`) as string;
+        matcher = unescapeRendererBackticks(JSON.parse(`"${candidate[1] ?? ''}"`) as string);
       } catch {
         matcher = undefined;
       }
@@ -673,6 +684,43 @@ export function expectedPaths(source: ResolvedSource): string[] {
     }
   }
   return paths.sort(compareCodepoints);
+}
+
+/**
+ * Every path any declared persona or resource could render for this target,
+ * whether or not it is in the current plan. This is the root-cleanliness
+ * universe: a file here that is neither planned nor recorded is a plausible
+ * prior render (a persona switched while the lockfile was lost, or output from
+ * an older version), and it must be reported rather than left silently live.
+ * It is derived from the loaded source, not the resolved one, so a non-live
+ * persona's paths are included.
+ */
+export function declaredOutputPaths(target: string, tree: SourceTree): string[] {
+  // Every declared persona's agent path on **both** targets: a target switch
+  // made while the lockfile was lost leaves the other target's render live, and
+  // it is just as much a plausible prior render as the current target's.
+  const paths = tree.personas.flatMap((persona) => [
+    expectedAgentPath('claudecode', persona.id),
+    expectedAgentPath('opencode', persona.id),
+  ]);
+  if (target === 'opencode') {
+    for (const skill of tree.skills) {
+      paths.push(`${OPENCODE_SKILLS_DIR}/${skill.id}/${SKILL_FILE_NAME}`);
+      for (const file of skill.files) {
+        paths.push(`${OPENCODE_SKILLS_DIR}/${skill.id}/${file.path}`);
+      }
+    }
+    for (const command of tree.commands) {
+      paths.push(`${OPENCODE_COMMANDS_DIR}/${command.id}.md`);
+    }
+    if (tree.hooks.length > 0) {
+      paths.push(OPENCODE_HOOKS_PLUGIN);
+    }
+    if (tree.mcp.length > 0) {
+      paths.push(OPENCODE_CONFIG_FILE);
+    }
+  }
+  return [...new Set(paths)].sort(compareCodepoints);
 }
 
 /**

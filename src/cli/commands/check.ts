@@ -4,22 +4,32 @@ import {
   EXIT,
   LOCK_PATH,
   MANAGED_FILE_MAX_BYTES,
+  MODE_PROFILE,
+  OUTSIDE_OWNERSHIP_CODE,
   type RenderMode,
   ROOT_DIR,
 } from '../../core/constants.js';
-import { readBoundedBytes } from '../../core/fs.js';
+import { FarnaError } from '../../core/errors.js';
+import { decodeUtf8, readBoundedBytes } from '../../core/fs.js';
 import { compareCodepoints } from '../../core/json.js';
 import { assertRealDirectory, containedTarget, lstatOrUndefined } from '../../core/paths.js';
 import { readLockfile } from '../../lock/lockfile.js';
 import { verifyRendererIdentity } from '../../render/identity.js';
 import type { RenderTarget } from '../../render/port.js';
 import { prepareRender } from '../../render/prepare.js';
+import { findSkillTreeExtras, findStaleRenders } from '../../render/root-cleanliness.js';
+import {
+  canonicalOwnedSubset,
+  parseStructuredDocument,
+  structuredOwnedKeys,
+} from '../../render/structured.js';
 import type { Warning } from '../../report/warnings.js';
 
 export type DriftKind = 'missing' | 'modified' | 'unexpected';
 
 export type DriftItem = {
-  code: typeof DRIFT_CODE;
+  /** `F007_DRIFT` for our own byte, `W107_OUTSIDE_OWNERSHIP` for something we do not own. */
+  code: typeof DRIFT_CODE | typeof OUTSIDE_OWNERSHIP_CODE;
   path: string;
   kind: DriftKind;
   detail: string;
@@ -35,11 +45,18 @@ export type CheckResult = {
   target: string;
   mode: RenderMode;
   activePersona: string | null;
+  /** Personas resolved but not live. Empty in agent mode. */
+  notLive: string[];
   exitCode: 0 | typeof EXIT.drift;
   checked: string[];
   drift: DriftItem[];
   warnings: Warning[];
 };
+
+/** The detail `check` prints for a whole file whose bytes changed. */
+const MODIFIED_DETAIL = 'content differs from a fresh render';
+const MISSING_DETAIL = 'managed file is missing';
+const NOT_A_FILE_DETAIL = 'managed path is not a regular file';
 
 /**
  * Regenerate into a disposable stage and compare the result with the working
@@ -48,10 +65,19 @@ export type CheckResult = {
  * Drift is scoped to what this tool owns: every path in the fresh plan (a
  * missing or changed managed file) and every path the committed lockfile
  * records (an output the source no longer produces). An unrecorded file in a
- * managed directory or the repository root belongs to the user and is never
- * reported: a repository may legitimately keep its own `opencode.jsonc` or its
- * own `.opencode/commands/custom.md`, and `check` must not call its own
- * repository dirty for files it did not write.
+ * managed directory or at the repository root belongs to the user and is never
+ * reported *unless it is a plausible prior render* (see below), so a repository
+ * may legitimately keep its own `opencode.jsonc` or its own
+ * `.opencode/commands/custom.md`.
+ *
+ * A `structured` file (`opencode.jsonc`) is compared by its owned keys only: a
+ * user's `theme` or `$schema` is theirs, so editing it is not drift; editing the
+ * `mcp` value this tool wrote is.
+ *
+ * Root cleanliness (profile mode): a path a declared persona or resource could
+ * have produced, that is neither planned nor recorded, is a plausible prior
+ * render and is reported as `W107_OUTSIDE_OWNERSHIP` without being deleted. The
+ * same code reports an extra file inside a skill tree this tool owns.
  *
  * The source root is validated before the lockfile is read, so a broken source
  * tree is reported as itself rather than after a lockfile read. The renderer
@@ -76,16 +102,21 @@ export async function runCheck(
   });
   const drift: DriftItem[] = [];
 
+  // A source change that renders no different byte — an edit to a persona that
+  // is not live, a rule only that persona declares — is still a change to the
+  // committed record. Comparing the digest is what makes it visible.
+  const digestChanged =
+    lockfile?.configDigest !== undefined && lockfile.configDigest !== prepared.configDigest;
+
   for (const file of prepared.files) {
+    if (file.path === LOCK_PATH && digestChanged) {
+      // Reported below as the source-digest item, which names the cause.
+      continue;
+    }
     const absolute = await containedTarget(repoRoot, file.path);
     const stats = await lstatOrUndefined(absolute, file.path);
     if (stats === undefined) {
-      drift.push({
-        code: DRIFT_CODE,
-        path: file.path,
-        kind: 'missing',
-        detail: 'managed file is missing',
-      });
+      drift.push({ code: DRIFT_CODE, path: file.path, kind: 'missing', detail: MISSING_DETAIL });
       continue;
     }
     if (!stats.isFile() || stats.isSymbolicLink()) {
@@ -93,10 +124,47 @@ export async function runCheck(
         code: DRIFT_CODE,
         path: file.path,
         kind: 'modified',
-        detail: 'managed path is not a regular file',
+        detail: NOT_A_FILE_DETAIL,
       });
       continue;
     }
+
+    const ownedKeys = structuredOwnedKeys(file.path);
+    if (ownedKeys !== undefined) {
+      const existing = await readBoundedBytes(absolute, file.path, {
+        action: 'make the managed file readable and re-run check',
+        maxBytes: MANAGED_FILE_MAX_BYTES,
+      });
+      let existingOwned: string;
+      try {
+        existingOwned = canonicalOwnedSubset(
+          parseStructuredDocument(decodeUtf8(existing, file.path), file.path),
+          ownedKeys,
+        );
+      } catch (error) {
+        if (!(error instanceof FarnaError)) {
+          throw error;
+        }
+        drift.push({
+          code: DRIFT_CODE,
+          path: file.path,
+          kind: 'modified',
+          detail: 'structured file no longer parses as a JSON object',
+        });
+        continue;
+      }
+      const generated = parseStructuredDocument(file.bytes, file.path);
+      if (existingOwned !== canonicalOwnedSubset(generated, ownedKeys)) {
+        drift.push({
+          code: DRIFT_CODE,
+          path: file.path,
+          kind: 'modified',
+          detail: `owned key(s) ${ownedKeys.join(', ')} differ from a fresh render`,
+        });
+      }
+      continue;
+    }
+
     const existing = await readBoundedBytes(absolute, file.path, {
       action: 'make the managed file readable and re-run check',
       maxBytes: MANAGED_FILE_MAX_BYTES,
@@ -106,9 +174,18 @@ export async function runCheck(
         code: DRIFT_CODE,
         path: file.path,
         kind: 'modified',
-        detail: 'content differs from a fresh render',
+        detail: MODIFIED_DETAIL,
       });
     }
+  }
+
+  if (digestChanged) {
+    drift.push({
+      code: DRIFT_CODE,
+      path: LOCK_PATH,
+      kind: 'modified',
+      detail: 'the source or config changed since the lockfile was written; re-run generate',
+    });
   }
 
   const expected = new Set(prepared.files.map((file) => file.path));
@@ -129,12 +206,42 @@ export async function runCheck(
     });
   }
 
+  if (prepared.source.mode === MODE_PROFILE) {
+    const recordedEntries = lockfile?.files ?? [];
+    for (const stale of await findStaleRenders(
+      repoRoot,
+      prepared.declaredPaths,
+      expected,
+      recorded,
+    )) {
+      drift.push({
+        code: OUTSIDE_OWNERSHIP_CODE,
+        path: stale.path,
+        kind: 'unexpected',
+        detail: stale.symbolicLink
+          ? 'a symbolic link is present where a prior render would be; the lockfile does not record it'
+          : 'a plausible prior render is present but the lockfile does not record it',
+      });
+    }
+    for (const extra of await findSkillTreeExtras(repoRoot, expected, recordedEntries)) {
+      drift.push({
+        code: OUTSIDE_OWNERSHIP_CODE,
+        path: extra.path,
+        kind: 'unexpected',
+        detail: extra.symbolicLink
+          ? 'an unrecorded symbolic link is inside a managed skill directory'
+          : 'an unrecorded file is inside a managed skill directory',
+      });
+    }
+  }
+
   drift.sort((a, b) => compareCodepoints(a.path, b.path));
   return {
     ok: drift.length === 0,
     target: prepared.source.target,
     mode: prepared.source.mode,
     activePersona: prepared.source.active,
+    notLive: prepared.source.notLive,
     exitCode: drift.length === 0 ? EXIT.ok : EXIT.drift,
     checked: prepared.files.map((file) => file.path),
     drift,

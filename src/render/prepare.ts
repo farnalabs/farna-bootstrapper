@@ -11,11 +11,17 @@ import {
 } from '../lock/lockfile.js';
 import { materialiseSourceTree, renderFeatures } from '../materialise/source-tree.js';
 import { sortWarnings, type Warning, warning } from '../report/warnings.js';
+import { sourceConfigDigest } from '../source/digest.js';
 import { loadSource } from '../source/load.js';
-import { verifyRender } from '../verify/containment.js';
+import { declaredOutputPaths, verifyRender } from '../verify/containment.js';
 import { integrityRecordOf } from './identity.js';
 import type { RendererIdentity, RenderTarget } from './port.js';
 import { withStage } from './stage.js';
+import {
+  parseStructuredDocument,
+  structuredOwnedDigest,
+  structuredOwnedKeys,
+} from './structured.js';
 
 /**
  * The subject a renderer-level warning carries. A warning record is shaped per
@@ -30,7 +36,36 @@ export type PreparedRender = {
   files: RenderedFile[];
   /** Source warnings plus any renderer-level warning, in the report's stable order. */
   warnings: Warning[];
+  /**
+   * Every path any declared persona or resource could render for this target.
+   * A superset of the plan in profile mode; used by the root-cleanliness check.
+   */
+  declaredPaths: string[];
+  /** Digest of the resolved config plus every persona and resource file. */
+  configDigest: string;
 };
+
+/**
+ * Record the ownership metadata of a structured file. The lockfile entry for
+ * `opencode.jsonc` describes the owned subset, not the whole document, so the
+ * lockfile stays source-derived and a user's own key never becomes drift.
+ */
+function annotateOwnership(file: RenderedFile): RenderedFile {
+  const ownedKeys = structuredOwnedKeys(file.path);
+  if (ownedKeys === undefined) {
+    return file;
+  }
+  const document = parseStructuredDocument(file.bytes, file.path);
+  const present = ownedKeys.filter((key) => Object.hasOwn(document, key));
+  const digest = structuredOwnedDigest(document, present);
+  return {
+    ...file,
+    shape: 'structured',
+    ownedKeys: present,
+    ownedSha256: digest.sha256,
+    ownedSize: digest.size,
+  };
+}
 
 /**
  * The `W114` warning, when the installed renderer's tarball integrity could not
@@ -108,8 +143,13 @@ export async function prepareRender(
   selection: SourceSelection = {},
 ): Promise<PreparedRender> {
   const config = await loadConfig(repoRoot);
-  const source = resolveSource(await loadSource(repoRoot), config, selection);
+  const tree = await loadSource(repoRoot);
+  const source = resolveSource(tree, config, selection);
   const warnings = sortWarnings([...source.warnings, ...rendererWarnings(renderer, source.target)]);
+  const declaredPaths = declaredOutputPaths(source.target, tree);
+  // Every source file, including a persona that is not live: an edit to a
+  // declaration no mode renders still has to be visible to `check`.
+  const configDigest = await sourceConfigDigest(repoRoot, config);
 
   return withStage(async (stage) => {
     await materialiseSourceTree(stage.sourceRoot, source);
@@ -125,7 +165,7 @@ export async function prepareRender(
     const verified = await verifyRender(source, render, stage.outputRoot);
 
     const files: RenderedFile[] = [...verified.entries()]
-      .map(([path, bytes]) => ({ path, bytes }))
+      .map(([path, bytes]) => annotateOwnership({ path, bytes }))
       .sort((a, b) => compareCodepoints(a.path, b.path));
     // The lockfile records source-derived state only. A renderer-level warning
     // such as `W114` is runtime verification evidence about THIS machine, so it
@@ -137,9 +177,10 @@ export async function prepareRender(
       lockfileRenderer(renderer),
       files,
       sortWarnings(source.warnings),
+      { configDigest, notLive: source.notLive },
     );
     files.push({ path: LOCK_PATH, bytes: serialiseLockfile(lock) });
     files.sort((a, b) => compareCodepoints(a.path, b.path));
-    return { source, files, warnings };
+    return { source, files, warnings, declaredPaths, configDigest };
   });
 }
