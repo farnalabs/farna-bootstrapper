@@ -1,6 +1,6 @@
 import { closeSync, constants, fstatSync, openSync, readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
-import { basename, dirname, isAbsolute, join, relative, sep } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { LOCKFILE_MAX_BYTES, NPM_LOCKFILE_MAX_BYTES, PRODUCT_NAME } from '../core/constants.js';
 import { FarnaError, rendererMismatch } from '../core/errors.js';
 import type { RecordedIntegrity, RendererIdentity } from './port.js';
@@ -182,216 +182,111 @@ function nestingLevel(key: string): number {
 
 type LockLookup = { found: boolean; integrity?: string };
 
+type Candidate = {
+  key: string;
+  underProduct: boolean;
+  level: number;
+  recordIndex: number;
+  integrity: string;
+};
+
 /**
- * The renderer's recorded integrity from one npm lock record.
+ * Rank two renderer entries. The entry nested under our own package wins (that
+ * is the copy the product actually imports), then the shallowest, then the
+ * earlier record, then the key, so the same records always yield the same
+ * answer.
+ */
+function isBetterCandidate(candidate: Candidate, best: Candidate): boolean {
+  if (candidate.underProduct !== best.underProduct) {
+    return candidate.underProduct;
+  }
+  if (candidate.level !== best.level) {
+    return candidate.level < best.level;
+  }
+  if (candidate.recordIndex !== best.recordIndex) {
+    return candidate.recordIndex < best.recordIndex;
+  }
+  return candidate.key < best.key;
+}
+
+/**
+ * The renderer's entry across the supported lock records.
  *
- * The record is searched, not indexed by one literal key: a nested install
- * records the renderer under the package that depends on it
+ * The `packages` map is searched for a key ending in `node_modules/<name>`, not
+ * indexed by one literal key: a nested install records the renderer under the
+ * package that depends on it
  * (`node_modules/<product>/node_modules/<renderer>`), and reading only the
  * hoisted key made a present record look absent. When several entries match,
- * the one nested under our own package wins (that is the copy the product
- * actually imports), then the shallowest. The key itself breaks a remaining tie
- * so the same record always yields the same answer.
+ * the one nested under our own package wins, then the shallowest (see
+ * `isBetterCandidate`).
  *
- * `found` distinguishes the two ways a record can leave the integrity unknown:
- * no matching key at all, and a matching key whose value is not a JSON object
- * with a string `integrity`. The renderer identity policy reports both as
- * `W114`, but the warning names which one happened.
+ * `found` distinguishes the two ways the records can leave the integrity
+ * unknown: no matching key at all, and a matching key whose value is not a JSON
+ * object with a string `integrity`. The renderer identity policy reports both
+ * as `W114`, but the warning names which one happened.
  */
-function integrityFromLock(lock: JsonObject | undefined, name: string): LockLookup {
-  const packages = lock?.['packages'];
-  if (packages === null || typeof packages !== 'object' || Array.isArray(packages)) {
-    return { found: false };
-  }
+function bestRendererEntry(
+  records: ReadonlyArray<JsonObject | undefined>,
+  name: string,
+): LockLookup {
   let found = false;
-  let best: { key: string; underProduct: boolean; level: number; integrity: string } | undefined;
-  for (const [key, value] of Object.entries(packages as JsonObject)) {
-    if (!isRendererKey(key, name)) {
-      continue;
+  let best: Candidate | undefined;
+  records.forEach((record, recordIndex) => {
+    const packages = record?.['packages'];
+    if (packages === null || typeof packages !== 'object' || Array.isArray(packages)) {
+      return;
     }
-    found = true;
-    if (value === null || typeof value !== 'object' || Array.isArray(value)) {
-      continue;
+    for (const [key, value] of Object.entries(packages as JsonObject)) {
+      if (!isRendererKey(key, name)) {
+        continue;
+      }
+      found = true;
+      if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+        continue;
+      }
+      const integrity = (value as JsonObject)['integrity'];
+      if (typeof integrity !== 'string') {
+        continue;
+      }
+      const candidate = {
+        key,
+        underProduct: isUnderProduct(key, name),
+        level: nestingLevel(key),
+        recordIndex,
+        integrity,
+      };
+      if (best === undefined || isBetterCandidate(candidate, best)) {
+        best = candidate;
+      }
     }
-    const integrity = (value as JsonObject)['integrity'];
-    if (typeof integrity !== 'string') {
-      continue;
-    }
-    const candidate = { key, underProduct: isUnderProduct(key, name), level: nestingLevel(key) };
-    if (
-      best === undefined ||
-      (candidate.underProduct && !best.underProduct) ||
-      (candidate.underProduct === best.underProduct &&
-        (candidate.level < best.level ||
-          (candidate.level === best.level && candidate.key < best.key)))
-    ) {
-      best = { ...candidate, integrity };
-    }
-  }
+  });
   return best === undefined ? { found } : { found: true, integrity: best.integrity };
 }
 
-/** This package's path relative to `directory`, in npm's slash-spelled key form. */
-function relativeLockKey(directory: string, packageDir: string): string {
-  return relative(directory, packageDir).split(sep).join('/');
-}
-
 /**
- * The renderer's entry keyed by its path relative to a lockfile's directory.
- *
- * An ancestor lockfile — the workspace root of an npm workspace install, or the
- * project record one level above the renderer's own install root — writes the
- * same package under exactly this key: `packages/<workspace>/node_modules/<name>`
- * for a workspace member, `node_modules/<name>` for a hoisted install. The
- * suffix search in `integrityFromLock` cannot be used here, because an ancestor
- * may also record a *different* member's renderer
- * (`packages/other/node_modules/<name>`); accepting that entry would refuse a
- * healthy install with a foreign integrity. Requiring the exact relative key
- * means a value is only taken from a record that genuinely describes this
- * package.
- */
-function integrityAtKey(lock: JsonObject | undefined, key: string): LockLookup {
-  const packages = lock?.['packages'];
-  if (packages === null || typeof packages !== 'object' || Array.isArray(packages)) {
-    return { found: false };
-  }
-  const value = (packages as JsonObject)[key];
-  if (value === undefined) {
-    return { found: false };
-  }
-  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
-    return { found: true };
-  }
-  const integrity = (value as JsonObject)['integrity'];
-  return typeof integrity === 'string' ? { found: true, integrity } : { found: true };
-}
-
-/**
- * Read a lock record from an ancestor directory, where the file's relevance is
- * not established yet. Absent, unreadable or oversized records yield
- * `undefined`: above the renderer's own install root a file that cannot be read
- * cannot be shown to describe this install, so it is not a refusal. Only the
- * install's own records go through `readLockRecord`, which refuses a
- * present-but-unreadable one with `F010`.
- */
-function tryReadLockRecord(path: string): JsonObject | undefined {
-  try {
-    return readLockRecord(path);
-  } catch {
-    return undefined;
-  }
-}
-
-/** How many ancestors the workspace-root search climbs before giving up. */
-const WORKSPACE_WALK_MAX_DEPTH = 16;
-
-/**
- * True when a package manifest declares npm workspaces, in either the array
- * form (`"workspaces": ["packages/*"]`) or the object form
- * (`"workspaces": { "packages": [...] }`).
- */
-function declaresWorkspaces(directory: string): boolean {
-  const manifest = readJson(join(directory, 'package.json'));
-  const value = manifest?.['workspaces'];
-  if (Array.isArray(value)) {
-    return value.length > 0;
-  }
-  return value !== null && typeof value === 'object';
-}
-
-/**
- * The workspace root of an npm workspace install: the nearest ancestor of the
- * renderer's install root whose `package.json` declares `workspaces`.
- *
- * Only `package.json` is read on the way up, never an ancestor's lockfile, so a
- * search that finds nothing costs nothing and reads no other install's record.
- * The search stops at its first hit, which is the outermost directory that can
- * legitimately describe this package — the walk never climbs past the workspace
- * root into an unrelated parent monorepo.
- */
-function workspaceRootFor(installRoot: string): string | undefined {
-  let current = installRoot;
-  for (let depth = 0; depth < WORKSPACE_WALK_MAX_DEPTH; depth += 1) {
-    const parent = dirname(current);
-    if (parent === current) {
-      return undefined;
-    }
-    if (declaresWorkspaces(parent)) {
-      return parent;
-    }
-    current = parent;
-  }
-  return undefined;
-}
-
-/**
- * The renderer's record from the workspace/install root, for a real npm
- * workspace install. npm writes the workspace member's dependencies under the
- * member's own path in the root lockfile
- * (`packages/foo/node_modules/<renderer>`), so the project walk that stops at
- * the member's install root never reaches it and a present record looked
- * absent.
- *
- * Two ancestor locations are consulted, nearest first: the directory directly
- * above the member's install root (a plain project whose own lockfile records
- * the member), and the workspace root. Only an entry keyed by this package's
- * exact relative path is accepted (see `integrityAtKey`).
- */
-function readWorkspaceRecord(packageDir: string, installRoot: string): LockLookup {
-  const roots: string[] = [];
-  const immediate = dirname(installRoot);
-  if (immediate !== installRoot) {
-    roots.push(immediate);
-  }
-  const workspaceRoot = workspaceRootFor(installRoot);
-  if (workspaceRoot !== undefined && !roots.includes(workspaceRoot)) {
-    roots.push(workspaceRoot);
-  }
-  let sawEntry = false;
-  for (const root of roots) {
-    const key = relativeLockKey(root, packageDir);
-    for (const candidate of [
-      join(root, 'node_modules', '.package-lock.json'),
-      join(root, 'package-lock.json'),
-    ]) {
-      const lookup = integrityAtKey(tryReadLockRecord(candidate), key);
-      if (lookup.integrity !== undefined) {
-        return lookup;
-      }
-      sawEntry = sawEntry || lookup.found;
-    }
-  }
-  return { found: sawEntry };
-}
-
-/**
- * The install root that bounds the project-lockfile walk: the package at the
- * top of the renderer's `node_modules` chain. In a hoisted install the renderer
- * is at `<root>/node_modules/<renderer>`, so that is `<root>`, the directory
- * holding the project's `package-lock.json`.
+ * The install root: the top of the `node_modules` chain the renderer sits in,
+ * which is also the nearest ancestor of the product package that owns a
+ * `node_modules` directory. In a hoisted install the renderer is at
+ * `<root>/node_modules/<renderer>`, so that is `<root>`, the directory holding
+ * the install's records.
  *
  * The climb follows the chain to its end rather than stopping at the first
  * package that owns a `node_modules`. In a nested install
  * (`npm install --install-strategy=nested`) the renderer's own package also
  * owns a `node_modules`, so `<root>/node_modules/<product>/node_modules/<renderer>`
- * is reached by hopping `<renderer> -> <product> -> <root>`; the project
- * lockfile that records the renderer, keyed
- * `node_modules/<product>/node_modules/<renderer>`, sits at that last hop.
+ * is reached by hopping `<renderer> -> <product> -> <root>`; the install's
+ * records, keyed `node_modules/<product>/node_modules/<renderer>`, sit at that
+ * last hop.
  *
  * A scoped package adds one directory level between the package and its
  * `node_modules` (`<root>/node_modules/@scope/<name>`), so the scope directory
- * is skipped in the same climb; without that, a scoped install's project
- * lockfile was never reached and a present record looked absent.
+ * is skipped in the same climb; without that, a scoped install's records were
+ * never reached and a present record looked absent.
  *
- * The walk must not climb above this boundary. An unrelated `package-lock.json`
- * in a parent directory (a home directory, a parent monorepo) would otherwise
- * be read as though it described this install and could refuse a healthy
- * project. Climbing only out of `node_modules` directories stops exactly at the
- * install root: a parent monorepo above the project is never entered, because
- * the project is not inside that monorepo's `node_modules`. When the package is
- * not inside any `node_modules` directory, only the working tree bounds the
- * walk; a package outside it is bounded by itself, so no unrelated parent record
- * is consulted.
+ * The walk never climbs above this boundary, because it only leaves
+ * `node_modules` directories. A workspace root, a parent monorepo or any other
+ * ancestor outside that chain is never read, and a package that is not inside a
+ * `node_modules` directory (a linked install) is bounded by itself.
  */
 function installRootFor(packageDir: string): string {
   let root = packageDir;
@@ -416,89 +311,46 @@ function installRootFor(packageDir: string): string {
     }
     break;
   }
-  if (root !== packageDir) {
-    return root;
-  }
-  const cwd = process.cwd();
-  const fromCwd = relative(cwd, packageDir);
-  if (fromCwd !== '' && !fromCwd.startsWith('..') && !isAbsolute(fromCwd)) {
-    return cwd;
-  }
-  return packageDir;
+  return root;
 }
 
 /**
- * npm records the tarball integrity in `node_modules/.package-lock.json`; a
- * project lockfile is the fallback for layouts that do not write the hidden
- * one. Both are searched for the renderer's entry, including one nested under
- * our own package (see `integrityFromLock`). Only a record that does not exist
- * is skipped: a present record that cannot be read, or is over
- * `NPM_LOCKFILE_MAX_BYTES`, is refused with F010 instead of being treated as an
- * absent one; only a genuinely absent entry is W114.
+ * The renderer's recorded integrity, from exactly two records at the install
+ * root:
  *
- * The project-lockfile walk stops at the install root (the top of the renderer's
- * `node_modules` chain, so a nested install reaches the project record) and
- * never reads an unrelated lockfile above it. When that bounded walk finds no
- * entry, the workspace/install root is consulted once (see
- * `readWorkspaceRecord`), because an npm workspace records a member's
- * dependencies under the member's path in the workspace root lockfile. That
- * lookup is bounded at the workspace root and only accepts an entry keyed by
- * this package's exact relative path, so a parent monorepo's own record can
- * never be mistaken for this install's.
+ * 1. the hidden record npm writes beside the installed tree,
+ *    `<installRoot>/node_modules/.package-lock.json`;
+ * 2. the install root's lockfile, `<installRoot>/package-lock.json`.
+ *
+ * Nothing above the install root is read: a workspace root, a parent monorepo
+ * or a sibling package may record a different copy of the renderer, and taking
+ * its integrity refused a healthy install or verified one that was never
+ * checked. Those layouts yield `W114` instead.
+ *
+ * Both records are read before the search, so a present record that cannot be
+ * read, is not a regular file, is a symlink or is over the npm-record bound is
+ * refused with `F010` even when the other record is usable. Only a genuinely
+ * absent record is skipped, and only a genuinely absent renderer entry, or an
+ * entry with no string integrity, is `W114`.
  *
  * The result is structured, never `undefined` for both "no record" and "no
  * usable entry". The renderer identity policy reports those as `W114` and names
  * which one happened, so they must not be indistinguishable at this seam.
- * A record that exists but cannot be read, or is above the bound, still throws
- * `F010`: only a genuinely absent entry is a warning.
  *
- * @internal Exported so a test can prove the bound on an ancestor lockfile;
+ * @internal Exported so a test can prove the bound on a supported record;
  * callers use `installedRendererIdentity`.
  */
 export function readRecordedIntegrity(packageDir: string, name: string): RecordedIntegrity {
   const installRoot = installRootFor(packageDir);
-  let sawEntry = false;
-  // The hidden record beside the installed package first: it describes the
-  // innermost `node_modules` the renderer was installed into. In every layout
-  // npm writes its hidden lockfile at the install root, which is also read.
-  const hiddenPaths = [
-    join(dirname(packageDir), '.package-lock.json'),
-    join(installRoot, 'node_modules', '.package-lock.json'),
+  const records = [
+    readLockRecord(join(installRoot, 'node_modules', '.package-lock.json')),
+    readLockRecord(join(installRoot, 'package-lock.json')),
   ];
-  const seen = new Set<string>();
-  for (const hiddenPath of hiddenPaths) {
-    if (seen.has(hiddenPath)) {
-      continue;
-    }
-    seen.add(hiddenPath);
-    const fromHidden = integrityFromLock(readLockRecord(hiddenPath), name);
-    if (fromHidden.integrity !== undefined) {
-      return { verified: true, integrity: fromHidden.integrity };
-    }
-    sawEntry = sawEntry || fromHidden.found;
+  const lookup = bestRendererEntry(records, name);
+  if (lookup.integrity !== undefined) {
+    return { verified: true, integrity: lookup.integrity };
   }
-  let current = packageDir;
-  for (;;) {
-    const fromLock = integrityFromLock(readLockRecord(join(current, 'package-lock.json')), name);
-    if (fromLock.integrity !== undefined) {
-      return { verified: true, integrity: fromLock.integrity };
-    }
-    sawEntry = sawEntry || fromLock.found;
-    if (current === installRoot) {
-      break;
-    }
-    const parent = dirname(current);
-    if (parent === current) {
-      break;
-    }
-    current = parent;
-  }
-  const fromWorkspace = readWorkspaceRecord(packageDir, installRoot);
-  if (fromWorkspace.integrity !== undefined) {
-    return { verified: true, integrity: fromWorkspace.integrity };
-  }
-  sawEntry = sawEntry || fromWorkspace.found;
-  return sawEntry
+  return lookup.found
     ? { verified: false, reason: 'no-integrity' }
     : { verified: false, reason: 'no-record' };
 }

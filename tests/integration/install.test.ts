@@ -114,12 +114,18 @@ describe.skipIf(process.platform === 'win32')('install layouts', () => {
       // parseable, so only the size bound can be what refuses it. The bound is
       // the npm-record bound, not the small derived-lockfile one: a 5 MiB
       // monorepo record is legitimate and must be read.
+      //
+      // The record is written to one of the two supported paths: the hidden
+      // record at the install root (`<prefix>/lib`, the nearest ancestor of the
+      // product package that owns a `node_modules` directory). A record beside
+      // the product package's own nested `node_modules` is not one of the two
+      // supported paths, so it would yield W114 rather than refuse.
       const record = JSON.stringify({
         packages: { 'node_modules/rulesync': { integrity: 'sha512-DIFFERENT-NOT-THE-PIN' } },
         padding: 'x'.repeat(NPM_LOCKFILE_MAX_BYTES),
       });
       expect(Buffer.byteLength(record)).toBeGreaterThan(NPM_LOCKFILE_MAX_BYTES);
-      await writeFile(join(packageDir, 'node_modules', '.package-lock.json'), record, 'utf8');
+      await writeFile(join(prefix, 'lib', 'node_modules', '.package-lock.json'), record, 'utf8');
 
       const before = await hashTree(repo.root);
       const result = run(repo.root, [join(packageDir, GLOBAL_ENTRY), 'generate', '--json']);
