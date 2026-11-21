@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { CommanderError } from 'commander';
 import { FarnaError } from '../core/errors.js';
 import { UpstreamRenderTarget } from '../render/upstream.js';
 import { formatJson } from '../report/format.js';
@@ -22,7 +23,14 @@ try {
   });
   await program.parseAsync(process.argv);
 } catch (error) {
-  if (error instanceof FarnaError) {
+  if (error instanceof CommanderError) {
+    // Commander has already written the usage message. A usage error gets the
+    // machine-readable object too; help and version (exit 0) do not.
+    if (json && error.exitCode !== 0) {
+      process.stdout.write(formatJson(unexpectedFailureObject(command, error.message)));
+    }
+    process.exitCode = error.exitCode;
+  } else if (error instanceof FarnaError) {
     if (json) {
       process.stdout.write(formatJson(failureObject(command, error)));
     }

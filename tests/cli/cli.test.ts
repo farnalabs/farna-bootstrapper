@@ -268,6 +268,26 @@ describe('the built CLI', () => {
     }
   });
 
+  it('emits a JSON failure object and exit 1 for an unknown option', async () => {
+    const repo = await createTempRepo();
+    try {
+      const result = await runCli(repo.root, ['generate', '--not-an-option', '--json']);
+      expect(result.code).toBe(1);
+      const body = parseObject(result.stdout);
+      expect(body).toMatchObject({
+        schemaVersion: 1,
+        command: 'generate',
+        ok: false,
+        exitCode: 1,
+        code: null,
+        subject: null,
+      });
+      expect(String(body['message'])).toContain('unknown option');
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
   it('emits a JSON failure object and exit 1 for an unknown command', async () => {
     const repo = await createTempRepo();
     try {

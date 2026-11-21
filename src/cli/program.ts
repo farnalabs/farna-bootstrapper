@@ -95,10 +95,14 @@ export function buildProgram(context: CliContext): Command {
       '-v, --version',
     )
     .showSuggestionAfterError()
-    .showHelpAfterError();
+    .showHelpAfterError()
+    // Throw instead of calling process.exit, so main can emit the same JSON
+    // failure object for a usage error (an unknown option, a missing value).
+    .exitOverride();
 
   program
     .command('init')
+    .exitOverride()
     .description('create .farna/config.jsonc and the empty source directories')
     .option('--json', 'print one JSON object')
     .action(async (options: { json?: boolean }) => {
@@ -119,6 +123,7 @@ export function buildProgram(context: CliContext): Command {
 
   program
     .command('generate')
+    .exitOverride()
     .description('render every persona and write the verified files into the repository')
     .option('--dry-run', 'print the plan without writing anything')
     .option('--json', 'print one JSON object')
@@ -143,6 +148,7 @@ export function buildProgram(context: CliContext): Command {
 
   program
     .command('check')
+    .exitOverride()
     .description('regenerate into a temporary directory and compare with the repository')
     .option('--json', 'print one JSON object')
     .action(async (options: { json?: boolean }) => {
