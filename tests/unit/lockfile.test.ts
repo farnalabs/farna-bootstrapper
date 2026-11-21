@@ -28,6 +28,7 @@ describe('lockfile reading', () => {
       expect(lock?.product.name).toBe('farna-bootstrapper');
       expect(lock?.target).toBe('claudecode');
       expect(lock?.mode).toBe('agent');
+      expect(lock?.activePersona).toBeNull();
       expect(lock?.renderer.integrity).toBe('sha512-fake');
       expect(lock?.files.map((file) => file.path)).toEqual([
         '.claude/agents/builder.md',

@@ -1,0 +1,14 @@
+{
+  // Profile mode: exactly one persona is live and owns the workspace at the
+  // repository root, so its MCP servers, skills, commands and hooks are
+  // emitted there. Switch the persona with `--persona <id>`.
+  "schemaVersion": 1,
+  "targets": {
+    "opencode": { "active": "builder" }
+  },
+  "models": {
+    "standard": {
+      "opencode": "anthropic/claude-sonnet-4-5"
+    }
+  }
+}

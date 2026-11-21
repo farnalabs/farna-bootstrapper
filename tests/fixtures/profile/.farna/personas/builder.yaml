@@ -1,0 +1,12 @@
+kind: persona
+id: builder
+displayName: Builder
+purpose: Writes code, runs the tests, and follows the house conventions.
+model: standard
+resources:
+  - rule/house-style
+  - permission/builder-default
+  - mcp/scan
+  - skill/secure-review
+  - command/pytest
+  - hook/format-on-save
