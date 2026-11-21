@@ -11,8 +11,13 @@ import { decodeUtf8, describeFsError, readBoundedBytes } from '../core/fs.js';
 import { compareCodepoints, sha256Hex } from '../core/json.js';
 import { containedTarget, lstatOrUndefined } from '../core/paths.js';
 import type { LockFileEntry } from '../lock/lockfile.js';
-import { assertSafeRelativePath } from './commit.js';
-import { ownedSubset, parseStructuredDocument, structuredOwnedDigest } from './structured.js';
+import { assertSafeRelativePath, commitFiles } from './commit.js';
+import {
+  mergeStructuredText,
+  ownedSubset,
+  parseStructuredDocument,
+  structuredOwnedDigest,
+} from './structured.js';
 
 /**
  * A path recorded in the committed lockfile is this tool's output. When the
@@ -38,9 +43,12 @@ import { ownedSubset, parseStructuredDocument, structuredOwnedDigest } from './s
  * location that no longer exists could never satisfy an action that says
  * "remove it deliberately".
  *
- * A `structured` entry owns only its declared keys. It is removed only when the
- * file carries nothing else; a file that also carries the user's own keys is
- * refused, and the record is dropped once the owned keys are gone.
+ * A `structured` entry owns only its declared keys. When the current source no
+ * longer produces it, only those keys are deleted in place: a file that also
+ * carries the user's own keys is kept (with their comments) and the record is
+ * dropped, while a file left with nothing but the owned keys is removed. The
+ * record is also dropped, without touching the file, once the user has already
+ * removed the owned keys.
  */
 
 /** True when one of the supported renderers can own this repository-relative path. */
@@ -63,7 +71,9 @@ type InspectedOrphan =
   | { kind: 'absent' }
   /** The owned keys of a structured path are already gone; nothing is left to remove. */
   | { kind: 'already-removed' }
-  | { kind: 'removable' };
+  | { kind: 'removable' }
+  /** The file keeps the user's own keys; only the owned key(s) are deleted. */
+  | { kind: 'rewrite'; bytes: string };
 
 /**
  * Inspect one recorded orphan. Shared by the preflight and the removal itself,
@@ -127,9 +137,10 @@ async function inspectOrphan(repoRoot: string, entry: LockFileEntry): Promise<In
     action: 'make the recorded file readable and re-run generate',
     maxBytes: MANAGED_FILE_MAX_BYTES,
   });
+  const text = decodeUtf8(bytes, path);
   let document: Record<string, unknown>;
   try {
-    document = parseStructuredDocument(decodeUtf8(bytes, path), path);
+    document = parseStructuredDocument(text, path);
   } catch (error) {
     throw driftRefused(
       `refusing to remove ${path}: it is no longer a JSON object this tool wrote`,
@@ -162,42 +173,57 @@ async function inspectOrphan(repoRoot: string, entry: LockFileEntry): Promise<In
     .filter((key) => !ownedKeys.includes(key))
     .sort(compareCodepoints);
   if (foreignKeys.length > 0) {
-    throw driftRefused(
-      `refusing to remove ${path}: it also carries keys this tool does not own (${foreignKeys.join(', ')})`,
-      {
-        subject: path,
-        action: `remove the ${ownedKeys.join(', ')} key from ${path} yourself, then re-run generate; the other keys are yours`,
-      },
-    );
+    // The file is still partly the user's. Delete only the key this tool owns
+    // and leave their keys and comments exactly where they were; the new
+    // lockfile drops this record because the path is no longer produced.
+    return {
+      kind: 'rewrite',
+      bytes: mergeStructuredText(text, '{}\n', ownedKeys, path),
+    };
   }
   return { kind: 'removable' };
 }
 
+/** What `generate` will do for a recorded path the current plan no longer produces. */
+export type OrphanPlan = {
+  entry: LockFileEntry;
+  action: 'remove' | 'rewrite';
+};
+
 /**
  * Validate every recorded path the current plan no longer produces, and return
- * the entries `generate` may remove. Nothing is removed here: a dry run and a
- * real run share this preflight, so the plan can never report a removal the
- * write path would refuse.
+ * the action `generate` will take. Nothing is written here: a dry run and a
+ * real run share this preflight, so the plan can never report an edit the write
+ * path would refuse.
  */
 export async function planOrphans(
   repoRoot: string,
   recorded: readonly LockFileEntry[],
   expected: ReadonlySet<string>,
-): Promise<LockFileEntry[]> {
-  const orphans: LockFileEntry[] = [];
+): Promise<OrphanPlan[]> {
+  const orphans: OrphanPlan[] = [];
   for (const entry of recorded) {
     if (entry.path === LOCK_PATH || expected.has(entry.path)) {
       continue;
     }
     const inspection = await inspectOrphan(repoRoot, entry);
     if (inspection.kind === 'removable') {
-      orphans.push(entry);
+      orphans.push({ entry, action: 'remove' });
+    } else if (inspection.kind === 'rewrite') {
+      orphans.push({ entry, action: 'rewrite' });
     }
   }
-  return orphans.sort((a, b) => compareCodepoints(a.path, b.path));
+  return orphans.sort((a, b) => compareCodepoints(a.entry.path, b.entry.path));
 }
 
-export type RemovedOrphan = { path: string; status: 'removed' | 'missing' };
+export type RemovedOrphan = { path: string; status: 'removed' | 'updated' | 'missing' };
+
+/** A bare entry is accepted for callers that already preflighted (and for tests). */
+export type OrphanTarget = LockFileEntry | OrphanPlan;
+
+function lockEntry(target: OrphanTarget): LockFileEntry {
+  return 'entry' in target ? target.entry : target;
+}
 
 /**
  * Re-throw a removal failure with the paths this run already removed named. The
@@ -207,16 +233,26 @@ export type RemovedOrphan = { path: string; status: 'removed' | 'missing' };
  */
 function removalFailure(error: unknown, removed: readonly RemovedOrphan[]): unknown {
   const paths = removed.filter((entry) => entry.status === 'removed').map((entry) => entry.path);
-  if (!(error instanceof FarnaError) || paths.length === 0) {
+  const updated = removed.filter((entry) => entry.status === 'updated').map((entry) => entry.path);
+  if (!(error instanceof FarnaError) || (paths.length === 0 && updated.length === 0)) {
     return error;
+  }
+  const details: string[] = [];
+  if (paths.length > 0) {
+    details.push(`this run already removed ${paths.length} recorded path(s) (${paths.join(', ')})`);
+  }
+  if (updated.length > 0) {
+    details.push(
+      `this run already updated ${updated.length} recorded path(s) (${updated.join(', ')})`,
+    );
   }
   return new FarnaError(
     error.code,
-    `${error.message}; this run already removed ${paths.length} recorded path(s) (${paths.join(', ')}) before the removal failed, so the tree is partially updated`,
+    `${error.message}; ${details.join('; ')} before the write failed, so the tree is partially updated`,
     {
       ...(error.subject === undefined ? {} : { subject: error.subject }),
       action:
-        're-run generate after fixing the filesystem; the lockfile still records the removed paths',
+        're-run generate after fixing the filesystem; the lockfile still records the affected paths',
       cause: error,
     },
   );
@@ -230,12 +266,18 @@ function removalFailure(error: unknown, removed: readonly RemovedOrphan[]): unkn
  */
 export async function removeOrphans(
   repoRoot: string,
-  entries: readonly LockFileEntry[],
+  orphans: readonly OrphanTarget[],
 ): Promise<RemovedOrphan[]> {
   const removed: RemovedOrphan[] = [];
-  for (const entry of entries) {
+  for (const target of orphans) {
+    const entry = lockEntry(target);
     try {
       const inspection = await inspectOrphan(repoRoot, entry);
+      if (inspection.kind === 'rewrite') {
+        await commitFiles(repoRoot, [{ path: entry.path, bytes: inspection.bytes }]);
+        removed.push({ path: entry.path, status: 'updated' });
+        continue;
+      }
       if (inspection.kind !== 'removable') {
         removed.push({ path: entry.path, status: 'missing' });
         continue;

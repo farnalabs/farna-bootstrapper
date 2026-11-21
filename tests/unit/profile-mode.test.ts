@@ -329,6 +329,37 @@ describe('profile mode', () => {
     }
   });
 
+  it('removing the last MCP server removes a trailing-comma workspace config', async () => {
+    const repo = await generated();
+    try {
+      const document = JSON.parse(
+        await readFile(join(repo.root, 'opencode.jsonc'), 'utf8'),
+      ) as Record<string, unknown>;
+      // The trailing comma is valid JSONC and is exactly the shape the old
+      // deletion edit turned into `{ , }`.
+      await writeFile(
+        join(repo.root, 'opencode.jsonc'),
+        `{\n  "mcp": ${JSON.stringify(document['mcp'], null, 2).replaceAll('\n', '\n  ')},\n}\n`,
+        'utf8',
+      );
+
+      const personaPath = join(repo.root, '.farna/personas/builder.yaml');
+      const persona = await readFile(personaPath, 'utf8');
+      await writeFile(personaPath, persona.replace('  - mcp/scan\n', ''), 'utf8');
+
+      const result = await runGenerate(
+        { cwd: repo.root, dryRun: false },
+        new UpstreamRenderTarget(),
+      );
+      expect(result.removed).toEqual([{ path: 'opencode.jsonc', status: 'removed' }]);
+      const files = await listFiles(repo.root);
+      expect(files).not.toContain('opencode.jsonc');
+      expect((await runCheck(repo.root, new UpstreamRenderTarget())).ok).toBe(true);
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
   it('removing a skill removes its recorded tree', async () => {
     const repo = await generated();
     try {

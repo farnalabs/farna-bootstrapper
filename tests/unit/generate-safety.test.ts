@@ -2,8 +2,10 @@ import { execFileSync } from 'node:child_process';
 import { lstat, mkdir, readFile, rename, rm, stat, utimes, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { runCheck } from '../../src/cli/commands/check.js';
 import { runGenerate } from '../../src/cli/commands/generate.js';
 import { FarnaError } from '../../src/core/errors.js';
+import { parseJsonc } from '../../src/core/json.js';
 import { readLockfile } from '../../src/lock/lockfile.js';
 import { withGenerateLock } from '../../src/render/generate-lock.js';
 import { removeOrphans } from '../../src/render/orphans.js';
@@ -370,41 +372,42 @@ describe('removal honesty', () => {
     }
   });
 
-  it('refuses a structured orphan that still carries user keys, then accepts a cleaned file', async () => {
+  it('deletes only the owned key from a structured orphan and keeps the user keys and comment', async () => {
     const repo = await generated();
     try {
       const configPath = join(repo.root, 'opencode.jsonc');
       const document = JSON.parse(await readFile(configPath, 'utf8')) as Record<string, unknown>;
-      document['theme'] = 'dark';
-      await writeFile(configPath, `${JSON.stringify(document, null, 2)}\n`, 'utf8');
+      // A comment is the byte a whole-file removal would destroy; the user's key
+      // is what makes the file theirs after the owned key is gone. The trailing
+      // comma is the shape that must still parse after the owned key is deleted.
+      const mcp = JSON.stringify(document['mcp'], null, 2).replaceAll('\n', '\n  ');
+      await writeFile(
+        configPath,
+        `// keep me\n{\n  "theme": "dark",\n  "mcp": ${mcp},\n}\n`,
+        'utf8',
+      );
 
       const personaPath = join(repo.root, '.farna/personas/builder.yaml');
       const persona = await readFile(personaPath, 'utf8');
       await writeFile(personaPath, persona.replace('  - mcp/scan\n', ''), 'utf8');
 
-      let failure: FarnaError | undefined;
-      try {
-        await runGenerate({ cwd: repo.root, dryRun: false }, new UpstreamRenderTarget());
-      } catch (error) {
-        failure = error as FarnaError;
-      }
-      expect(failure?.code).toBe('F007_DRIFT');
-      expect(failure?.subject).toBe('opencode.jsonc');
-      expect(failure?.message).toContain('does not own');
-      expect(failure?.action).toContain('remove the mcp key');
-
-      // The user removes the key this tool owned; the file is theirs now.
-      const cleaned = JSON.parse(await readFile(configPath, 'utf8')) as Record<string, unknown>;
-      delete cleaned['mcp'];
-      await writeFile(configPath, `${JSON.stringify(cleaned, null, 2)}\n`, 'utf8');
       const result = await runGenerate(
         { cwd: repo.root, dryRun: false },
         new UpstreamRenderTarget(),
       );
       expect(result.ok).toBe(true);
-      expect(JSON.parse(await readFile(configPath, 'utf8'))).toEqual(cleaned);
+      expect(result.removed).toContainEqual({ path: 'opencode.jsonc', status: 'updated' });
+      const after = await readFile(configPath, 'utf8');
+      expect(after).toContain('// keep me');
+      expect(after).not.toContain('"mcp"');
+      expect(parseJsonc<Record<string, unknown>>(after, { subject: 'opencode.jsonc' })).toEqual({
+        theme: 'dark',
+      });
       const lock = parseLock(await readFile(join(repo.root, '.farna/lock.json'), 'utf8'));
       expect(lock.files.map((file) => file.path)).not.toContain('opencode.jsonc');
+
+      const check = await runCheck(repo.root, new UpstreamRenderTarget());
+      expect(check.ok).toBe(true);
     } finally {
       await repo.cleanup();
     }

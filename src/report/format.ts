@@ -64,11 +64,15 @@ export function formatGenerate(result: GenerateResult): string {
   const removals = result.removed.filter(
     (entry) => entry.status === 'removed' || entry.status === 'would-remove',
   ).length;
+  const updates = result.removed.filter(
+    (entry) => entry.status === 'updated' || entry.status === 'would-update',
+  ).length;
+  const updated = updates === 0 ? '' : `, ${updates}${result.dryRun ? ' would be' : ''} updated`;
   // A dry-run says how many files it WOULD write, never the size of the plan:
   // "would write 3 file(s)" when every file already matches is a false claim.
   const summary = result.dryRun
-    ? `would write ${pending} file(s), ${unchanged} unchanged, ${removals} would be removed`
-    : `managed ${pending} file(s), ${unchanged} unchanged, ${removals} removed`;
+    ? `would write ${pending} file(s), ${unchanged} unchanged, ${removals} would be removed${updated}`
+    : `managed ${pending} file(s), ${unchanged} unchanged, ${removals} removed${updated}`;
   const lines = ['farna-bootstrapper generate'];
   lines.push(`  target ${result.target} (${modeLabel(result.mode, result.activePersona)})`);
   const notLive = notLiveLine(result.mode, result.notLive);

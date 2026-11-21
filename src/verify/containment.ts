@@ -502,27 +502,56 @@ const HOOK_EVENT_BY_PHASE: Record<string, string> = {
  * event hook (`label: "<event>", command: "<json>"`). A command's event is the
  * nearest preceding registration anchor; its matcher is the `new RegExp(...)`
  * between the previous command and this one within that registration.
+ *
+ * An `after-tool` command is emitted inside `ctx.tool.hook("execute.after", ...)`
+ * *and* carries `label: "postToolUse"` in the same `__rulesyncRunHook(...)` call.
+ * That label sits AFTER the matcher guard, so it must never start the matcher
+ * window: only the registration anchor (`ctx.tool.hook(...)`, or an event-loop
+ * `label:` with no tool anchor) may. The window then runs from the previous
+ * command's end, so a matcher-less hook cannot inherit its neighbour's guard.
  */
 function verifyHookPlugin(source: ResolvedSource, text: string, subject: string): void {
-  type Anchor = { index: number; event: string };
+  type Anchor = { index: number; event: string; registration: boolean };
   const anchors: Anchor[] = [];
-  const addAnchors = (pattern: RegExp, event: (match: RegExpExecArray) => string): void => {
+  const addAnchors = (
+    pattern: RegExp,
+    event: (match: RegExpExecArray) => string,
+    registration: boolean,
+  ): void => {
     for (const match of text.matchAll(pattern)) {
-      anchors.push({ index: match.index ?? 0, event: event(match) });
+      anchors.push({ index: match.index ?? 0, event: event(match), registration });
     }
   };
-  addAnchors(/ctx\.tool\.hook\("execute\.before"/g, () => 'preToolUse');
-  addAnchors(/ctx\.tool\.hook\("execute\.after"/g, () => 'postToolUse');
-  addAnchors(/label: "(preToolUse|postToolUse|sessionStart|stop)"/g, (match) => match[1] ?? '');
+  addAnchors(/ctx\.tool\.hook\("execute\.before"/g, () => 'preToolUse', true);
+  addAnchors(/ctx\.tool\.hook\("execute\.after"/g, () => 'postToolUse', true);
+  addAnchors(
+    /label: "(preToolUse|postToolUse|sessionStart|stop)"/g,
+    (match) => match[1] ?? '',
+    false,
+  );
 
-  const registrationAt = (index: number): { event: string; start: number } | undefined => {
-    let found: { event: string; start: number } | undefined;
+  const nearestAnchor = (index: number): Anchor | undefined => {
+    let found: Anchor | undefined;
     for (const anchor of anchors) {
-      if (anchor.index < index && (found === undefined || anchor.index > found.start)) {
-        found = { event: anchor.event, start: anchor.index };
+      if (anchor.index < index && (found === undefined || anchor.index > found.index)) {
+        found = anchor;
       }
     }
     return found;
+  };
+  /** The start of the block that holds the command, never a label inside its run call. */
+  const registrationStartAt = (index: number): number | undefined => {
+    let found: Anchor | undefined;
+    for (const anchor of anchors) {
+      if (anchor.index >= index || !anchor.registration) {
+        continue;
+      }
+      if (found === undefined || anchor.index > found.index) {
+        found = anchor;
+      }
+    }
+    // An event-loop hook has no tool anchor; its `label:` is the block start.
+    return (found ?? nearestAnchor(index))?.index;
   };
 
   const registrations: Array<{ event: string; command: string; matcher?: string }> = [];
@@ -547,7 +576,7 @@ function verifyHookPlugin(source: ResolvedSource, text: string, subject: string)
     } catch {
       throw declaredNotEmitted('hooks plugin contains an unreadable command', { subject });
     }
-    const registration = registrationAt(index);
+    const registration = nearestAnchor(index);
     if (registration === undefined) {
       throw declaredNotEmitted(
         `hooks plugin declares command ${describe(command)} with no registration event`,
@@ -556,8 +585,11 @@ function verifyHookPlugin(source: ResolvedSource, text: string, subject: string)
     }
     // The window starts after the previous command, never at the anchor: a hook
     // without a matcher must not inherit its neighbour's guard, and a dropped
-    // matcher must not be replaced by an earlier identical one.
-    const windowStart = Math.max(registration.start, previousCommandEnd);
+    // matcher must not be replaced by an earlier identical one. With no previous
+    // command it starts at the enclosing registration, never at a `label:` that
+    // is an argument of this same call.
+    const windowStart =
+      previousCommandEnd >= 0 ? previousCommandEnd : (registrationStartAt(index) ?? 0);
     const block = text.slice(windowStart, index);
     previousCommandEnd = index + match[0].length;
     const matcherMatch = /new RegExp\("((?:[^"\\]|\\.)*)"\)/g;

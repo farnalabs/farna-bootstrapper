@@ -368,9 +368,11 @@ like a comment edit in a persona file.
    longer be proven, so it is not deleted;
 4. it must be recorded. An unrecorded file is the user's and is never removed.
 
-A structured entry (`opencode.jsonc`) owns only its `mcp` key. It is removed only when the file
-carries nothing else; a file that also carries the user's own keys is refused, and once the user has
-removed the owned key itself the record is dropped and the file left alone.
+A structured entry (`opencode.jsonc`) owns only its `mcp` key. When the source no longer declares
+an MCP server, `generate` deletes only that key in place: a file that still carries the user's own
+keys is kept, with its comments, and the record is dropped; a file that holds nothing but the owned
+key is removed. Once the user has removed the owned key itself the record is dropped and the file
+left alone.
 
 The whole orphan set is preflighted before anything is written, so a refusal leaves the tree
 untouched. Removals happen before the new managed set is committed: a commit that then fails names
@@ -899,15 +901,18 @@ extend them further. The differences, all deliberate:
 27. **Orphan removal is limited to recorded regular files in managed locations.** A recorded path
     is removable only when it is in a managed directory (or is a target's whole root config file),
     is still a regular file, and still has the recorded SHA-256, re-checked immediately before the
-    `rm`. A symlink is refused and never followed; a directory, an edited file or an unrecorded
-    user file is never removed; an absent recorded path is dropped from the new lockfile. The whole
-    set is preflighted before any write, and removals run before the new set is committed so a
-    failed commit is reported as a partial update rather than as an unrecorded leftover.
+    edit or `rm`. A symlink is refused and never followed; a directory, an edited file or an
+    unrecorded user file is never removed; an absent recorded path is dropped from the new lockfile.
+    A structured orphan keeps the user's other keys: only the owned key is deleted in place, and a
+    file left with nothing but comments is removed. The whole set is preflighted before any write,
+    and removals run before the new set is committed so a failed commit is reported as a partial
+    update rather than as an unrecorded leftover.
 28. **`opencode.jsonc` is structured, not whole-file.** The design's ownership model has five
     shapes; this build implements `whole`, `tree` and `structured`. `opencode.jsonc` owns the `mcp`
     key only and edits it **in place** with `jsonc-parser`'s `modify`/`applyEdits`: setting the
-    owned `mcp` key, deleting it when the generated document has none, and preserving every other
-    byte including comments, whitespace and the user's own keys (`$schema`, `theme`,
+    owned `mcp` key, deleting it when the generated document has none (the delete also removes a
+    trailing separator, so a valid trailing-comma document never becomes `{ , }`), and preserving
+    every other byte including comments, whitespace and the user's own keys (`$schema`, `theme`,
     `instructions`, providers). `check` compares the owned key only, so a foreign-key or comment
     edit is not drift, and the lockfile records the owned subset's digest rather than the whole
     file, so two roots with the same source still produce identical lockfile bytes. An existing

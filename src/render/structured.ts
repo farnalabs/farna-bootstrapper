@@ -1,4 +1,11 @@
-import { applyEdits, type FormattingOptions, modify } from 'jsonc-parser';
+import {
+  applyEdits,
+  type Edit,
+  type FormattingOptions,
+  findNodeAtLocation,
+  modify,
+  parseTree,
+} from 'jsonc-parser';
 import { OPENCODE_CONFIG_FILE } from '../core/constants.js';
 import { invalidConfig } from '../core/errors.js';
 import { canonicalJson, canonicalJsonFile, parseJsonc, sha256Hex } from '../core/json.js';
@@ -65,6 +72,73 @@ export function structuredOwnedDigest(
  */
 const INSERT_FORMAT: FormattingOptions = { insertSpaces: true, tabSize: 2, eol: '\n' };
 
+/** Skip whitespace and comments forward, so a separator can be found exactly. */
+function skipTrivia(text: string, from: number): number {
+  let index = from;
+  while (index < text.length) {
+    const character = text[index];
+    if (character === ' ' || character === '\t' || character === '\r' || character === '\n') {
+      index += 1;
+      continue;
+    }
+    if (character === '/' && text[index + 1] === '/') {
+      index += 2;
+      while (index < text.length && text[index] !== '\n') {
+        index += 1;
+      }
+      continue;
+    }
+    if (character === '/' && text[index + 1] === '*') {
+      index += 2;
+      while (index < text.length && !(text[index] === '*' && text[index + 1] === '/')) {
+        index += 1;
+      }
+      index += 2;
+      continue;
+    }
+    return index;
+  }
+  return index;
+}
+
+/**
+ * Delete one top-level property without leaving a comma that has nothing to
+ * separate. `modify(text, [key], undefined)` is the primary edit; it leaves
+ * `{ , }` when the deleted property is the last one and the document has a
+ * trailing comma (valid JSONC syntax), so the result is parsed and, only when
+ * that fails, the property and its separator are removed directly.
+ *
+ * The fallback removes the property text and, when a comma follows it, that
+ * comma too. A comment between the property and the comma is left in place, so
+ * the edit still preserves every byte the user wrote outside the owned key.
+ */
+function deleteStructuredKey(text: string, key: string, subject: string): string {
+  const edited = applyEdits(
+    text,
+    modify(text, [key], undefined, { formattingOptions: INSERT_FORMAT }),
+  );
+  try {
+    parseStructuredDocument(edited, subject);
+    return edited;
+  } catch {
+    const root = parseTree(text);
+    if (root === undefined || root.type !== 'object' || root.children === undefined) {
+      return edited;
+    }
+    const value = findNodeAtLocation(root, [key]);
+    const property = value?.parent;
+    if (property === undefined) {
+      return edited;
+    }
+    const edits: Edit[] = [{ offset: property.offset, length: property.length, content: '' }];
+    const separator = skipTrivia(text, property.offset + property.length);
+    if (text[separator] === ',') {
+      edits.push({ offset: separator, length: 1, content: '' });
+    }
+    return applyEdits(text, edits);
+  }
+}
+
 /**
  * Merge the generated document into the user's **in place**: set every owned
  * key the generated document carries, delete every owned key it does not.
@@ -86,12 +160,20 @@ export function mergeStructuredText(
   const generated = parseStructuredDocument(generatedText, subject);
   let text = existingText;
   for (const key of ownedKeys) {
-    const value = Object.hasOwn(generated, key) ? generated[key] : undefined;
-    // `undefined` is jsonc-parser's delete instruction: removing the last MCP
-    // declaration deletes the owned key instead of leaving a stale one behind.
-    const edits = modify(text, [key], value, { formattingOptions: INSERT_FORMAT });
-    text = applyEdits(text, edits);
+    if (Object.hasOwn(generated, key)) {
+      text = applyEdits(
+        text,
+        modify(text, [key], generated[key], { formattingOptions: INSERT_FORMAT }),
+      );
+    } else {
+      // `undefined` is jsonc-parser's delete instruction: removing the last MCP
+      // declaration deletes the owned key instead of leaving a stale one behind.
+      text = deleteStructuredKey(text, key, subject);
+    }
   }
+  // The merge must leave a document this tool can read back; a malformed result
+  // is a bug in the edit, never something to write to disk.
+  parseStructuredDocument(text, subject);
   return text;
 }
 

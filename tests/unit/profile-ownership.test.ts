@@ -117,6 +117,63 @@ describe('structured ownership of opencode.jsonc', () => {
     expect(merged).not.toContain('"mcp"');
   });
 
+  it('deletes the owned key from a trailing-comma document with a foreign key', () => {
+    const existing = '{\n  "theme": "dark",\n  "mcp": { "servers": {} },\n}\n';
+    const merged = mergeStructuredText(existing, '{}\n', ['mcp'], 'opencode.jsonc');
+    expect(parseJsonc<Record<string, unknown>>(merged, { subject: 'merged' })).toEqual({
+      theme: 'dark',
+    });
+    expect(merged).toContain('"theme": "dark"');
+  });
+
+  it('deletes the only owned key from a trailing-comma document without leaving invalid JSONC', () => {
+    const existing = '{\n  "mcp": { "servers": {} },\n}\n';
+    const merged = mergeStructuredText(existing, '{}\n', ['mcp'], 'opencode.jsonc');
+    expect(parseJsonc<Record<string, unknown>>(merged, { subject: 'merged' })).toEqual({});
+  });
+
+  it('does not take over an unrecorded user file with no owned key without --adopt', async () => {
+    const repo = await generated();
+    try {
+      // The lockfile exists and records the other managed outputs, but not
+      // this path: the file is the user's until they opt in with --adopt.
+      const lock = await jsonOf(repo, '.farna/lock.json');
+      lock['files'] = (lock['files'] as Array<Record<string, unknown>>).filter(
+        (file) => file['path'] !== 'opencode.jsonc',
+      );
+      await writeFile(
+        join(repo.root, '.farna/lock.json'),
+        `${JSON.stringify(lock, null, 2)}\n`,
+        'utf8',
+      );
+      const userConfig = '// user file\n{\n  "theme": "dark",\n}\n';
+      await writeFile(join(repo.root, 'opencode.jsonc'), userConfig, 'utf8');
+
+      await expect(
+        runGenerate({ cwd: repo.root, dryRun: false }, new UpstreamRenderTarget()),
+      ).rejects.toMatchObject({
+        code: 'F007_DRIFT',
+        action: expect.stringContaining('run generate --adopt'),
+      });
+      expect(await readText(repo.root, 'opencode.jsonc')).toBe(userConfig);
+
+      const adopted = await runGenerate(
+        { cwd: repo.root, dryRun: false, adopt: true },
+        new UpstreamRenderTarget(),
+      );
+      expect(adopted.ok).toBe(true);
+      const after = await readText(repo.root, 'opencode.jsonc');
+      expect(after).toContain('// user file');
+      const document = parseJsonc<Record<string, unknown>>(after, { subject: 'opencode.jsonc' });
+      expect(document['theme']).toBe('dark');
+      expect((document['mcp'] as { servers: Record<string, unknown> }).servers).toHaveProperty(
+        'scan',
+      );
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
   it('adopts a user opencode.jsonc only with --adopt, merging the owned key', async () => {
     const repo = await createTempRepo('profile');
     try {
@@ -820,7 +877,7 @@ describe('reporting', () => {
     },
   );
 
-  it('escapes a foreign key carried in a removal refusal', async () => {
+  it('keeps a foreign key with a control character while deleting the owned key', async () => {
     const repo = await generated();
     try {
       const document = await jsonOf(repo, 'opencode.jsonc');
@@ -834,16 +891,20 @@ describe('reporting', () => {
       const persona = await readFile(personaPath, 'utf8');
       await writeFile(personaPath, persona.replace('  - mcp/scan\n', ''), 'utf8');
 
-      let failure: FarnaError | undefined;
-      try {
-        await runGenerate({ cwd: repo.root, dryRun: false }, new UpstreamRenderTarget());
-      } catch (error) {
-        failure = error as FarnaError;
-      }
-      expect(failure?.code).toBe('F007_DRIFT');
-      const formatted = failure?.format() ?? '';
-      expect(formatted).toContain('bad\\u001bkey');
-      expect(formatted).not.toContain('\u001b');
+      const result = await runGenerate(
+        { cwd: repo.root, dryRun: false },
+        new UpstreamRenderTarget(),
+      );
+      expect(result.ok).toBe(true);
+      // The foreign key is no longer printed in a refusal, so it cannot reach
+      // the report unescaped; the edited document still carries it verbatim.
+      expect(formatGenerate(result)).not.toContain('\u001b');
+      const after = parseJsonc<Record<string, unknown>>(
+        await readText(repo.root, 'opencode.jsonc'),
+        { subject: 'opencode.jsonc' },
+      );
+      expect(after['bad\u001bkey']).toBe('mine');
+      expect(Object.hasOwn(after, 'mcp')).toBe(false);
     } finally {
       await repo.cleanup();
     }

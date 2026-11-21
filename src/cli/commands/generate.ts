@@ -35,7 +35,7 @@ export type GenerateOptions = {
   commitOperations?: Partial<CommitOperations>;
 };
 
-export type OrphanStatus = 'removed' | 'would-remove' | 'missing';
+export type OrphanStatus = 'removed' | 'would-remove' | 'updated' | 'would-update' | 'missing';
 
 export type GenerateResult = {
   ok: true;
@@ -49,7 +49,11 @@ export type GenerateResult = {
   adopted: string[];
   personas: string[];
   files: Array<{ path: string; status: FileStatus | 'would-write' }>;
-  /** Recorded paths this run no longer produces, removed (or planned on a dry run). */
+  /**
+   * Recorded paths this run no longer produces. A whole file is removed; a
+   * structured file that still carries user keys is updated in place (its
+   * owned key deleted) and the record dropped.
+   */
   removed: Array<{ path: string; status: OrphanStatus }>;
   warnings: Warning[];
 };
@@ -189,17 +193,31 @@ function mergeStructuredFiles(
  * of the run: the orphan removal happened first, so the tree is partially
  * updated and the reader must be told which paths are gone.
  */
-function commitFailure(error: unknown, removed: readonly string[]): unknown {
-  if (!(error instanceof FarnaError) || removed.length === 0) {
+function commitFailure(
+  error: unknown,
+  removed: readonly { path: string; status: 'removed' | 'updated' | 'missing' }[],
+): unknown {
+  const paths = removed.filter((entry) => entry.status === 'removed').map((entry) => entry.path);
+  const updated = removed.filter((entry) => entry.status === 'updated').map((entry) => entry.path);
+  if (!(error instanceof FarnaError) || (paths.length === 0 && updated.length === 0)) {
     return error;
+  }
+  const details: string[] = [];
+  if (paths.length > 0) {
+    details.push(`this run already removed ${paths.length} recorded path(s) (${paths.join(', ')})`);
+  }
+  if (updated.length > 0) {
+    details.push(
+      `this run already updated ${updated.length} recorded path(s) (${updated.join(', ')})`,
+    );
   }
   return new FarnaError(
     error.code,
-    `${error.message}; this run already removed ${removed.length} recorded path(s) (${removed.join(', ')}) before the write failed, so the tree is partially updated`,
+    `${error.message}; ${details.join('; ')} before the write failed, so the tree is partially updated`,
     {
       ...(error.subject === undefined ? {} : { subject: error.subject }),
       action:
-        're-run generate after fixing the filesystem; the lockfile still records the removed paths',
+        're-run generate after fixing the filesystem; the lockfile still records the affected paths',
       cause: error,
     },
   );
@@ -276,9 +294,10 @@ export async function runGenerate(
         adopted,
         personas,
         files,
-        removed: orphans.map((entry) => ({
-          path: entry.path,
-          status: 'would-remove' as const,
+        removed: orphans.map((orphan) => ({
+          path: orphan.entry.path,
+          status:
+            orphan.action === 'remove' ? ('would-remove' as const) : ('would-update' as const),
         })),
         warnings: prepared.warnings,
       };
@@ -289,10 +308,7 @@ export async function runGenerate(
     try {
       committed = await commitFiles(options.cwd, planned, options.commitOperations ?? {});
     } catch (error) {
-      throw commitFailure(
-        error,
-        removed.filter((entry) => entry.status === 'removed').map((entry) => entry.path),
-      );
+      throw commitFailure(error, removed);
     }
     return {
       ok: true,

@@ -10,7 +10,12 @@ import { createTempRepo, hashTree, type TempRepo } from '../support/temp-repo.js
 
 const PLUGIN = '.opencode/plugins/rulesync-hooks.js';
 
-type Hook = { id: string; command: string; matcher?: string };
+type Hook = {
+  id: string;
+  command: string;
+  matcher?: string;
+  phase?: 'before-tool' | 'after-tool' | 'session-start';
+};
 
 /**
  * A profile repo whose live persona declares exactly the hooks given. The
@@ -39,7 +44,7 @@ async function repoWithHooks(hooks: readonly Hook[]): Promise<TempRepo> {
         {
           kind: 'hook',
           id: hook.id,
-          phase: 'before-tool',
+          phase: hook.phase ?? 'before-tool',
           ...(hook.matcher === undefined ? {} : { matcher: hook.matcher }),
           command: hook.command,
         },
@@ -95,6 +100,48 @@ describe('hooks plugin containment', () => {
       expect(plugin).toContain('mmm without matcher');
       const check = await runCheck(repo.root, new UpstreamRenderTarget());
       expect(check.ok).toBe(true);
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
+  it('generates an after-tool hook with a matcher and checks clean', async () => {
+    // The `execute.after` registration also carries `label: "postToolUse"` in
+    // the same run call, AFTER the matcher guard. That label must not reset the
+    // matcher window: doing so made every after-tool matcher invisible.
+    const repo = await repoWithHooks([
+      { id: 'after', phase: 'after-tool', command: 'echo after', matcher: 'Edit' },
+    ]);
+    try {
+      const result = await runGenerate(
+        { cwd: repo.root, dryRun: false },
+        new UpstreamRenderTarget(),
+      );
+      expect(result.ok).toBe(true);
+      const plugin = await readOutput(join(repo.root, '.opencode/plugins'), 'rulesync-hooks.js');
+      expect(plugin).toContain('execute.after');
+      expect(plugin).toContain('new RegExp("Edit")');
+      expect((await runCheck(repo.root, new UpstreamRenderTarget())).ok).toBe(true);
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
+  it('refuses a dropped matcher on an after-tool hook', async () => {
+    const repo = await repoWithHooks([
+      { id: 'after', phase: 'after-tool', command: 'echo after', matcher: 'Edit' },
+    ]);
+    try {
+      await expectGate(
+        repo,
+        async (outputRoot) => {
+          const text = await readOutput(outputRoot, PLUGIN);
+          const guard = ' && __rulesyncMatchesTool(new RegExp("Edit"), event.tool)';
+          expect(text).toContain(guard);
+          await writeOutput(outputRoot, PLUGIN, text.replace(guard, ''));
+        },
+        'registers',
+      );
     } finally {
       await repo.cleanup();
     }
