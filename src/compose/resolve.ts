@@ -52,8 +52,12 @@ export type ResolvedPersona = {
   /** Every resolved resource, rules before permissions, each sorted by id. */
   resources: ResolvedResource[];
   permissions: ResolvedPermissions;
-  /** The exact Claude Code entries, already sorted and capitalised. */
-  claude: { allow: string[]; deny: string[] };
+  /**
+   * The exact Claude Code entries, already sorted and capitalised. `allowlist`
+   * is true only when a contributing permission resource opted in: by default
+   * the entries are a deny-list, because `tools` is an allow-list in the target.
+   */
+  claude: { allow: string[]; deny: string[]; allowlist: boolean };
   model?: string;
   path: string;
   /** Canonical digest of the persona's resolved resources. */
@@ -248,7 +252,11 @@ function resolveOne(
       addResource(resources, {
         kind: 'permission',
         id: permission.id,
-        sha256: permissionResourceDigest(permission.tools, permission.patterns),
+        sha256: permissionResourceDigest(
+          permission.tools,
+          permission.patterns,
+          permission.allowlist,
+        ),
         path: permission.path,
         fromPersona: contributor.id,
       });
@@ -257,6 +265,7 @@ function resolveOne(
           id: permission.id,
           tools: permission.tools,
           patterns: permission.patterns ?? {},
+          allowlist: permission.allowlist,
         };
         mergePermission(permissions, contribution, {
           persona: persona.id,
@@ -294,7 +303,7 @@ function resolveOne(
     rules: resolvedRules,
     resources: sortedResources,
     permissions,
-    claude: mapped.entries,
+    claude: { ...mapped.entries, allowlist: mapped.allowlist },
     ...(model === undefined ? {} : { model }),
     path: persona.path,
     digest,

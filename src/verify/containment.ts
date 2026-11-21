@@ -1,16 +1,16 @@
-import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { parseDocument } from 'yaml';
 import type { ResolvedPersona, ResolvedSource } from '../compose/resolve.js';
-import { CLAUDE_AGENTS_DIR } from '../core/constants.js';
+import { AGENT_FILE_EXT, CLAUDE_AGENTS_DIR } from '../core/constants.js';
 import { declaredNotEmitted } from '../core/errors.js';
+import { readUtf8File } from '../core/fs.js';
 import { compareCodepoints } from '../core/json.js';
 import { lstatOrUndefined } from '../core/paths.js';
-import { personaBody } from '../materialise/source-tree.js';
+import { emitsTools, personaBody } from '../materialise/source-tree.js';
 import type { RenderResult } from '../render/port.js';
 
 export function expectedAgentPath(personaId: string): string {
-  return `${CLAUDE_AGENTS_DIR}/${personaId}.md`;
+  return `${CLAUDE_AGENTS_DIR}/${personaId}${AGENT_FILE_EXT}`;
 }
 
 type EmittedAgent = {
@@ -71,7 +71,7 @@ function expectedFrontmatterKeys(persona: ResolvedPersona): Set<string> {
   if (persona.model !== undefined) {
     keys.add('model');
   }
-  if (persona.claude.allow.length > 0) {
+  if (emitsTools(persona)) {
     keys.add('tools');
   }
   if (persona.claude.deny.length > 0) {
@@ -174,15 +174,21 @@ function bodiesMatch(emitted: string, composed: string): boolean {
  * The containment gate. Every expected artefact is a non-empty file whose
  * frontmatter key set and values equal the resolved persona, and whose body is
  * exactly the persona's composed body (one trailing newline normalised).
+ *
+ * Returns the exact bytes it verified, keyed by managed path. The caller writes
+ * THESE bytes: re-reading the stage after verification would let a renderer (or
+ * a concurrent writer) change the file between the gate and the write, so the
+ * bytes that were checked would not be the bytes that landed.
  */
 export async function verifyRender(
   source: ResolvedSource,
   render: RenderResult,
   outputRoot: string,
-): Promise<void> {
+): Promise<Map<string, string>> {
   const expected = source.personas.map((persona) => expectedAgentPath(persona.id)).sort();
   const emitted = [...render.files].sort(compareCodepoints);
 
+  const verified = new Map<string, string>();
   for (const path of expected) {
     if (!emitted.includes(path)) {
       throw declaredNotEmitted('declared persona produced no artefact', {
@@ -214,7 +220,9 @@ export async function verifyRender(
     if (!stats.isFile() || stats.isSymbolicLink()) {
       throw declaredNotEmitted('rendered path is not a regular file', { subject: managedPath });
     }
-    const text = await readFile(absolute, 'utf8');
+    const text = await readUtf8File(absolute, managedPath, {
+      action: 'the renderer must emit UTF-8; nothing was written',
+    });
     if (text.length === 0) {
       throw declaredNotEmitted('rendered artefact is empty', {
         subject: managedPath,
@@ -229,7 +237,7 @@ export async function verifyRender(
     assertField(
       parsed.frontmatter,
       'tools',
-      persona.claude.allow.length === 0 ? undefined : persona.claude.allow,
+      emitsTools(persona) ? persona.claude.allow : undefined,
       managedPath,
       persona,
     );
@@ -276,5 +284,7 @@ export async function verifyRender(
           'the renderer added or changed content the persona does not declare; nothing was written',
       });
     }
+    verified.set(managedPath, text);
   }
+  return verified;
 }

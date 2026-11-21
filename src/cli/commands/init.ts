@@ -1,12 +1,17 @@
-import { mkdir, readFile, rename, rm, rmdir, writeFile } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
+import { lstat, mkdir, open, readFile, rename, rm, rmdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import {
   CONFIG_FILE,
+  DEFAULT_TARGET,
+  GITIGNORE_LINES,
   PERMISSIONS_DIR,
   PERSONAS_DIR,
   RESOURCES_DIR,
   ROOT_DIR,
   RULES_DIR,
+  SCHEMA_VERSION,
+  STAGING_INFIX,
 } from '../../core/constants.js';
 import { FarnaError, invalidConfig } from '../../core/errors.js';
 import { assertRealDirectory, lstatOrUndefined } from '../../core/paths.js';
@@ -19,17 +24,22 @@ export type InitResult = {
   nextStep: string;
 };
 
-const CONFIG_TEMPLATE = `{
+/**
+ * The config `init` writes. Derived from the constants the schema validates, so
+ * the template cannot drift from the version or target this build supports. It
+ * carries no `$schema` URL: a URL that 404s is a dangling claim, and no schema
+ * is published yet.
+ */
+export function configTemplate(): string {
+  return `{
   // Farna Bootstrapper source root. Generated files are committed.
-  "$schema": "https://farna.dev/schema/farna-bootstrapper/config.schema.json",
-  "schemaVersion": 1,
+  "schemaVersion": ${SCHEMA_VERSION},
   "targets": {
-    "claudecode": {}
+    "${DEFAULT_TARGET}": {}
   }
 }
 `;
-
-const GITIGNORE_LINES = ['.farna/local.jsonc', '.farna/.journal.json'];
+}
 
 /** The line ending the existing file already uses; a new file uses LF. */
 function detectLineEnding(text: string): string {
@@ -55,7 +65,15 @@ async function preflightGitignore(path: string): Promise<string | undefined> {
       action: 'replace it with a regular file, or remove it',
     });
   }
-  return readFile(path, 'utf8');
+  try {
+    return await readFile(path, 'utf8');
+  } catch (error) {
+    throw invalidConfig('cannot read .gitignore', {
+      subject: '.gitignore',
+      action: 'make .gitignore readable and re-run init',
+      cause: error,
+    });
+  }
 }
 
 function nextGitignore(existing: string): string | undefined {
@@ -69,10 +87,37 @@ function nextGitignore(existing: string): string | undefined {
   return `${prefix}${missing.join(eol)}${eol}`;
 }
 
-async function writeGitignore(path: string, contents: string): Promise<void> {
-  const temporary = `${path}.farna-tmp-${process.pid}`;
+export type TemporaryName = (path: string) => string;
+
+/** An unpredictable sibling name: a pre-planted symlink cannot guess it. */
+export function defaultTemporaryName(path: string): string {
+  return `${path}${STAGING_INFIX}${process.pid}-${randomUUID()}`;
+}
+
+/**
+ * Replace `.gitignore` atomically. The temporary is created with `O_EXCL`, so a
+ * path an attacker planted (a symlink to a victim file, or any other object)
+ * makes the create fail instead of being followed; the `lstat` after the open
+ * proves the opened path is a regular file. The rename then moves a file this
+ * call created over `.gitignore`, never a link.
+ */
+export async function writeGitignore(
+  path: string,
+  contents: string,
+  temporaryName: TemporaryName = defaultTemporaryName,
+): Promise<void> {
+  const temporary = temporaryName(path);
   try {
-    await writeFile(temporary, contents, 'utf8');
+    const handle = await open(temporary, 'wx', 0o600);
+    try {
+      await handle.writeFile(contents, 'utf8');
+    } finally {
+      await handle.close();
+    }
+    const stats = await lstat(temporary);
+    if (stats.isSymbolicLink() || !stats.isFile()) {
+      throw new Error('staging path is not a regular file');
+    }
     await rename(temporary, path);
   } catch (error) {
     await rm(temporary, { force: true });
@@ -169,7 +214,7 @@ export async function runInit(repoRoot: string): Promise<InitResult> {
     );
 
     createdFiles.push(configAbsolute);
-    await writeFile(configAbsolute, CONFIG_TEMPLATE, 'utf8');
+    await writeFile(configAbsolute, configTemplate(), 'utf8');
 
     if (gitignoreNext !== undefined) {
       await writeGitignore(gitignorePath, gitignoreNext);

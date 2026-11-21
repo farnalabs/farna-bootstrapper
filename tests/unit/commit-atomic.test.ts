@@ -20,6 +20,15 @@ async function generatedRepo(): Promise<{ root: string; cleanup: () => Promise<v
   return repo;
 }
 
+async function exists(path: string): Promise<boolean> {
+  try {
+    await stat(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 describe('atomic generate', () => {
   it('leaves every earlier file untouched when a later managed path is a directory', async () => {
     const repo = await generatedRepo();
@@ -49,6 +58,75 @@ describe('atomic generate', () => {
       expect((await listFiles(repo.root)).filter((path) => path.includes('.farna-tmp'))).toEqual(
         [],
       );
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
+  it('records each created ancestor so a partial mkdir failure rolls back', async () => {
+    const repo = await createTempRepo();
+    try {
+      const prepared = await prepareRender(repo.root, new FakeRenderTarget());
+      let mkdirCalls = 0;
+      let failure: FarnaError | undefined;
+      try {
+        await commitFiles(repo.root, prepared.files, {
+          mkdir: async (path) => {
+            mkdirCalls += 1;
+            // `.claude` is created first; the second level (`.claude/agents`)
+            // fails after it. The old code recorded neither because the
+            // recursive mkdir had not returned.
+            if (mkdirCalls === 2) {
+              throw new Error('injected mkdir failure');
+            }
+            await mkdir(path);
+          },
+        });
+      } catch (error) {
+        expect(error).toBeInstanceOf(FarnaError);
+        failure = error as FarnaError;
+      }
+      expect(mkdirCalls).toBe(2);
+      expect(failure?.code).toBe('F012_WRITE_FAILED');
+      expect(failure?.message).toContain('nothing was written');
+      // The directory the recursive call could have left behind is gone.
+      expect(await exists(join(repo.root, '.claude'))).toBe(false);
+      expect((await listFiles(repo.root)).filter((path) => path.includes('.farna-tmp'))).toEqual(
+        [],
+      );
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
+  it('names a directory the rollback could not remove instead of claiming a clean tree', async () => {
+    const repo = await createTempRepo();
+    try {
+      const prepared = await prepareRender(repo.root, new FakeRenderTarget());
+      let mkdirCalls = 0;
+      let failure: FarnaError | undefined;
+      try {
+        await commitFiles(repo.root, prepared.files, {
+          mkdir: async (path) => {
+            mkdirCalls += 1;
+            if (mkdirCalls === 2) {
+              throw new Error('injected mkdir failure');
+            }
+            await mkdir(path);
+          },
+          removeDirectory: async () => {
+            throw new Error('injected rmdir failure');
+          },
+        });
+      } catch (error) {
+        expect(error).toBeInstanceOf(FarnaError);
+        failure = error as FarnaError;
+      }
+      expect(failure?.code).toBe('F012_WRITE_FAILED');
+      expect(failure?.message).toContain('could not be removed');
+      expect(failure?.message).toContain('.claude');
+      // Clean up what the injected failure left on disk.
+      await rm(join(repo.root, '.claude'), { recursive: true, force: true });
     } finally {
       await repo.cleanup();
     }

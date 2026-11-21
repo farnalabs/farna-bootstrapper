@@ -1,5 +1,4 @@
 import { createHash } from 'node:crypto';
-import { readFile } from 'node:fs/promises';
 import {
   getNodeValue,
   type Node,
@@ -22,10 +21,6 @@ export function compareCodepoints(a: string, b: string): number {
 
 export function sha256Hex(value: string | Uint8Array): string {
   return createHash('sha256').update(value).digest('hex');
-}
-
-export async function sha256File(path: string): Promise<string> {
-  return sha256Hex(await readFile(path));
 }
 
 function sortValue(value: unknown): unknown {
@@ -54,10 +49,6 @@ export function canonicalJson(value: unknown): string {
 /** Canonical JSON for files: sorted keys, two spaces, exactly one trailing newline. */
 export function canonicalJsonFile(value: unknown): string {
   return `${JSON.stringify(sortValue(value), null, 2)}\n`;
-}
-
-export function stripBom(text: string): string {
-  return text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;
 }
 
 export function hasBom(text: string): boolean {

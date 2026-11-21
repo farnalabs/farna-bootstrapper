@@ -55,6 +55,12 @@ export type PermissionContribution = {
   id: string;
   tools: PermissionTools;
   patterns: PermissionPatterns;
+  /**
+   * True when the resource opts its persona into the target's `tools`
+   * allow-list. The default is a deny-list: a partial allow set is not an
+   * exhaustive allow-list.
+   */
+  allowlist: boolean;
 };
 
 type Winner = { value: PermissionValue; source: string };
@@ -62,6 +68,8 @@ type Winner = { value: PermissionValue; source: string };
 export type ResolvedPermissions = {
   values: Partial<Record<PermissionCategory, Winner>>;
   patterns: Partial<Record<PermissionCategory, Record<string, Winner>>>;
+  /** True when any contributing resource declared `allowlist: true`. */
+  allowlist: boolean;
 };
 
 export type ClaudePermissionEntries = {
@@ -70,7 +78,7 @@ export type ClaudePermissionEntries = {
 };
 
 export function emptyResolvedPermissions(): ResolvedPermissions {
-  return { values: {}, patterns: {} };
+  return { values: {}, patterns: {}, allowlist: false };
 }
 
 function expandTools(tools: PermissionTools): Partial<Record<PermissionCategory, PermissionValue>> {
@@ -132,6 +140,7 @@ export function mergePermission(
   contribution: PermissionContribution,
   context: { persona: string; target: string; warnings: Warning[] },
 ): void {
+  resolved.allowlist = resolved.allowlist || contribution.allowlist;
   const tools = expandTools(contribution.tools);
   for (const category of PERMISSION_CATEGORIES) {
     const value = tools[category];
@@ -180,7 +189,7 @@ function patternEntry(tool: string, pattern: string): string {
 export function mapPermissions(
   resolved: ResolvedPermissions,
   context: { persona: string; target: string },
-): { entries: ClaudePermissionEntries; warnings: Warning[] } {
+): { entries: ClaudePermissionEntries; allowlist: boolean; warnings: Warning[] } {
   const warnings: Warning[] = [];
   for (const category of UNMAPPED_CATEGORIES) {
     const declared = resolved.values[category];
@@ -290,15 +299,32 @@ export function mapPermissions(
   for (const entry of [...entries.keys()].sort(compareCodepoints)) {
     (entries.get(entry) === 'allow' ? allow : deny).push(entry);
   }
-  return { entries: { allow, deny }, warnings };
+  // Claude Code's `tools` is an ALLOW-list, not a set of extra grants: emitting
+  // a partial set removes every tool it does not name. Only a resource that
+  // explicitly opts in may narrow the persona to that list, and the narrowing
+  // is reported.
+  const allowlist = resolved.allowlist && allow.length > 0;
+  if (allowlist) {
+    warnings.push(
+      warning({
+        code: 'W113_ALLOW_LIST_NARROWS',
+        persona: context.persona,
+        target: context.target,
+        capability: 'permission',
+        message: `tools is an allow-list for ${context.target}: it lists ${allow.join(', ')} only, so every unmodelled tool (Glob, Grep, WebFetch, TodoWrite, NotebookEdit and others) is removed`,
+      }),
+    );
+  }
+  return { entries: { allow, deny }, allowlist, warnings };
 }
 
 /** The digest of one permission resource's declared content. */
 export function permissionResourceDigest(
   tools: PermissionTools,
   patterns: PermissionPatterns | undefined,
+  allowlist: boolean,
 ): string {
-  return sha256Hex(canonicalJson({ tools, patterns: patterns ?? {} }));
+  return sha256Hex(canonicalJson({ tools, patterns: patterns ?? {}, allowlist }));
 }
 
 /** The canonical digest input: resolved values and patterns, sorted. */
@@ -324,5 +350,5 @@ export function permissionDigest(resolved: ResolvedPermissions): string {
       patterns[category] = entry;
     }
   }
-  return sha256Hex(canonicalJson({ values, patterns }));
+  return sha256Hex(canonicalJson({ values, patterns, allowlist: resolved.allowlist }));
 }

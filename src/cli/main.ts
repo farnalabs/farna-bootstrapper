@@ -3,7 +3,7 @@ import { CommanderError } from 'commander';
 import { FarnaError } from '../core/errors.js';
 import { UpstreamRenderTarget } from '../render/upstream.js';
 import { formatJson } from '../report/format.js';
-import { buildProgram, failureObject, unexpectedFailureObject } from './program.js';
+import { buildProgram, failureObject, redactRoot, unexpectedFailureObject } from './program.js';
 
 /**
  * Process entry point. This is the only place where a concrete renderer is
@@ -37,7 +37,10 @@ try {
     process.stderr.write(`${error.format()}\n`);
     process.exitCode = error.exitCode;
   } else {
-    const message = error instanceof Error ? error.message : String(error);
+    const raw = error instanceof Error ? error.message : String(error);
+    // Never print a raw absolute path from the one branch with no diagnostic
+    // code; every typed path already carries a repository-relative subject.
+    const message = redactRoot(raw, process.cwd());
     if (json) {
       process.stdout.write(formatJson(unexpectedFailureObject(command, message)));
     }

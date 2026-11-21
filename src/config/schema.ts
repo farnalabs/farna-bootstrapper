@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { SUPPORTED_TARGETS } from '../core/constants.js';
+import { ID_RE, SCHEMA_VERSION, SUPPORTED_TARGETS } from '../core/constants.js';
 
 /**
  * One configured target. In this slice a target accepts no options: profile
@@ -11,7 +11,7 @@ const targetConfigSchema = z.strictObject({});
 export const configSchema = z
   .strictObject({
     $schema: z.string().optional(),
-    schemaVersion: z.literal(1),
+    schemaVersion: z.literal(SCHEMA_VERSION),
     targets: z
       .record(z.string(), targetConfigSchema)
       .refine((targets) => Object.keys(targets).length >= 1, 'at least one target is required')
@@ -24,7 +24,7 @@ export const configSchema = z
   })
   .superRefine((config, ctx) => {
     for (const modelClass of Object.keys(config.models ?? {})) {
-      if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(modelClass)) {
+      if (!ID_RE.test(modelClass)) {
         ctx.addIssue({
           code: 'custom',
           path: ['models', modelClass],

@@ -1,8 +1,8 @@
-import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { ZodError } from 'zod';
-import { CONFIG_FILE, ROOT_DIR } from '../core/constants.js';
+import { CONFIG_FILE, CONFIG_PATH, ROOT_DIR } from '../core/constants.js';
 import { invalidConfig } from '../core/errors.js';
+import { readUtf8File } from '../core/fs.js';
 import { parseJsonc } from '../core/json.js';
 import { assertRealDirectory, assertRealFile } from '../core/paths.js';
 import { type Config, configSchema } from './schema.js';
@@ -26,19 +26,12 @@ function describeZodError(error: ZodError): { message: string; pointer?: string 
 /** Read and strictly validate `.farna/config.jsonc`. Never returns a partial config. */
 export async function loadConfig(repoRoot: string): Promise<Config> {
   const path = configPath(repoRoot);
-  const relative = `${ROOT_DIR}/${CONFIG_FILE}`;
+  const relative = CONFIG_PATH;
   await assertRealDirectory(join(repoRoot, ROOT_DIR), ROOT_DIR);
   await assertRealFile(path, relative);
-  let text: string;
-  try {
-    text = await readFile(path, 'utf8');
-  } catch (error) {
-    throw invalidConfig(`cannot read ${relative}`, {
-      subject: relative,
-      action: 'run "farna-bootstrapper init" first',
-      cause: error,
-    });
-  }
+  const text = await readUtf8File(path, relative, {
+    action: 'run "farna-bootstrapper init" first',
+  });
 
   const parsed = parseJsonc(text, { subject: relative });
   try {

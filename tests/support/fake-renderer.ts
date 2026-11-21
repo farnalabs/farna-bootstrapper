@@ -88,6 +88,7 @@ export class FakeRenderTarget implements RenderTarget {
   constructor(
     private readonly mode: FakeMode = { kind: 'ok' },
     private readonly identityOverride?: RendererIdentity,
+    private readonly recordedOverride?: RendererIdentity,
   ) {}
 
   identity(): RendererIdentity {
@@ -98,6 +99,11 @@ export class FakeRenderTarget implements RenderTarget {
         integrity: 'sha512-fake',
       }
     );
+  }
+
+  /** The lockfile record. Defaults to the installed identity when not pinned. */
+  recordedIdentity(): RendererIdentity {
+    return this.recordedOverride ?? this.identity();
   }
 
   async generate(request: RenderRequest): Promise<RenderResult> {

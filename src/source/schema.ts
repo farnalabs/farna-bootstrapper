@@ -68,9 +68,44 @@ const permissionValueMapSchema = z
     'a permission resource declares at most sixteen categories',
   );
 
+/**
+ * A pattern is interpolated verbatim into the target's `Tool(pattern)` grammar.
+ * A pattern carrying `)` or `,` would change the entry's meaning, a newline or
+ * control character would break the line-oriented frontmatter, and padding is
+ * never intentional. All are refused at the source boundary rather than escaped,
+ * because the harness's grammar has no escaping this tool can verify.
+ */
+function describePatternProblem(pattern: string): string | undefined {
+  if (pattern !== pattern.trim()) {
+    return 'pattern has leading or trailing whitespace';
+  }
+  const hasControl = [...pattern].some((character) => {
+    const code = character.codePointAt(0) ?? 0;
+    return code <= 0x1f || code === 0x7f;
+  });
+  if (hasControl) {
+    return 'pattern contains a newline or control character';
+  }
+  if (pattern.includes(')') || pattern.includes(',')) {
+    return 'pattern cannot contain ")" or ",": it is interpolated into the target grammar Tool(pattern) and is not representable';
+  }
+  return undefined;
+}
+
+const patternRecordSchema = z
+  .record(z.string().min(1).max(200), permissionValueSchema)
+  .superRefine((record, ctx) => {
+    for (const pattern of Object.keys(record)) {
+      const problem = describePatternProblem(pattern);
+      if (problem !== undefined) {
+        ctx.addIssue({ code: 'custom', path: [pattern], message: problem });
+      }
+    }
+  });
+
 const permissionPatternMapSchema = z.partialRecord(
   z.enum(PERMISSION_CATEGORIES),
-  z.record(z.string().min(1).max(200), permissionValueSchema),
+  patternRecordSchema,
 );
 
 export const permissionSchema = z
@@ -78,6 +113,12 @@ export const permissionSchema = z
     kind: z.literal('permission'),
     id: idSchema,
     tools: permissionValueMapSchema,
+    /**
+     * Opt in to Claude Code's `tools` allow-list. The default is a deny-list:
+     * an allow entry grants nothing extra, but a partial `tools` list removes
+     * every tool it does not name. Only `true` narrows the persona.
+     */
+    allowlist: z.boolean().optional(),
     patterns: permissionPatternMapSchema.optional(),
   })
   .superRefine((permission, ctx) => {
