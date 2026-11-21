@@ -13,7 +13,7 @@
  */
 import { readFileSync } from 'node:fs';
 
-const EXPECTED_TOTAL = 112;
+const EXPECTED_TOTAL = 113;
 
 const REAL_RENDERER_SUITES = [
   { suffix: 'tests/integration/rulesync.test.ts', tests: 3 },
