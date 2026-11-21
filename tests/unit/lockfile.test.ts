@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { lstat, readFile, rename, rm, symlink, writeFile } from 'node:fs/promises';
+import { chmod, lstat, readFile, rename, rm, symlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { runCheck } from '../../src/cli/commands/check.js';
@@ -39,7 +39,10 @@ describe('lockfile reading', () => {
     }
   });
 
-  it('returns undefined for a lockfile that misses a required field', async () => {
+  it('refuses a lockfile that misses a required field with a typed error', async () => {
+    // A present lockfile is either understood or refused. Treating it as absent
+    // discarded the recorded path set, so orphan removal was skipped and the
+    // rewritten lockfile forgot every earlier path while `check` stayed green.
     const repo = await generatedRepo();
     try {
       const path = join(repo.root, LOCK);
@@ -47,22 +50,80 @@ describe('lockfile reading', () => {
       delete lock['product'];
       await writeFile(path, `${JSON.stringify(lock, null, 2)}\n`, 'utf8');
 
-      expect(await readLockfile(repo.root)).toBeUndefined();
-      const check = await runCheck(repo.root, new FakeRenderTarget());
-      expect(check.ok).toBe(false);
-      expect(check.drift.map((item) => item.path)).toContain(LOCK);
+      await expect(readLockfile(repo.root)).rejects.toMatchObject({
+        code: 'F001_INVALID_CONFIG',
+        subject: LOCK,
+        action: expect.stringContaining('delete the lockfile and re-run generate'),
+      });
+      await expect(runCheck(repo.root, new FakeRenderTarget())).rejects.toMatchObject({
+        code: 'F001_INVALID_CONFIG',
+        subject: LOCK,
+      });
     } finally {
       await repo.cleanup();
     }
   });
 
-  it('returns undefined for a malformed document and reports drift', async () => {
+  it('refuses a malformed document with a typed error, never "no records"', async () => {
     const repo = await generatedRepo();
     try {
       await writeFile(join(repo.root, LOCK), '{"schemaVersion":1}\n', 'utf8');
-      expect(await readLockfile(repo.root)).toBeUndefined();
-      const check = await runCheck(repo.root, new FakeRenderTarget());
-      expect(check.drift.map((item) => item.path)).toContain(LOCK);
+      await expect(readLockfile(repo.root)).rejects.toMatchObject({
+        code: 'F001_INVALID_CONFIG',
+        subject: LOCK,
+        message: expect.stringContaining('did not validate'),
+      });
+      await expect(runCheck(repo.root, new FakeRenderTarget())).rejects.toMatchObject({
+        code: 'F001_INVALID_CONFIG',
+        subject: LOCK,
+      });
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
+  it('accepts a legacy lockfile written before profile mode existed', async () => {
+    // A pre-M3 lockfile has neither `mode` nor `activePersona`. Failing to
+    // parse it made every path unrecorded, so a persona switch left the old
+    // artefacts live and `check` reported clean.
+    const repo = await generatedRepo();
+    try {
+      const path = join(repo.root, LOCK);
+      const lock = JSON.parse(await readFile(path, 'utf8')) as Record<string, unknown>;
+      delete lock['mode'];
+      delete lock['activePersona'];
+      delete lock['notLive'];
+      delete lock['configDigest'];
+      await writeFile(path, `${JSON.stringify(lock, null, 2)}\n`, 'utf8');
+
+      const legacy = await readLockfile(repo.root);
+      expect(legacy?.mode).toBe('agent');
+      expect(legacy?.activePersona).toBeNull();
+      expect(legacy?.files.map((file) => file.path)).toEqual([
+        '.claude/agents/builder.md',
+        '.claude/agents/reviewer.md',
+      ]);
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
+  it('rejects a managed path with a control character', async () => {
+    const repo = await generatedRepo();
+    try {
+      const path = join(repo.root, LOCK);
+      const lock = JSON.parse(await readFile(path, 'utf8')) as {
+        files: Array<{ path: string }>;
+      };
+      const first = lock.files[0];
+      if (first !== undefined) {
+        first.path = `.claude/agents/builder\u001b[31m.md`;
+      }
+      await writeFile(path, `${JSON.stringify(lock, null, 2)}\n`, 'utf8');
+      await expect(readLockfile(repo.root)).rejects.toMatchObject({
+        code: 'F001_INVALID_CONFIG',
+        subject: LOCK,
+      });
     } finally {
       await repo.cleanup();
     }
@@ -119,6 +180,21 @@ describe('lockfile reading', () => {
         subject: LOCK,
       });
     } finally {
+      await repo.cleanup();
+    }
+  });
+
+  it.skipIf(skipSymlinks)('refuses an unreadable lockfile with a typed error', async () => {
+    const repo = await generatedRepo();
+    try {
+      await chmod(join(repo.root, LOCK), 0o000);
+      await expect(readLockfile(repo.root)).rejects.toMatchObject({
+        code: 'F001_INVALID_CONFIG',
+        subject: LOCK,
+        action: expect.stringContaining('delete it and re-run generate'),
+      });
+    } finally {
+      await chmod(join(repo.root, LOCK), 0o644);
       await repo.cleanup();
     }
   });

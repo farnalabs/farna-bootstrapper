@@ -1,18 +1,32 @@
-import { mkdir, rename, rm, rmdir, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, rename, rm, rmdir, writeFile } from 'node:fs/promises';
 import { dirname, isAbsolute, join, posix } from 'node:path';
-import { MANAGED_FILE_MAX_BYTES } from '../core/constants.js';
+import { MANAGED_FILE_MAX_BYTES, OUTPUT_DIR_MODE, OUTPUT_FILE_MODE } from '../core/constants.js';
 import { pathUnsafe, writeFailed } from '../core/errors.js';
 import { describeFsError, readBoundedBytes } from '../core/fs.js';
 import { containedTarget, lstatOrUndefined } from '../core/paths.js';
+import { hasControlCharacters } from '../core/text.js';
 import { stagingName, sweepStaging } from './staging.js';
 
-/** A managed path is relative, POSIX-spelled, and cannot escape the root. */
+/**
+ * A managed path is relative, POSIX-spelled, control-character-free, and cannot
+ * escape the root. The control-character refusal is not cosmetic: the path is
+ * printed on a human line and reaches a filesystem call, so a carriage return
+ * or an escape introducer must never pass through.
+ */
 export function assertSafeRelativePath(path: string): void {
   if (path === '' || path.includes('\\') || isAbsolute(path)) {
     throw pathUnsafe('managed path is not relative', { subject: path });
   }
+  if (hasControlCharacters(path)) {
+    throw pathUnsafe('managed path contains a control character', { subject: path });
+  }
   const normalised = posix.normalize(path);
-  if (normalised !== path || normalised.startsWith('../') || normalised === '..') {
+  if (
+    normalised !== path ||
+    normalised.startsWith('../') ||
+    normalised === '..' ||
+    normalised === '.'
+  ) {
     throw pathUnsafe('managed path escapes the repository root', { subject: path });
   }
 }
@@ -39,14 +53,19 @@ export type CommitOperations = {
 const defaultOperations: CommitOperations = {
   // One level at a time. A recursive mkdir can create ancestors and then throw,
   // leaving directories the rollback has no record of; the caller records each
-  // successful level instead.
+  // successful level instead. The mode is set explicitly and then re-asserted:
+  // `mkdir`'s mode is masked by the process umask, so a umask of 000 would
+  // otherwise leave a world-writable managed directory.
   mkdir: async (path) => {
-    await mkdir(path);
+    await mkdir(path, { mode: OUTPUT_DIR_MODE });
+    await chmod(path, OUTPUT_DIR_MODE);
   },
   writeFile: async (path, data) => {
     // The raw bytes are written as-is: a restore must not round-trip a
-    // repository file through a lossy text encoding.
-    await writeFile(path, data);
+    // repository file through a lossy text encoding. The mode is explicit for
+    // the same reason as `mkdir`: a generated file is always 0644, never 0666.
+    await writeFile(path, data, { mode: OUTPUT_FILE_MODE });
+    await chmod(path, OUTPUT_FILE_MODE);
   },
   rename: async (from, to) => {
     await rename(from, to);

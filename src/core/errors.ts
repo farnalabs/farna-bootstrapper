@@ -1,4 +1,5 @@
 import { type DiagnosticCode, DRIFT_CODE, EXIT, EXIT_BY_CODE } from './constants.js';
+import { escapeControlCharacters } from './text.js';
 
 export type FarnaErrorOptions = {
   subject?: string;
@@ -29,9 +30,13 @@ export class FarnaError extends Error {
     }
   }
 
-  /** The one-line form the text reporter prints. */
+  /**
+   * The one-line form the text reporter prints. A subject is escaped: it can
+   * come from a hand-edited lockfile or a renderer, and a raw control character
+   * would rewrite the terminal line the diagnostic appears on.
+   */
   format(): string {
-    const subject = this.subject === undefined ? '' : ` ${this.subject}`;
+    const subject = this.subject === undefined ? '' : ` ${escapeControlCharacters(this.subject)}`;
     const action = this.action === undefined ? '' : `\n  ${this.action}`;
     return `${this.code}${subject}\n  ${this.message}${action}`;
   }

@@ -35,6 +35,22 @@ export const CONFIG_FILE = 'config.jsonc';
 export const CONFIG_PATH = `${ROOT_DIR}/${CONFIG_FILE}`;
 export const LOCK_FILE = 'lock.json';
 export const LOCK_PATH = `${ROOT_DIR}/${LOCK_FILE}`;
+
+/**
+ * The exclusive run lock. Two `generate` runs in one repository would each plan
+ * from the same lockfile and each remove and rewrite the managed set, so the
+ * second could delete what the first just wrote (or commit a plan it computed
+ * before the first changed the tree). The lock is local-only state, never
+ * committed, and its presence is not a managed output.
+ */
+export const GENERATE_LOCK_FILE = '.generate.lock';
+export const GENERATE_LOCK_PATH = `${ROOT_DIR}/${GENERATE_LOCK_FILE}`;
+/** How long a lockfile whose owner pid is still alive is honoured before it is treated as orphaned. */
+export const GENERATE_LOCK_STALE_MS = 24 * 60 * 60 * 1000;
+
+/** Generated files are `0644`, generated directories `0755`, whatever the umask. */
+export const OUTPUT_FILE_MODE = 0o644;
+export const OUTPUT_DIR_MODE = 0o755;
 export const PERSONAS_DIR = 'personas';
 export const RESOURCES_DIR = 'resources';
 export const RULES_DIR = 'rules';
@@ -79,6 +95,15 @@ export const PROFILE_TARGETS: readonly SupportedTarget[] = [OPENCODE_TARGET];
 export function targetSupportsProfile(target: SupportedTarget): boolean {
   return PROFILE_TARGETS.includes(target);
 }
+
+/**
+ * The capabilities that *force* profile mode rather than merely being carried
+ * by it. Only a boundary capability the target can express at the workspace
+ * level and nowhere else forces the mode: on OpenCode that is `mcp` and `hook`.
+ * A `skill` or `command` is content the target could in principle drop with a
+ * loss, so selecting profile mode for it is a choice and is reported as W109.
+ */
+export const PROFILE_FORCING_KINDS: readonly Capability[] = ['mcp', 'hook'];
 
 /** The Claude Code directories, relative to the repository root. */
 export const CLAUDE_DIR = '.claude';
@@ -147,6 +172,7 @@ export const STAGING_PATTERN = `**/.*${STAGING_INFIX}*`;
 export const GITIGNORE_LINES: readonly string[] = [
   `${ROOT_DIR}/local.jsonc`,
   `${ROOT_DIR}/.journal.json`,
+  `/${GENERATE_LOCK_PATH}`,
   `${STAGING_PATTERN}`,
   ...OS_METADATA_NAMES,
 ];
@@ -253,6 +279,14 @@ export const EXIT = {
 /** The code a drift item carries in a `check` payload. Not an error code. */
 export const DRIFT_CODE = 'F007_DRIFT' as const;
 
+/**
+ * The code a drift item carries when the finding is not a changed byte of ours
+ * but content outside our ownership: an unrecorded file in a managed location,
+ * or an extra file in a skill tree. `check` fails on it because the path is
+ * live, but `generate` never deletes it.
+ */
+export const OUTSIDE_OWNERSHIP_CODE = 'W107_OUTSIDE_OWNERSHIP' as const;
+
 export type ErrorCode =
   | 'F001_INVALID_CONFIG'
   | 'F002_SECRET_LITERAL'
@@ -290,11 +324,14 @@ export type Severity = 'error' | 'high' | 'medium' | 'low' | 'info';
 export const WARNING_CODES = [
   'W101_CAPABILITY_DROPPED',
   'W106_DENY_WINS',
+  'W107_OUTSIDE_OWNERSHIP',
+  'W109_PROFILE_BY_CHOICE',
   'W111_ASK_DOWNGRADED',
   'W112_PERMISSION_LOSSY',
   'W113_ALLOW_LIST_NARROWS',
   'W114_RENDERER_INTEGRITY_UNVERIFIED',
   'W115_CREDENTIAL_IN_URL',
+  'W116_SECRET_IN_ARGS',
 ] as const;
 
 export type WarningCode = (typeof WARNING_CODES)[number];
@@ -320,9 +357,12 @@ export type WarningCode = (typeof WARNING_CODES)[number];
 export const WARNING_SEVERITY: Record<WarningCode, Severity> = {
   W101_CAPABILITY_DROPPED: 'medium',
   W106_DENY_WINS: 'info',
+  W107_OUTSIDE_OWNERSHIP: 'low',
+  W109_PROFILE_BY_CHOICE: 'info',
   W111_ASK_DOWNGRADED: 'medium',
   W112_PERMISSION_LOSSY: 'high',
   W113_ALLOW_LIST_NARROWS: 'medium',
   W114_RENDERER_INTEGRITY_UNVERIFIED: 'medium',
   W115_CREDENTIAL_IN_URL: 'high',
+  W116_SECRET_IN_ARGS: 'high',
 };

@@ -34,10 +34,13 @@ describe('atomic generate', () => {
     const repo = await generatedRepo();
     try {
       const builderBefore = await readText(repo.root, '.claude/agents/builder.md');
-      const reviewerBefore = await readText(repo.root, '.claude/agents/reviewer.md');
-      const lockPath = join(repo.root, '.farna/lock.json');
-      await rm(lockPath);
-      await mkdir(lockPath);
+      // A directory where a managed file belongs is refused by the write
+      // preflight, before any file is staged. The lockfile is deliberately not
+      // the subject: it is read first now, and a lockfile that is a directory
+      // is its own typed read error (see the lockfile suite).
+      const blocked = join(repo.root, '.claude/agents/reviewer.md');
+      await rm(blocked);
+      await mkdir(blocked);
       const before = await hashTree(repo.root);
 
       let failure: FarnaError | undefined;
@@ -49,12 +52,11 @@ describe('atomic generate', () => {
       }
       expect(failure?.code).toBe('F012_WRITE_FAILED');
       expect(failure?.exitCode).toBe(5);
-      expect(failure?.subject).toBe('.farna/lock.json');
+      expect(failure?.subject).toBe('.claude/agents/reviewer.md');
 
       expect(await readText(repo.root, '.claude/agents/builder.md')).toBe(builderBefore);
-      expect(await readText(repo.root, '.claude/agents/reviewer.md')).toBe(reviewerBefore);
       expect(await hashTree(repo.root)).toBe(before);
-      expect((await stat(lockPath)).isDirectory()).toBe(true);
+      expect((await stat(blocked)).isDirectory()).toBe(true);
       expect((await listFiles(repo.root)).filter((path) => path.includes('.farna-tmp'))).toEqual(
         [],
       );

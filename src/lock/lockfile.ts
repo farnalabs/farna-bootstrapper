@@ -1,32 +1,52 @@
 import { constants } from 'node:fs';
 import { type FileHandle, open } from 'node:fs/promises';
 import { join } from 'node:path';
-import { z } from 'zod';
+import { type ZodError, z } from 'zod';
 import type { ResolvedSource } from '../compose/resolve.js';
 import {
   type Capability,
   LOCK_FILE,
   LOCK_PATH,
   LOCKFILE_MAX_BYTES,
+  MODE_AGENT,
+  MODE_PROFILE,
   PRODUCT_NAME,
   PRODUCT_VERSION,
   RENDER_MODES,
+  type RenderMode,
   ROOT_DIR,
   SCHEMA_VERSION,
   type Severity,
   WARNING_CODES,
   type WarningCode,
 } from '../core/constants.js';
-import { invalidConfig, pathUnsafe } from '../core/errors.js';
+import { type FarnaError, invalidConfig, pathUnsafe } from '../core/errors.js';
 import { decodeUtf8 } from '../core/fs.js';
 import { canonicalJsonFile, compareCodepoints, sha256Hex } from '../core/json.js';
 import { assertRealDirectory, assertRealFile } from '../core/paths.js';
+import { hasControlCharacters } from '../core/text.js';
 import type { Warning } from '../report/warnings.js';
 
+/**
+ * The ownership shape of a managed path. A `structured` file is merged key by
+ * key, so its entry describes the owned subset rather than the whole file.
+ */
+export type LockEntryShape = 'whole' | 'tree' | 'structured' | 'region';
+
 export type LockFileEntry = {
+  /** Repository-relative, POSIX-spelled, control-character-free. */
   path: string;
+  /**
+   * The digest whose match proves the bytes are still ours. For a `whole` or
+   * `tree` file it is the whole file; for a `structured` file it is the
+   * canonical owned subset, because the rest of that file is the user's.
+   */
   sha256: string;
+  /** The byte length of the thing `sha256` describes. */
   size: number;
+  shape?: LockEntryShape | undefined;
+  /** The top-level keys this tool owns, for a `structured` file. */
+  ownedKeys?: string[] | undefined;
 };
 
 export type LockResource = {
@@ -40,7 +60,7 @@ export type LockResource = {
 export type LockPersona = {
   id: string;
   /** Present when the persona composes a base persona. */
-  extends?: string;
+  extends?: string | undefined;
   digest: string;
   permissionDigest: string;
   resources: LockResource[];
@@ -51,7 +71,7 @@ export type LockWarning = {
   severity: Severity;
   persona: string;
   target: string;
-  capability?: Capability;
+  capability?: Capability | undefined;
   message: string;
 };
 
@@ -62,6 +82,33 @@ export type RenderedFile = {
   /** Repository-relative path. */
   path: string;
   bytes: string;
+  /** The ownership shape, when it is not a whole file. */
+  shape?: LockEntryShape;
+  /** The owned top-level keys, for a `structured` file. */
+  ownedKeys?: string[];
+  /** The digest of the owned subset, for a `structured` file. */
+  ownedSha256?: string;
+  /** The byte length of the owned subset, for a `structured` file. */
+  ownedSize?: number;
+};
+
+/** The validated and normalised whole document. Every field the reader consumes is checked. */
+export type Lockfile = {
+  schemaVersion: typeof SCHEMA_VERSION;
+  product: { name: string; version: string };
+  target: string;
+  /** `agent` (every persona live) or `profile` (the active persona owns the workspace). */
+  mode: RenderMode;
+  /** The persona selected by `targets.<t>.active` or `--persona`; null in agent mode. */
+  activePersona: string | null;
+  renderer: { name: string; version: string; integrity?: string | undefined };
+  /** Digest of the config plus every persona and resource file. */
+  configDigest?: string | undefined;
+  personas: LockPersona[];
+  /** Personas resolved but not live. Empty in agent mode; absent in a legacy lockfile. */
+  notLive: string[];
+  files: LockFileEntry[];
+  warnings: LockWarning[];
 };
 
 const sha256Schema = z.string().regex(/^[0-9a-f]{64}$/, 'must be a lower-case SHA-256 hex digest');
@@ -90,24 +137,69 @@ const lockWarningSchema = z.strictObject({
   message: z.string().min(1),
 });
 
-const lockFileEntrySchema = z.strictObject({
-  path: z.string().min(1),
-  sha256: sha256Schema,
-  size: z.number().int().nonnegative(),
-});
+/**
+ * A managed path from a document a user could hand-edit. The reader is the
+ * boundary: a path with a control character, an absolute path, a backslash or a
+ * `..` segment is refused before it can reach a filesystem call or a terminal.
+ */
+function isSafeManagedPath(path: string): boolean {
+  return (
+    path.length > 0 &&
+    !hasControlCharacters(path) &&
+    !path.includes('\\') &&
+    !path.startsWith('/') &&
+    !path.split('/').includes('..') &&
+    path !== '.'
+  );
+}
+
+const managedPathSchema = z
+  .string()
+  .refine(isSafeManagedPath, 'must be a relative, escape-free, control-character-free path');
+
+const lockFileEntrySchema = z
+  .strictObject({
+    path: managedPathSchema,
+    sha256: sha256Schema,
+    size: z.number().int().nonnegative(),
+    shape: z.enum(['whole', 'tree', 'structured', 'region']).optional(),
+    ownedKeys: z.array(z.string().min(1)).optional(),
+  })
+  .superRefine((entry, context) => {
+    if (entry.shape === 'structured') {
+      if (entry.ownedKeys === undefined || entry.ownedKeys.length === 0) {
+        context.addIssue({
+          code: 'custom',
+          path: ['ownedKeys'],
+          message: 'a structured entry names the keys it owns',
+        });
+      }
+      return;
+    }
+    if (entry.ownedKeys !== undefined) {
+      context.addIssue({
+        code: 'custom',
+        path: ['ownedKeys'],
+        message: 'only a structured entry owns keys',
+      });
+    }
+  });
 
 /**
- * The whole document, not one field. `check` trusts these values, so a field
- * the reader does not validate is a field it would consume unchecked.
+ * The document as it may appear on disk. `mode` and `activePersona` are optional
+ * here so a lockfile written before profile mode existed still parses: treating
+ * a present-but-older lockfile as absent discarded the recorded path set, which
+ * skipped orphan removal and let a removed persona's artefacts stay live while
+ * `check` reported clean. A present document is either understood or refused
+ * with a typed error; it is never silently ignored.
  */
-export const lockfileSchema = z.strictObject({
+export const lockfileDocumentSchema = z.strictObject({
   schemaVersion: z.literal(SCHEMA_VERSION),
   product: z.strictObject({ name: z.string().min(1), version: z.string().min(1) }),
   target: z.string().min(1),
-  /** `agent` (every persona live) or `profile` (the active persona owns the workspace). */
-  mode: z.enum(RENDER_MODES),
+  mode: z.enum(RENDER_MODES).optional(),
   /** The persona selected by `targets.<t>.active` or `--persona`; null in agent mode. */
-  activePersona: z.string().min(1).nullable(),
+  activePersona: z.string().min(1).nullable().optional(),
   renderer: z.strictObject({
     name: z.string().min(1),
     version: z.string().min(1),
@@ -116,13 +208,12 @@ export const lockfileSchema = z.strictObject({
     // than silently treated as drift.
     integrity: z.string().min(1).optional(),
   }),
+  configDigest: sha256Schema.optional(),
   personas: z.array(lockPersonaSchema),
+  notLive: z.array(z.string().min(1)).optional(),
   files: z.array(lockFileEntrySchema),
   warnings: z.array(lockWarningSchema),
 });
-
-/** The validated whole document. Every field the reader consumes is checked. */
-export type Lockfile = z.infer<typeof lockfileSchema>;
 
 /**
  * Build the manifest of managed files. The composed persona records its base,
@@ -138,12 +229,19 @@ export type Lockfile = z.infer<typeof lockfileSchema>;
  * different lockfile bytes for the same source, and `check` reported drift for
  * a tree whose source had not changed. The command still reports it. The
  * lockfile does not list itself.
+ *
+ * A `structured` file records the digest and size of its owned subset, never of
+ * the whole file: the rest of that file is the user's, and recording it would
+ * make the lockfile depend on user content (two roots with the same source would
+ * no longer produce identical bytes, and a foreign-key edit would look like
+ * lockfile drift).
  */
 export function buildLockfile(
   source: ResolvedSource,
   renderer: LockfileRenderer,
   files: RenderedFile[],
   warnings: readonly Warning[],
+  derived: { configDigest: string; notLive: readonly string[] },
 ): Lockfile {
   const personas = source.personas
     .map((persona) => ({
@@ -166,13 +264,22 @@ export function buildLockfile(
     mode: source.mode,
     activePersona: source.active,
     renderer,
+    configDigest: derived.configDigest,
     personas,
+    notLive: [...derived.notLive].sort(compareCodepoints),
     files: files
-      .map((file) => ({
-        path: file.path,
-        sha256: sha256Hex(file.bytes),
-        size: Buffer.byteLength(file.bytes),
-      }))
+      .map((file) => {
+        const structured = file.shape === 'structured';
+        return {
+          path: file.path,
+          sha256: structured ? (file.ownedSha256 ?? sha256Hex(file.bytes)) : sha256Hex(file.bytes),
+          size: structured
+            ? (file.ownedSize ?? Buffer.byteLength(file.bytes))
+            : Buffer.byteLength(file.bytes),
+          ...(file.shape === undefined ? {} : { shape: file.shape }),
+          ...(file.ownedKeys === undefined ? {} : { ownedKeys: file.ownedKeys }),
+        };
+      })
       .sort((a, b) => compareCodepoints(a.path, b.path)),
     warnings: warnings.map((entry) => ({
       code: entry.code,
@@ -198,23 +305,60 @@ function errorCode(error: unknown): string | undefined {
     : undefined;
 }
 
-function parseLockfileBytes(bytes: Uint8Array): Lockfile | undefined {
+/**
+ * A present lockfile that cannot be understood. It is never reported as "no
+ * records": doing that made orphan removal a no-op and rewrote a lockfile that
+ * had forgotten every earlier path, while `check` called the tree clean.
+ */
+function malformedLockfile(detail: string): FarnaError {
+  return invalidConfig(`${LOCK_PATH} ${detail}`, {
+    subject: LOCK_PATH,
+    action:
+      'delete the lockfile and re-run generate; a lockfile is derived from the source and small',
+  });
+}
+
+function describeLockIssue(error: ZodError): string {
+  const issue = error.issues[0];
+  if (issue === undefined) {
+    return 'did not validate';
+  }
+  const pointer = issue.path.join('.');
+  return pointer === '' ? issue.message : `${pointer}: ${issue.message}`;
+}
+
+function parseLockfileBytes(bytes: Uint8Array): Lockfile {
   let text: string;
   try {
     text = decodeUtf8(bytes, LOCK_PATH);
   } catch {
-    // A lockfile that is not valid UTF-8 is drift, not a crash: the byte
-    // comparison reports it and there is no identity to trust.
-    return undefined;
+    throw malformedLockfile('is not valid UTF-8');
   }
   let value: unknown;
   try {
     value = JSON.parse(text);
   } catch {
-    return undefined;
+    throw malformedLockfile('is not valid JSON');
   }
-  const parsed = lockfileSchema.safeParse(value);
-  return parsed.success ? parsed.data : undefined;
+  const parsed = lockfileDocumentSchema.safeParse(value);
+  if (!parsed.success) {
+    throw malformedLockfile(`did not validate (${describeLockIssue(parsed.error)})`);
+  }
+  const document = parsed.data;
+  // A legacy lockfile has neither field: it was written when every target was
+  // in agent mode, so the honest normalisation is agent mode with no active
+  // persona. A document that names profile mode must name the persona.
+  const mode = document.mode ?? (document.activePersona != null ? MODE_PROFILE : MODE_AGENT);
+  const activePersona = mode === MODE_PROFILE ? (document.activePersona ?? null) : null;
+  if (mode === MODE_PROFILE && activePersona === null) {
+    throw malformedLockfile('records profile mode without an active persona');
+  }
+  return {
+    ...document,
+    mode,
+    activePersona,
+    notLive: [...(document.notLive ?? [])].sort(compareCodepoints),
+  };
 }
 
 /**
@@ -223,11 +367,12 @@ function parseLockfileBytes(bytes: Uint8Array): Lockfile | undefined {
  * be a real directory and the lockfile a real regular file of bounded size,
  * opened with `O_NOFOLLOW`.
  *
- * Returns `undefined` when the lockfile is missing, unreadable in a benign way,
- * or malformed; the byte comparison then reports drift. A symlink, a FIFO, a
- * device node or an oversized file is a typed F003 rather than a follow or a
- * hang. Any other filesystem failure is a typed F001 naming the repository
- * path, never a raw `EACCES`.
+ * Returns `undefined` only when the lockfile is absent. A lockfile that is
+ * present but unreadable, malformed, or of an incompatible version is a typed
+ * F001 naming `.farna/lock.json` and its recovery; it is never treated as "no
+ * records". A symlink, a FIFO, a device node or an oversized file is a typed
+ * F003 rather than a follow or a hang. Any other filesystem failure is a typed
+ * F001 naming the repository path, never a raw `EACCES`.
  */
 export async function readLockfile(repoRoot: string): Promise<Lockfile | undefined> {
   const subject = LOCK_PATH;
@@ -264,7 +409,8 @@ export async function readLockfile(repoRoot: string): Promise<Lockfile | undefin
     }
     throw invalidConfig(`cannot read ${subject}`, {
       subject,
-      action: 'make the lockfile readable and re-run check',
+      action:
+        'make the lockfile readable, or delete it and re-run generate; a lockfile is derived from the source',
       cause: error,
     });
   }
@@ -291,4 +437,12 @@ export async function readLockfile(repoRoot: string): Promise<Lockfile | undefin
   } finally {
     await handle.close();
   }
+}
+
+/** The lockfile entry recorded for one managed path, when there is one. */
+export function recordedEntry(
+  lockfile: Lockfile | undefined,
+  path: string,
+): LockFileEntry | undefined {
+  return lockfile?.files.find((file) => file.path === path);
 }
