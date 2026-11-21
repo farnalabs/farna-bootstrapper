@@ -62,7 +62,28 @@ async function loadRenderer(): Promise<RendererModule> {
   }
 }
 
-function assertPinned(identity: RendererIdentity): void {
+/**
+ * The identity an installed package is checked against. A global install has no
+ * npm lock record, so the compile-time pin stands in for the missing integrity
+ * only when the version matches. The pin is provenance, not a sandbox.
+ *
+ * @internal Exported so a test can prove the fallback without a global install;
+ * `UpstreamRenderTarget.identity()` is the production caller.
+ */
+export function resolvePinnedIdentity(installed: RendererIdentity): RendererIdentity {
+  return installed.integrity === undefined && installed.version === RENDERER_PIN.version
+    ? { ...installed, integrity: RENDERER_PIN.integrity }
+    : installed;
+}
+
+/**
+ * Refuse a renderer that is not the pinned one. The version check runs first, so
+ * a substituted pin can never make a different install pass.
+ *
+ * @internal Exported so a test can prove both outcomes; `render` is the
+ * production caller.
+ */
+export function assertPinned(identity: RendererIdentity): void {
   if (identity.version !== RENDERER_PIN.version) {
     throw rendererMismatch(
       `the installed ${identity.name} is ${identity.version} but this build pins ${RENDERER_PIN.version}`,
@@ -117,13 +138,7 @@ export class UpstreamRenderTarget implements RenderTarget {
 
   identity(): RendererIdentity {
     if (this.cachedIdentity === undefined) {
-      const installed = installedRendererIdentity(RENDERER_PIN.name);
-      // A global install has no npm lock record; fall back to the compiled-in
-      // pin only when the version matches. A version mismatch is still refused.
-      this.cachedIdentity =
-        installed.integrity === undefined && installed.version === RENDERER_PIN.version
-          ? { ...installed, integrity: RENDERER_PIN.integrity }
-          : installed;
+      this.cachedIdentity = resolvePinnedIdentity(installedRendererIdentity(RENDERER_PIN.name));
     }
     return { ...this.cachedIdentity };
   }

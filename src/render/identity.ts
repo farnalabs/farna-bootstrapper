@@ -1,6 +1,7 @@
-import { readFileSync } from 'node:fs';
+import { closeSync, constants, fstatSync, openSync, readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
+import { LOCKFILE_MAX_BYTES } from '../core/constants.js';
 import { rendererMismatch } from '../core/errors.js';
 import type { RendererIdentity } from './port.js';
 
@@ -14,14 +15,36 @@ const requireFromHere = createRequire(import.meta.url);
 
 type JsonObject = Record<string, unknown>;
 
+/**
+ * Read an npm lock record, bounded before any allocation. This is the one
+ * synchronous read of a repository-controlled path: the identity is resolved
+ * from a synchronous context, so it cannot use `readBoundedBytes`. A lockfile
+ * over `LOCKFILE_MAX_BYTES` is skipped exactly like an absent one, which
+ * makes the compile-time pin stand in for it. The read is best-effort: an
+ * absent file, a symlink, a FIFO or a parse failure also yields `undefined`,
+ * never a typed refusal, because this metadata is not the product's source.
+ */
 function readJson(path: string): JsonObject | undefined {
+  let fd: number | undefined;
   try {
-    const value: unknown = JSON.parse(readFileSync(path, 'utf8'));
+    fd = openSync(
+      path,
+      constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0),
+    );
+    const stats = fstatSync(fd);
+    if (!stats.isFile() || stats.size > LOCKFILE_MAX_BYTES) {
+      return undefined;
+    }
+    const value: unknown = JSON.parse(readFileSync(fd, 'utf8'));
     return value !== null && typeof value === 'object' && !Array.isArray(value)
       ? (value as JsonObject)
       : undefined;
   } catch {
     return undefined;
+  } finally {
+    if (fd !== undefined) {
+      closeSync(fd);
+    }
   }
 }
 
@@ -72,10 +95,14 @@ function integrityFromLock(lock: JsonObject | undefined, name: string): string |
 /**
  * npm records the tarball integrity in `node_modules/.package-lock.json`; a
  * project lockfile is the fallback for layouts that do not write the hidden
- * one. The result is best-effort: a missing integrity omits the field rather
- * than inventing a value.
+ * one. The result is best-effort: a missing or oversized integrity source omits
+ * the field rather than inventing a value, and the pinned target then uses its
+ * compile-time pin. Every read is bounded by `readJson`.
+ *
+ * @internal Exported so a test can prove the bound on an ancestor lockfile;
+ * callers use `installedRendererIdentity`.
  */
-function readIntegrity(packageDir: string, name: string): string | undefined {
+export function readRecordedIntegrity(packageDir: string, name: string): string | undefined {
   const hidden = readJson(join(dirname(packageDir), '.package-lock.json'));
   const fromHidden = integrityFromLock(hidden, name);
   if (fromHidden !== undefined) {
@@ -107,7 +134,7 @@ export function installedRendererIdentity(name: string): RendererIdentity {
       action: 're-install dependencies so the pinned renderer is present',
     });
   }
-  const integrity = readIntegrity(packageDir, name);
+  const integrity = readRecordedIntegrity(packageDir, name);
   return { name, version, ...(integrity === undefined ? {} : { integrity }) };
 }
 
@@ -115,8 +142,11 @@ export function installedRendererIdentity(name: string): RendererIdentity {
  * Compare the renderer recorded in the lockfile with the one that is installed.
  * A differing name or version always fails, and so does a missing integrity on
  * either side: the check never silently degrades to a version comparison. The
- * lockfile records the build's pin, so this compares the installed package
- * against that pin.
+ * pinned target substitutes the compile-time pin for a global install that
+ * recorded no npm integrity, so by the time this function runs a pinned renderer
+ * always carries an integrity; an undefined one here means neither the install
+ * nor a pin supplied it. The lockfile records the build's pin, so this compares
+ * the installed package against that pin.
  */
 export function verifyRendererIdentity(
   recorded: RendererIdentity,
