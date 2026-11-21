@@ -303,6 +303,12 @@ export function mapPermissions(
   // a partial set removes every tool it does not name. Only a resource that
   // explicitly opts in may narrow the persona to that list, and the narrowing
   // is reported.
+  //
+  // The effective flag is exactly what decides emission. An explicit opt-in
+  // whose categories all resolve deny/ask leaves no entry to list; emitting
+  // `tools: []` would remove every tool (a silent total lockdown), so the field
+  // is omitted and the no-effect case is reported as W113 rather than dropped
+  // silently. This same effective flag is what the persona's digest records.
   const allowlist = resolved.allowlist && allow.length > 0;
   if (allowlist) {
     warnings.push(
@@ -312,6 +318,24 @@ export function mapPermissions(
         target: context.target,
         capability: 'permission',
         message: `tools is an allow-list for ${context.target}: it lists ${allow.join(', ')} only, so every unmodelled tool (Glob, Grep, WebFetch, TodoWrite, NotebookEdit and others) is removed`,
+      }),
+    );
+  } else if (resolved.allowlist) {
+    const removed = PERMISSION_CATEGORIES.flatMap((category) => {
+      const declared = resolved.values[category];
+      return declared !== undefined && declared.value !== 'allow'
+        ? [`${category} (${declared.value} by permission/${declared.source})`]
+        : [];
+    });
+    const detail =
+      removed.length === 0 ? 'no category resolved allow' : `removed by ${removed.join(', ')}`;
+    warnings.push(
+      warning({
+        code: 'W113_ALLOW_LIST_NARROWS',
+        persona: context.persona,
+        target: context.target,
+        capability: 'permission',
+        message: `an allow-list was requested for ${context.target}, but ${detail}; tools is not emitted, so the opt-in has no effect`,
       }),
     );
   }
@@ -327,8 +351,14 @@ export function permissionResourceDigest(
   return sha256Hex(canonicalJson({ tools, patterns: patterns ?? {}, allowlist }));
 }
 
-/** The canonical digest input: resolved values and patterns, sorted. */
-export function permissionDigest(resolved: ResolvedPermissions): string {
+/**
+ * The canonical digest input: resolved values and patterns, sorted, plus the
+ * allow-list flag that actually decided emission. Passing the effective flag
+ * (never the raw opt-in) keeps the digest consistent with the artefact: an
+ * opt-in with nothing to allow emits no `tools`, so it must not change the
+ * digest either.
+ */
+export function permissionDigest(resolved: ResolvedPermissions, allowlist: boolean): string {
   const values: Record<string, string> = {};
   for (const category of PERMISSION_CATEGORIES) {
     const declared = resolved.values[category];
@@ -350,5 +380,5 @@ export function permissionDigest(resolved: ResolvedPermissions): string {
       patterns[category] = entry;
     }
   }
-  return sha256Hex(canonicalJson({ values, patterns, allowlist: resolved.allowlist }));
+  return sha256Hex(canonicalJson({ values, patterns, allowlist }));
 }

@@ -166,4 +166,60 @@ describe('check', () => {
       await outside.cleanup();
     }
   });
+
+  it('ignores OS metadata a desktop checkout writes into the managed directory', async () => {
+    const repo = await generatedRepo();
+    try {
+      for (const name of ['.DS_Store', 'Thumbs.db', 'desktop.ini']) {
+        await writeFile(join(repo.root, '.claude/agents', name), 'metadata', 'utf8');
+      }
+      const result = await runCheck(repo.root, new FakeRenderTarget());
+      expect(result.ok).toBe(true);
+      expect(result.drift).toEqual([]);
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
+  it('compares bytes, so an invalid byte that decodes to U+FFFD is drift and is repaired', async () => {
+    const repo = await createTempRepo();
+    try {
+      // A rule that legitimately contains U+FFFD puts its three UTF-8 bytes
+      // into the managed artefact.
+      const rulePath = join(repo.root, '.farna/resources/rules/house-style.md');
+      const rule = await readFile(rulePath, 'utf8');
+      await writeFile(rulePath, `${rule}\nFBS_SENTINEL \uFFFD\n`, 'utf8');
+      await runGenerate({ cwd: repo.root, dryRun: false }, new FakeRenderTarget());
+
+      const managed = join(repo.root, '.claude/agents/builder.md');
+      const expected = await readFile(managed);
+      const needle = Buffer.from('\uFFFD', 'utf8');
+      const at = expected.indexOf(needle);
+      expect(at).toBeGreaterThan(-1);
+      // Replace the valid U+FFFD with one invalid byte. A lossy UTF-8 decode
+      // turns it back into U+FFFD, so a text comparison would call this clean.
+      const tampered = Buffer.concat([
+        expected.subarray(0, at),
+        Buffer.from([0xe9]),
+        expected.subarray(at + needle.length),
+      ]);
+      await writeFile(managed, tampered);
+      expect(tampered.toString('utf8')).toBe(expected.toString('utf8'));
+
+      const check = await runCheck(repo.root, new FakeRenderTarget());
+      expect(check.ok).toBe(false);
+      expect(check.drift.map((item) => item.path)).toContain('.claude/agents/builder.md');
+
+      const regenerated = await runGenerate(
+        { cwd: repo.root, dryRun: false },
+        new FakeRenderTarget(),
+      );
+      expect(
+        regenerated.files.find((file) => file.path === '.claude/agents/builder.md')?.status,
+      ).toBe('written');
+      expect((await readFile(managed)).equals(expected)).toBe(true);
+    } finally {
+      await repo.cleanup();
+    }
+  });
 });

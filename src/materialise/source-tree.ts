@@ -26,12 +26,14 @@ export function personaBody(persona: ResolvedPersona): string {
 
 /**
  * Whether this persona's source form carries `tools`. The target reads it as an
- * allow-list, so it is emitted only when a permission resource opted in: a bare
+ * allow-list, so it is emitted only when a permission resource opted in AND at
+ * least one entry survived. `claude.allowlist` is that effective decision (see
+ * `mapPermissions`), so it is the one place the question is answered; a bare
  * `read: allow` must not silently remove Glob, Grep, WebFetch and every other
  * tool the product does not model.
  */
 export function emitsTools(persona: ResolvedPersona): boolean {
-  return persona.claude.allowlist && persona.claude.allow.length > 0;
+  return persona.claude.allowlist;
 }
 
 export type ClaudeBlock = {

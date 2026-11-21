@@ -192,7 +192,9 @@ describe('atomic generate', () => {
             // Staging writes go to `.farna-tmp-*` siblings; only the restore
             // of the first replaced managed file is made to fail.
             if (path.endsWith('.claude/agents/builder.md')) {
-              throw new Error('injected restore failure');
+              throw Object.assign(new Error('EACCES: permission denied, open /super/secret/path'), {
+                code: 'EACCES',
+              });
             }
             await writeFile(path, data, 'utf8');
           },
@@ -204,6 +206,11 @@ describe('atomic generate', () => {
       expect(failure?.code).toBe('F012_WRITE_FAILED');
       expect(failure?.message).toContain('1 earlier file(s) could NOT be restored');
       expect(failure?.message).toContain('.claude/agents/builder.md');
+      // The failure carries the filesystem code, never the absolute host path
+      // the platform error spelling contains.
+      expect(failure?.message).toContain('EACCES');
+      expect(failure?.message).not.toContain('/super/secret/path');
+      expect(failure?.message).not.toContain(repo.root);
       // The message is honest: the file really was left with the new bytes.
       expect(await readText(repo.root, '.claude/agents/builder.md')).toContain('CHANGED');
     } finally {
@@ -235,4 +242,41 @@ describe('atomic generate', () => {
       }
     },
   );
+
+  it('restores a replaced managed file byte for byte when it is not valid UTF-8', async () => {
+    const repo = await generatedRepo();
+    try {
+      const managed = join(repo.root, '.claude/agents/builder.md');
+      // A Latin-1 file is not valid UTF-8. A text round-trip would replace the
+      // 0xE9 byte with U+FFFD and write that back, corrupting the file it was
+      // supposed to restore.
+      const original = Buffer.from([0x23, 0x20, 0xe9, 0x0a]);
+      await writeFile(managed, original);
+
+      const prepared = await prepareRender(repo.root, new FakeRenderTarget());
+      const changed = prepared.files.map((file) =>
+        file.path.endsWith('.claude/agents/builder.md') ||
+        file.path.endsWith('.claude/agents/reviewer.md')
+          ? { ...file, bytes: `${file.bytes}CHANGED\n` }
+          : file,
+      );
+      let renames = 0;
+      await expect(
+        commitFiles(repo.root, changed, {
+          rename: async (from, to) => {
+            renames += 1;
+            if (renames === 2) {
+              throw new Error('injected rename failure');
+            }
+            await rename(from, to);
+          },
+        }),
+      ).rejects.toMatchObject({ code: 'F012_WRITE_FAILED' });
+
+      const restored = await readFile(managed);
+      expect(restored.equals(original)).toBe(true);
+    } finally {
+      await repo.cleanup();
+    }
+  });
 });

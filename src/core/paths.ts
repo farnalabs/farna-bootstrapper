@@ -1,6 +1,6 @@
 import type { Stats } from 'node:fs';
 import { lstat, realpath } from 'node:fs/promises';
-import { join, sep } from 'node:path';
+import { isAbsolute, join, relative } from 'node:path';
 import { invalidConfig, pathUnsafe } from './errors.js';
 import { inspectionFailed } from './fs.js';
 
@@ -10,6 +10,33 @@ import { inspectionFailed } from './fs.js';
  * points, because the product's contract is that the repository it describes
  * is the repository it reads and writes.
  */
+
+/** A path API, so the containment predicate is testable with Windows paths. */
+export type PathApi = {
+  relative: (from: string, to: string) => string;
+  isAbsolute: (path: string) => boolean;
+};
+
+/**
+ * True when `candidate` is `root` or lies inside it. Uses `relative` rather
+ * than string prefixes: on Windows the separator is `\`, and a prefix check
+ * cannot tell `C:\repo\other` from a child of `C:\repo`. The one predicate is
+ * shared by the stage cleanup and the managed-output walk.
+ */
+export function isPathInside(
+  root: string,
+  candidate: string,
+  api: PathApi = { relative, isAbsolute },
+): boolean {
+  const rel = api.relative(root, candidate);
+  if (rel === '') {
+    return true;
+  }
+  if (api.isAbsolute(rel)) {
+    return false;
+  }
+  return rel !== '..' && !rel.startsWith('../') && !rel.startsWith('..\\');
+}
 
 /**
  * `lstat` a path. A missing path is `undefined`; any other failure (a path that
@@ -74,8 +101,7 @@ export async function assertRealFile(path: string, subject: string): Promise<Sta
 }
 
 function assertInside(root: string, candidate: string, subject: string): void {
-  const prefix = root.endsWith(sep) ? root : `${root}${sep}`;
-  if (candidate !== root && !candidate.startsWith(prefix)) {
+  if (!isPathInside(root, candidate)) {
     throw pathUnsafe('path resolves outside the repository root', { subject });
   }
 }

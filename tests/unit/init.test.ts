@@ -1,4 +1,4 @@
-import { lstat, mkdir, readFile, rmdir, stat, symlink, writeFile } from 'node:fs/promises';
+import { chmod, lstat, mkdir, readFile, rmdir, stat, symlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { runInit, writeGitignore } from '../../src/cli/commands/init.js';
@@ -29,11 +29,21 @@ describe('init', () => {
       expect(await exists(join(repo.root, '.farna/resources'))).toBe(true);
 
       const files = await listFiles(repo.root);
-      expect(files).toEqual(['.farna/config.jsonc', '.gitignore']);
+      expect(files).toEqual(['.farna/config.jsonc', '.gitattributes', '.gitignore']);
 
       const gitignore = await readText(repo.root, '.gitignore');
       expect(gitignore).toContain('.farna/local.jsonc');
       expect(gitignore).toContain('.farna/.journal.json');
+      // OS metadata is ignored by the source loader, so it is ignored by git.
+      expect(gitignore).toContain('.DS_Store');
+      expect(gitignore).toContain('Thumbs.db');
+      expect(gitignore).toContain('desktop.ini');
+
+      // The consumer's own .gitattributes pins the two generated paths to LF;
+      // `check` compares bytes, so a CRLF checkout must not look like drift.
+      const attributes = await readText(repo.root, '.gitattributes');
+      expect(attributes).toContain('/.claude/agents/** text eol=lf');
+      expect(attributes).toContain('/.farna/lock.json text eol=lf');
       // The rename moved a file this run created, never a link it followed.
       expect((await lstat(join(repo.root, '.gitignore'))).isSymbolicLink()).toBe(false);
       expect(result.nextStep).toContain('farna-bootstrapper generate');
@@ -72,6 +82,9 @@ describe('init', () => {
         writeGitignore(join(repo.root, '.gitignore'), 'replacement\n', () => planted),
       ).rejects.toMatchObject({ code: 'F001_INVALID_CONFIG', subject: '.gitignore' });
 
+      // The failed create must not delete the object at the temporary name:
+      // this call did not create it, so it is not this call's to remove.
+      expect((await lstat(planted)).isSymbolicLink()).toBe(true);
       expect(await readFile(victim, 'utf8')).toBe('VICTIM ORIGINAL');
       expect((await lstat(join(repo.root, '.gitignore'))).isSymbolicLink()).toBe(false);
       expect(await readFile(join(repo.root, '.gitignore'), 'utf8')).toBe('keep-me\n');
@@ -193,4 +206,68 @@ describe('init', () => {
       await repo.cleanup();
     }
   });
+
+  it('appends ASCII lines to a non-UTF-8 .gitignore without rewriting its bytes', async () => {
+    const repo = await createEmptyTempDir();
+    try {
+      // 0xE9 is a lone Latin-1 byte: not valid UTF-8, and `readFile(...,'utf8')`
+      // would silently replace it with U+FFFD and write that back.
+      const original = Buffer.from([0x23, 0x20, 0xe9, 0x0a]);
+      await writeFile(join(repo.root, '.gitignore'), original);
+
+      const result = await runInit(repo.root);
+      const after = await readFile(join(repo.root, '.gitignore'));
+      expect(after.subarray(0, original.length).equals(original)).toBe(true);
+      expect(after.toString('latin1')).toContain('.farna/local.jsonc');
+      expect(after.toString('latin1')).toContain('.farna/.journal.json');
+      expect(result.updated).toContain('.gitignore');
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
+  it('appends the consumer patterns to an existing .gitattributes', async () => {
+    const repo = await createEmptyTempDir();
+    try {
+      await writeFile(join(repo.root, '.gitattributes'), '* text=auto\n', 'utf8');
+      const result = await runInit(repo.root);
+      const attributes = await readText(repo.root, '.gitattributes');
+      expect(attributes.startsWith('* text=auto\n')).toBe(true);
+      expect(attributes).toContain('/.claude/agents/** text eol=lf');
+      expect(attributes).toContain('/.farna/lock.json text eol=lf');
+      expect(result.updated).toContain('.gitattributes');
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
+  it.skipIf(process.platform === 'win32')(
+    'preserves the existing .gitignore mode instead of making it 0600',
+    async () => {
+      const repo = await createEmptyTempDir();
+      try {
+        await writeFile(join(repo.root, '.gitignore'), 'node_modules/\n', 'utf8');
+        await chmod(join(repo.root, '.gitignore'), 0o640);
+        await runInit(repo.root);
+        expect((await stat(join(repo.root, '.gitignore'))).mode & 0o777).toBe(0o640);
+      } finally {
+        await repo.cleanup();
+      }
+    },
+  );
+
+  it.skipIf(process.platform === 'win32')(
+    'creates a new .gitignore with the umask mode, not a private 0600',
+    async () => {
+      const repo = await createEmptyTempDir();
+      try {
+        await runInit(repo.root);
+        expect((await stat(join(repo.root, '.gitignore'))).mode & 0o777).toBe(
+          0o666 & ~process.umask(),
+        );
+      } finally {
+        await repo.cleanup();
+      }
+    },
+  );
 });

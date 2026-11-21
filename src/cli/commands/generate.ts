@@ -34,10 +34,15 @@ export async function runGenerate(
     for (const file of prepared.files) {
       // The same containment and type checks the write path makes: dry-run
       // must not read a plan through a symlinked or non-directory ancestor.
+      // Compare bytes: decoded text can collapse an invalid byte and a genuine
+      // U+FFFD to the same string, reporting "unchanged" for a file that needs
+      // repair.
       const current = await inspectManagedTarget(options.cwd, file.path);
+      const matches =
+        current.existing !== undefined && current.existing.equals(Buffer.from(file.bytes, 'utf8'));
       files.push({
         path: file.path,
-        status: current.existing === file.bytes ? 'unchanged' : 'would-write',
+        status: matches ? 'unchanged' : 'would-write',
       });
     }
     return {

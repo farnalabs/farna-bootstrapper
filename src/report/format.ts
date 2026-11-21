@@ -19,17 +19,28 @@ export function formatInit(result: InitResult): string {
   for (const path of result.created) {
     lines.push(`  + ${path}`);
   }
+  for (const path of result.updated) {
+    lines.push(`  ~ ${path}`);
+  }
   lines.push('', result.nextStep);
   return `${lines.join('\n')}\n`;
 }
 
 export function formatGenerate(result: GenerateResult): string {
-  const action = result.dryRun ? 'would write' : 'managed';
+  const pending = result.files.filter(
+    (file) => file.status === 'would-write' || file.status === 'written',
+  ).length;
+  const unchanged = result.files.length - pending;
+  // A dry-run says how many files it WOULD write, never the size of the plan:
+  // "would write 3 file(s)" when every file already matches is a false claim.
+  const summary = result.dryRun
+    ? `would write ${pending} file(s), ${unchanged} unchanged`
+    : `managed ${pending} file(s), ${unchanged} unchanged`;
   const lines = [
     'farna-bootstrapper generate',
     `  target ${result.target} (agent mode)`,
     `  personas ${result.personas.join(', ')}`,
-    `  ${action} ${result.files.length} file(s)`,
+    `  ${summary}`,
   ];
   for (const file of result.files) {
     lines.push(`  ${file.status.padEnd(10)} ${file.path}`);

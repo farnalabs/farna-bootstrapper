@@ -307,7 +307,7 @@ function resolveOne(
     ...(model === undefined ? {} : { model }),
     path: persona.path,
     digest,
-    permissionDigest: permissionDigest(permissions),
+    permissionDigest: permissionDigest(permissions, mapped.allowlist),
     warnings: sortWarnings(warnings),
   };
 }

@@ -2,7 +2,9 @@ import { execFile } from 'node:child_process';
 import { appendFile, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
-import { beforeAll, describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it, vi } from 'vitest';
+import { buildProgram } from '../../src/cli/program.js';
+import { FakeRenderTarget } from '../support/fake-renderer.js';
 import { createTempRepo, type TempRepo } from '../support/temp-repo.js';
 
 const execFileAsync = promisify(execFile);
@@ -205,6 +207,32 @@ describe('the built CLI', () => {
         code: 'F011_PERMISSION_UNMAPPED',
       });
     } finally {
+      await repo.cleanup();
+    }
+  });
+
+  it('exits 4 for an F008 containment failure', async () => {
+    const repo = await createTempRepo();
+    const originalExit = process.exitCode;
+    const stderr = vi
+      .spyOn(process.stderr, 'write')
+      .mockImplementation((() => true) as typeof process.stderr.write);
+    try {
+      const program = buildProgram({
+        cwd: repo.root,
+        renderer: new FakeRenderTarget({ kind: 'drop-body', persona: 'builder' }),
+        stdout: () => undefined,
+        argv: ['node', 'farna-bootstrapper', 'generate'],
+      });
+      await program.parseAsync(['node', 'farna-bootstrapper', 'generate']);
+      // F008 has its own exit code (4) and no longer borrows drift's 1.
+      expect(process.exitCode).toBe(4);
+      expect(stderr.mock.calls.map((call) => String(call[0])).join('')).toContain(
+        'F008_DECLARED_NOT_EMITTED',
+      );
+    } finally {
+      stderr.mockRestore();
+      process.exitCode = originalExit;
       await repo.cleanup();
     }
   });
