@@ -69,6 +69,12 @@ describe('the built CLI', () => {
     await execFileAsync(NPM, ['run', 'build'], { cwd: ROOT, timeout: 180_000 });
   }, 180_000);
 
+  it('documents the supported OpenCode major in --help', async () => {
+    const result = await runCli(ROOT, ['--help']);
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain('OpenCode 2.x');
+  });
+
   it('generates cleanly and emits the success envelope on stdout', async () => {
     const repo = await createTempRepo('composed');
     try {

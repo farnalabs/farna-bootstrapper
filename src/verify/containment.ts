@@ -442,21 +442,14 @@ async function verifyCommand(
   const path = `${OPENCODE_COMMANDS_DIR}/${command.id}.md`;
   const text = await readManagedFile(join(outputRoot, path), path);
   const parsed = parseEmittedAgent(text, path);
-  const expectedKeys = new Set(command.description === undefined ? [] : ['description']);
   const actualKeys = new Set(Object.keys(parsed.frontmatter));
-  if (
-    actualKeys.size !== expectedKeys.size ||
-    [...expectedKeys].some((key) => !actualKeys.has(key))
-  ) {
+  if (actualKeys.size !== 1 || !actualKeys.has('description')) {
     throw declaredNotEmitted(
-      `command "${command.id}" frontmatter carries ${describe(Object.keys(parsed.frontmatter))}, which the resource does not declare`,
+      `command "${command.id}" frontmatter carries ${describe(Object.keys(parsed.frontmatter))}, but a command declares exactly description`,
       { subject: path },
     );
   }
-  if (
-    command.description !== undefined &&
-    parsed.frontmatter['description'] !== command.description
-  ) {
+  if (parsed.frontmatter['description'] !== command.description) {
     throw declaredNotEmitted(
       `command "${command.id}" description differs from the declared description`,
       {

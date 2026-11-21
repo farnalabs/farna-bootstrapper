@@ -1,7 +1,7 @@
 import type { Config } from '../config/schema.js';
 import {
-  BOUNDARY_CAPABILITIES,
   MAX_EXTENDS_DEPTH,
+  OPENCODE_TARGET,
   OPENCODE_WORKSPACE_KINDS,
   SUPPORTED_RESOURCE_KINDS,
   SUPPORTED_TARGETS,
@@ -33,6 +33,9 @@ import type {
   SkillResource,
   SourceTree,
 } from '../source/load.js';
+
+/** The persona field a source-derived warning carries when no persona declared it. */
+const SOURCE_WARNING_SUBJECT = '<source>';
 
 export type ResolvedRule = {
   kind: 'rule';
@@ -325,36 +328,6 @@ function sortResources(resources: ResolvedResource[]): ResolvedResource[] {
   });
 }
 
-function severityOfDropped(capability: string): 'high' | 'medium' {
-  return (BOUNDARY_CAPABILITIES as readonly string[]).includes(capability) ? 'high' : 'medium';
-}
-
-/**
- * The warning every OpenCode workspace resource emits. OpenCode configures MCP
- * servers, skills, commands and hooks at the workspace level, so the resource is
- * emitted once for every persona rather than scoped to the one that declared it.
- */
-function workspaceWarning(
-  kind: 'mcp' | 'skill' | 'command' | 'hook',
-  id: string,
-  persona: string,
-): Warning {
-  const reasons: Record<'mcp' | 'skill' | 'command' | 'hook', string> = {
-    mcp: 'OpenCode configures MCP servers at the workspace level, not per agent',
-    skill: 'OpenCode carries skills at the workspace level only',
-    command: 'OpenCode carries commands at the workspace level only',
-    hook: 'OpenCode carries hooks at the workspace level only, as a generated plugin',
-  };
-  return warning({
-    code: 'W101_CAPABILITY_DROPPED',
-    persona,
-    target: 'opencode',
-    capability: kind,
-    severity: severityOfDropped(kind),
-    message: `${kind}/${id} is applied to the whole OpenCode workspace, not to persona ${persona} alone: ${reasons[kind]}`,
-  });
-}
-
 /**
  * Why OpenCode cannot carry this hook, or `undefined` when it can. Measured at
  * rulesync 43.11.0: `session-end` has no OpenCode event, and a matcher is
@@ -409,6 +382,23 @@ function resolveOne(
     for (const ref of contributor.resources) {
       assertSupportedRef(contributor, ref, target);
       const { kind, id } = splitRef(ref);
+      // OpenCode carries these four at the workspace level only. In agent mode
+      // there is no per-recipient record, no opt-out and no honest warning: a
+      // workspace emission gives every persona the declarer's resource. The
+      // design requires profile mode for them, so agent mode refuses rather
+      // than pretending the capability was scoped to one persona.
+      if (
+        target === OPENCODE_TARGET &&
+        (OPENCODE_WORKSPACE_KINDS as readonly string[]).includes(kind)
+      ) {
+        throw invalidConfig(
+          `${kind}/${id} is declared by persona ${contributor.id} and requires profile mode`,
+          {
+            subject: contributor.path,
+            action: `${OPENCODE_TARGET} carries ${kind} at the workspace level, not per agent; remove the reference until profile mode is available`,
+          },
+        );
+      }
       const key = `${kind}/${id}`;
       const repeated = seenRefs.has(key);
       seenRefs.add(key);
@@ -538,26 +528,6 @@ function resolveOne(
         : { ...hook, carried: false, reason };
     });
 
-  for (const resource of [...resolvedMcp, ...resolvedSkills, ...resolvedCommands]) {
-    warnings.push(workspaceWarning(resource.kind, resource.id, persona.id));
-  }
-  for (const hook of resolvedHooks) {
-    if (hook.carried) {
-      warnings.push(workspaceWarning('hook', hook.id, persona.id));
-      continue;
-    }
-    warnings.push(
-      warning({
-        code: 'W101_CAPABILITY_DROPPED',
-        persona: persona.id,
-        target: 'opencode',
-        capability: 'hook',
-        severity: severityOfDropped('hook'),
-        message: `hook/${hook.id} cannot be carried for persona ${persona.id} on OpenCode: ${hook.reason ?? 'unsupported'}; it is not emitted`,
-      }),
-    );
-  }
-
   const mapped =
     target === 'claudecode'
       ? mapPermissions(permissions, { persona: persona.id, target })
@@ -645,6 +615,15 @@ function unionAcrossPersonas<T extends { id: string; sha256: string }>(
  */
 export function resolveSource(source: SourceTree, config: Config): ResolvedSource {
   const target = configuredTarget(config);
+  const sourceWarnings = source.warnings.map((entry) =>
+    warning({
+      code: entry.code,
+      persona: SOURCE_WARNING_SUBJECT,
+      target,
+      ...(entry.capability === undefined ? {} : { capability: entry.capability }),
+      message: entry.message,
+    }),
+  );
   const byId = new Map(source.personas.map((persona) => [persona.id, persona]));
   const byKind = {
     rules: new Map(source.rules.map((rule) => [rule.id, rule])),
@@ -664,6 +643,6 @@ export function resolveSource(source: SourceTree, config: Config): ResolvedSourc
     skills: unionAcrossPersonas('skill', personas, (persona) => persona.skills),
     commands: unionAcrossPersonas('command', personas, (persona) => persona.commands),
     hooks: unionAcrossPersonas('hook', personas, (persona) => persona.hooks),
-    warnings: sortWarnings(personas.flatMap((persona) => persona.warnings)),
+    warnings: sortWarnings([...sourceWarnings, ...personas.flatMap((persona) => persona.warnings)]),
   };
 }

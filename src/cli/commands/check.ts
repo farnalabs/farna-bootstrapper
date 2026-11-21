@@ -11,6 +11,7 @@ import {
   MANAGED_FILE_MAX_BYTES,
   OPENCODE_AGENTS_DIR,
   OPENCODE_COMMANDS_DIR,
+  OPENCODE_CONFIG_FILE,
   OPENCODE_DIR,
   OPENCODE_PLUGINS_DIR,
   OPENCODE_SKILLS_DIR,
@@ -156,13 +157,27 @@ async function listOpencodeEntries(repoRoot: string): Promise<AgentEntry[]> {
   return entries.sort((a, b) => compareCodepoints(a.path, b.path));
 }
 
+/**
+ * The on-disk scan, plus the root workspace file. `opencode.jsonc` is a real
+ * managed target but lives outside every scanned directory, so without this a
+ * stale file left by a removed MCP declaration was invisible to `check`.
+ */
 async function listManagedEntries(
   repoRoot: string,
   target: SupportedTarget,
 ): Promise<AgentEntry[]> {
-  return target === 'opencode'
-    ? await listOpencodeEntries(repoRoot)
-    : await listAgentEntries(repoRoot);
+  if (target !== 'opencode') {
+    return await listAgentEntries(repoRoot);
+  }
+  const entries = await listOpencodeEntries(repoRoot);
+  const rootStats = await lstatOrUndefined(
+    join(repoRoot, OPENCODE_CONFIG_FILE),
+    OPENCODE_CONFIG_FILE,
+  );
+  if (rootStats !== undefined) {
+    entries.push({ path: OPENCODE_CONFIG_FILE, regular: rootStats.isFile() });
+  }
+  return entries.sort((a, b) => compareCodepoints(a.path, b.path));
 }
 
 /**
@@ -222,17 +237,36 @@ export async function runCheck(repoRoot: string, renderer: RenderTarget): Promis
   }
 
   const expected = new Set(prepared.files.map((file) => file.path));
+  // The scan covers managed directories and the root workspace file; the
+  // committed lockfile covers every path a previous run recorded. A recorded
+  // path the current source no longer produces is drift, whether or not it is
+  // still on disk: removing the last MCP declaration must not leave a live
+  // config that `check` calls clean.
+  const recorded = new Set(lockfile?.files.map((file) => file.path) ?? []);
+  const candidates = new Map<string, AgentEntry>();
   for (const entry of await listManagedEntries(repoRoot, prepared.source.target)) {
-    if (!expected.has(entry.path)) {
-      drift.push({
-        code: DRIFT_CODE,
-        path: entry.path,
-        kind: 'unexpected',
-        detail: entry.regular
+    candidates.set(entry.path, entry);
+  }
+  for (const path of recorded) {
+    if (!candidates.has(path)) {
+      candidates.set(path, { path, regular: true });
+    }
+  }
+  for (const entry of candidates.values()) {
+    if (expected.has(entry.path)) {
+      continue;
+    }
+    const wasRecorded = recorded.has(entry.path);
+    drift.push({
+      code: DRIFT_CODE,
+      path: entry.path,
+      kind: 'unexpected',
+      detail: wasRecorded
+        ? 'path is recorded in the lockfile but no longer produced by this source'
+        : entry.regular
           ? 'path is not recorded as managed output'
           : 'path is not a regular managed file',
-      });
-    }
+    });
   }
 
   drift.sort((a, b) => compareCodepoints(a.path, b.path));

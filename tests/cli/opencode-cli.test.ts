@@ -50,30 +50,25 @@ describe('the built CLI on the opencode target', () => {
     await execFileAsync(NPM, ['run', 'build'], { cwd: ROOT, timeout: 180_000 });
   }, 180_000);
 
-  it('generates the OpenCode artefacts and reports the workspace warnings', async () => {
+  it('refuses a workspace resource in agent mode with a typed F001', async () => {
     const repo = await createTempRepo('opencode');
     try {
+      await appendFile(join(repo.root, '.farna/personas/builder.yaml'), '  - mcp/scan\n', 'utf8');
       const result = await runCli(repo.root, ['generate', '--json']);
-      expect(result.code).toBe(0);
-      expect(result.stderr).toBe('');
+      expect(result.code).toBe(1);
       const body = parseObject(result.stdout);
       expect(body).toMatchObject({
         schemaVersion: 1,
         command: 'generate',
-        ok: true,
-        exitCode: 0,
-        target: 'opencode',
-        dryRun: false,
+        ok: false,
+        exitCode: 1,
+        code: 'F001_INVALID_CONFIG',
+        subject: '.farna/personas/builder.yaml',
       });
-      const files = arrayOf<{ path: string; status: string }>(body, 'files');
-      expect(files.map((file) => file.path)).toContain('opencode.jsonc');
-      expect(files.map((file) => file.path)).toContain('.opencode/agents/builder.md');
-      const warnings = arrayOf<{ code: string; capability?: string; message: string }>(
-        body,
-        'warnings',
-      );
-      expect(warnings.map((entry) => entry.code)).toContain('W101_CAPABILITY_DROPPED');
-      expect(warnings.some((entry) => entry.message.includes('session-audit'))).toBe(true);
+      expect(String(body['message'])).toContain('mcp/scan');
+      expect(String(body['message'])).toContain('builder');
+      expect(String(body['message'])).toContain('requires profile mode');
+      expect(result.stderr).toContain('requires profile mode');
     } finally {
       await repo.cleanup();
     }
@@ -112,9 +107,10 @@ describe('the built CLI on the opencode target', () => {
       expect(result.code).toBe(0);
       const body = parseObject(result.stdout);
       expect(body).toMatchObject({ dryRun: true, target: 'opencode' });
-      const files = arrayOf<{ status: string }>(body, 'files');
+      const files = arrayOf<{ path: string; status: string }>(body, 'files');
       expect(files.length).toBeGreaterThan(0);
       expect(files.every((file) => file.status === 'would-write')).toBe(true);
+      expect(files.some((file) => file.path === 'opencode.jsonc')).toBe(false);
       await expect(readFileOrUndefined(join(repo.root, 'opencode.jsonc'))).resolves.toBeUndefined();
     } finally {
       await repo.cleanup();

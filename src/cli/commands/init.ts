@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdir, open, rename, rm, rmdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import {
+  COMMAND_FILE_EXT,
   COMMANDS_DIR,
   CONFIG_FILE,
   DEFAULT_TARGET,
@@ -10,6 +11,7 @@ import {
   HOOKS_DIR,
   MANAGED_FILE_MAX_BYTES,
   MCP_DIR,
+  OPENCODE_SUPPORTED_MAJOR,
   PERMISSION_FILE_EXT,
   PERMISSIONS_DIR,
   PERSONA_FILE_EXT,
@@ -20,8 +22,10 @@ import {
   RULE_FILE_EXT,
   RULES_DIR,
   SCHEMA_VERSION,
+  SKILL_FILE_NAME,
   SKILLS_DIR,
   STAGING_INFIX,
+  STRUCTURED_RESOURCE_FILE_EXT,
 } from '../../core/constants.js';
 import { FarnaError, invalidConfig } from '../../core/errors.js';
 import { describeFsError, readBoundedBytes } from '../../core/fs.js';
@@ -366,6 +370,6 @@ export async function runInit(repoRoot: string): Promise<InitResult> {
       `${ROOT_DIR}/${RESOURCES_DIR}/${HOOKS_DIR}/`,
     ],
     updated: [...updated],
-    nextStep: `Add personas to ${ROOT_DIR}/${PERSONAS_DIR}/*${PERSONA_FILE_EXT}, rules to ${ROOT_DIR}/${RESOURCES_DIR}/${RULES_DIR}/*${RULE_FILE_EXT} and permissions to ${ROOT_DIR}/${RESOURCES_DIR}/${PERMISSIONS_DIR}/*${PERMISSION_FILE_EXT}, then run "${PRODUCT_NAME} generate".`,
+    nextStep: `Add personas to ${ROOT_DIR}/${PERSONAS_DIR}/*${PERSONA_FILE_EXT}, rules to ${ROOT_DIR}/${RESOURCES_DIR}/${RULES_DIR}/*${RULE_FILE_EXT}, permissions to ${ROOT_DIR}/${RESOURCES_DIR}/${PERMISSIONS_DIR}/*${PERMISSION_FILE_EXT}, MCP servers to ${ROOT_DIR}/${RESOURCES_DIR}/${MCP_DIR}/*${STRUCTURED_RESOURCE_FILE_EXT}, skills to ${ROOT_DIR}/${RESOURCES_DIR}/${SKILLS_DIR}/<id>/${SKILL_FILE_NAME}, commands to ${ROOT_DIR}/${RESOURCES_DIR}/${COMMANDS_DIR}/*${COMMAND_FILE_EXT} and hooks to ${ROOT_DIR}/${RESOURCES_DIR}/${HOOKS_DIR}/*${STRUCTURED_RESOURCE_FILE_EXT}, then run "${PRODUCT_NAME} generate". The OpenCode target supports OpenCode ${OPENCODE_SUPPORTED_MAJOR}.x only.`,
   };
 }

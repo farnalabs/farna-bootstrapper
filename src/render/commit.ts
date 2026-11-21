@@ -164,9 +164,7 @@ export async function commitFiles(
   const statuses: CommitResult['statuses'] = planned.map((item) => ({
     path: item.path,
     status:
-      item.existing !== undefined && item.existing.equals(Buffer.from(item.bytes, 'utf8'))
-        ? 'unchanged'
-        : 'written',
+      item.existing?.equals(Buffer.from(item.bytes, 'utf8')) === true ? 'unchanged' : 'written',
   }));
   const writes = planned.filter(
     (item) => item.existing === undefined || !item.existing.equals(Buffer.from(item.bytes, 'utf8')),

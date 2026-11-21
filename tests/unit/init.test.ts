@@ -47,6 +47,19 @@ describe('init', () => {
       // The rename moved a file this run created, never a link it followed.
       expect((await lstat(join(repo.root, '.gitignore'))).isSymbolicLink()).toBe(false);
       expect(result.nextStep).toContain('farna-bootstrapper generate');
+      // The hint names all six resource kinds and the supported OpenCode major,
+      // so an author is not left guessing which directory holds a declaration.
+      for (const fragment of [
+        '.farna/resources/rules/',
+        '.farna/resources/permissions/',
+        '.farna/resources/mcp/',
+        '.farna/resources/skills/',
+        '.farna/resources/commands/',
+        '.farna/resources/hooks/',
+      ]) {
+        expect(result.nextStep).toContain(fragment);
+      }
+      expect(result.nextStep).toContain('OpenCode 2.x');
     } finally {
       await repo.cleanup();
     }
