@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { runCheck } from '../../src/cli/commands/check.js';
 import { runGenerate } from '../../src/cli/commands/generate.js';
+import { LOCKFILE_MAX_BYTES } from '../../src/core/constants.js';
 import { readLockfile } from '../../src/lock/lockfile.js';
 import { readRecordedIntegrity } from '../../src/render/identity.js';
 import type { RendererIdentity } from '../../src/render/port.js';
@@ -258,21 +259,48 @@ describe('the bounded npm integrity read', () => {
     }
   });
 
-  it('skips a lockfile over 4 MiB instead of allocating it, so the pin is used', async () => {
-    // 5 MiB of valid JSON whose integrity differs from the pin. Without the
-    // bound this read consumed the whole file and returned the differing
-    // integrity; with it the read is skipped and the pinned target will use
-    // the compile-time pin.
+  it('refuses a lockfile over 4 MiB instead of falling back to the pin', async () => {
+    // 5 MiB of valid JSON whose integrity differs from the pin. The record is
+    // PRESENT, so it must be refused: skipping it would turn a differing
+    // integrity into a pass through the compile-time pin. Only a missing
+    // record may fall back (see the no-record test below).
     const oversized = JSON.stringify({
       packages: { 'node_modules/rulesync': { integrity: 'sha512-DIFFERENT-NOT-THE-PIN' } },
       padding: 'x'.repeat(5 * 1024 * 1024),
     });
-    expect(Buffer.byteLength(oversized)).toBeGreaterThan(4 * 1024 * 1024);
+    expect(Buffer.byteLength(oversized)).toBeGreaterThan(LOCKFILE_MAX_BYTES);
     const root = await layout(oversized);
     try {
       const packageDir = join(root, 'node_modules', 'rulesync');
+      let refusal: unknown;
+      let message = '';
+      try {
+        readRecordedIntegrity(packageDir, 'rulesync');
+      } catch (error) {
+        refusal = error;
+        message = error instanceof Error ? error.message : '';
+      }
+      expect(refusal).toMatchObject({
+        code: 'F010_RENDERER_MISMATCH',
+        exitCode: 5,
+        subject: join(root, 'package-lock.json'),
+      });
+      expect(message).toContain(`${Buffer.byteLength(oversized)} bytes`);
+      expect(message).toContain(`${LOCKFILE_MAX_BYTES}-byte bound`);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('returns no integrity when no lock record exists, so the pin stands in', async () => {
+    // The genuine global-install case: there is no record at all. This is the
+    // only fallback the pin may cover; an existing-but-unreadable record is
+    // refused (above).
+    const root = await mkdtemp(join(tmpdir(), 'fbs-integrity-none-'));
+    const packageDir = join(root, 'node_modules', 'rulesync');
+    try {
+      await mkdir(packageDir, { recursive: true });
       expect(readRecordedIntegrity(packageDir, 'rulesync')).toBeUndefined();
-      // The fallback the caller then takes is the pin, not a refusal.
       const resolved = resolvePinnedIdentity({
         name: RENDERER_PIN.name,
         version: RENDERER_PIN.version,
