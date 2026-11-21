@@ -1,3 +1,4 @@
+import { applyEdits, type FormattingOptions, modify } from 'jsonc-parser';
 import { OPENCODE_CONFIG_FILE } from '../core/constants.js';
 import { invalidConfig } from '../core/errors.js';
 import { canonicalJson, canonicalJsonFile, parseJsonc, sha256Hex } from '../core/json.js';
@@ -58,29 +59,40 @@ export function structuredOwnedDigest(
 }
 
 /**
- * Merge the generated document into the user's: every owned key is replaced by
- * the generated value, and every other key keeps the value the user gave it.
- * Key order outside our keys is preserved by value, not by byte, which is the
- * design's honest rule (`ownership.md` section 5): we preserve values, not
- * whitespace.
+ * The JavaScript format jsonc-parser uses when it has to insert or replace a
+ * value. Every byte it does not touch is preserved, so the user's comments,
+ * blank lines, key order and whitespace survive a merge.
  */
-export function mergeStructured(
-  existing: Record<string, unknown> | undefined,
-  generated: Record<string, unknown>,
-  ownedKeys: readonly string[],
-): Record<string, unknown> {
-  const merged: Record<string, unknown> = { ...(existing ?? {}) };
-  for (const key of ownedKeys) {
-    if (Object.hasOwn(generated, key)) {
-      merged[key] = generated[key];
-    }
-  }
-  return merged;
-}
+const INSERT_FORMAT: FormattingOptions = { insertSpaces: true, tabSize: 2, eol: '\n' };
 
-/** The canonical bytes for a merged structured document. */
-export function serialiseStructured(document: Record<string, unknown>): string {
-  return canonicalJsonFile(document);
+/**
+ * Merge the generated document into the user's **in place**: set every owned
+ * key the generated document carries, delete every owned key it does not.
+ *
+ * This is a byte-preserving edit, not a parse/re-serialise round trip. The
+ * previous implementation rebuilt the whole document, which destroyed every
+ * comment and silently reformatted the user's keys; a merge must only touch the
+ * bytes of the keys it owns.
+ */
+export function mergeStructuredText(
+  existingText: string,
+  generatedText: string,
+  ownedKeys: readonly string[],
+  subject: string,
+): string {
+  // Parse both first: a document that is not a JSON object is refused before
+  // any edit is assembled, so a malformed generated file never reaches the disk.
+  parseStructuredDocument(existingText, subject);
+  const generated = parseStructuredDocument(generatedText, subject);
+  let text = existingText;
+  for (const key of ownedKeys) {
+    const value = Object.hasOwn(generated, key) ? generated[key] : undefined;
+    // `undefined` is jsonc-parser's delete instruction: removing the last MCP
+    // declaration deletes the owned key instead of leaving a stale one behind.
+    const edits = modify(text, [key], value, { formattingOptions: INSERT_FORMAT });
+    text = applyEdits(text, edits);
+  }
+  return text;
 }
 
 /** The canonical JSON of the owned subset, for an equality comparison. */

@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { appendFile } from 'node:fs/promises';
+import { appendFile, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { beforeAll, describe, expect, it } from 'vitest';
@@ -133,6 +133,73 @@ describe('the built CLI on the opencode target', () => {
     }
   }, 120_000);
 
+  it('uses the drift code at the top level while keeping per-item codes in the array', async () => {
+    const repo = await createTempRepo('profile');
+    try {
+      const generated = await runCli(repo.root, ['generate', '--persona', 'builder', '--json']);
+      expect(generated.code).toBe(0);
+
+      // A W107 item (inside our own skill directory) sorts before the drifted
+      // `opencode.jsonc`, so it is drift[0] without being the run's failure kind.
+      await writeFile(
+        join(repo.root, '.opencode/skills/secure-review/scripts/a-extra.sh'),
+        'echo extra\n',
+        'utf8',
+      );
+      const configPath = join(repo.root, 'opencode.jsonc');
+      const document = JSON.parse(await readFile(configPath, 'utf8')) as {
+        mcp: { servers: Record<string, unknown> };
+      };
+      document.mcp.servers['scan'] = { type: 'local', command: ['npx', 'different'] };
+      await writeFile(configPath, `${JSON.stringify(document, null, 2)}\n`, 'utf8');
+
+      const result = await runCli(repo.root, ['check', '--persona', 'builder', '--json']);
+      expect(result.code).toBe(1);
+      const body = parseObject(result.stdout);
+      expect(body['code']).toBe('F007_DRIFT');
+      const drift = arrayOf<{ code: string; path: string }>(body, 'drift');
+      expect(drift[0]).toMatchObject({
+        code: 'W107_OUTSIDE_OWNERSHIP',
+        path: '.opencode/skills/secure-review/scripts/a-extra.sh',
+      });
+      expect(drift.some((item) => item.code === 'F007_DRIFT')).toBe(true);
+    } finally {
+      await repo.cleanup();
+    }
+  }, 120_000);
+
+  it('requires --adopt to take over existing outputs and reports what it adopted', async () => {
+    const repo = await createTempRepo('profile');
+    try {
+      const userConfig = '// mine\n{\n  "theme": "dark"\n}\n';
+      await writeFile(join(repo.root, 'opencode.jsonc'), userConfig, 'utf8');
+
+      const refused = await runCli(repo.root, ['generate', '--persona', 'builder', '--json']);
+      expect(refused.code).toBe(1);
+      const failure = parseObject(refused.stdout);
+      expect(failure).toMatchObject({ ok: false, code: 'F007_DRIFT' });
+      expect(String(failure['message'])).toContain('.farna/lock.json is missing');
+      expect(String(failure['message'])).toContain('opencode.jsonc');
+
+      const adopted = await runCli(repo.root, [
+        'generate',
+        '--persona',
+        'builder',
+        '--adopt',
+        '--json',
+      ]);
+      expect(adopted.code).toBe(0);
+      const body = parseObject(adopted.stdout);
+      expect(arrayOf<string>(body, 'adopted')).toContain('opencode.jsonc');
+      const after = await readFile(join(repo.root, 'opencode.jsonc'), 'utf8');
+      expect(after).toContain('// mine');
+      expect(after).toContain('"theme": "dark"');
+      expect(after).toContain('"scan"');
+    } finally {
+      await repo.cleanup();
+    }
+  }, 120_000);
+
   it('documents profile mode and --persona in help', async () => {
     const root = await runCli(ROOT, ['--help']);
     expect(root.code).toBe(0);
@@ -140,6 +207,7 @@ describe('the built CLI on the opencode target', () => {
     const generate = await runCli(ROOT, ['generate', '--help']);
     expect(generate.code).toBe(0);
     expect(generate.stdout).toContain('--persona');
+    expect(generate.stdout).toContain('--adopt');
   }, 120_000);
 
   it('dry-runs without writing and reports the plan', async () => {

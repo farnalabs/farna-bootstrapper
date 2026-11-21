@@ -269,15 +269,28 @@ export function buildLockfile(
     notLive: [...derived.notLive].sort(compareCodepoints),
     files: files
       .map((file) => {
-        const structured = file.shape === 'structured';
+        // A `structured` entry must name the keys it owns; the reader refuses
+        // one with an empty `ownedKeys`. A file that declares the shape but owns
+        // no key (the generated document has none of them) is recorded whole
+        // instead, so everything this builder produces reads back. Any other
+        // shape is carried through unchanged.
+        const ownedStructured =
+          file.shape === 'structured' && file.ownedKeys !== undefined && file.ownedKeys.length > 0;
+        const shape: LockEntryShape | undefined = ownedStructured
+          ? 'structured'
+          : file.shape === 'structured'
+            ? undefined
+            : file.shape;
         return {
           path: file.path,
-          sha256: structured ? (file.ownedSha256 ?? sha256Hex(file.bytes)) : sha256Hex(file.bytes),
-          size: structured
+          sha256: ownedStructured
+            ? (file.ownedSha256 ?? sha256Hex(file.bytes))
+            : sha256Hex(file.bytes),
+          size: ownedStructured
             ? (file.ownedSize ?? Buffer.byteLength(file.bytes))
             : Buffer.byteLength(file.bytes),
-          ...(file.shape === undefined ? {} : { shape: file.shape }),
-          ...(file.ownedKeys === undefined ? {} : { ownedKeys: file.ownedKeys }),
+          ...(shape === undefined ? {} : { shape }),
+          ...(ownedStructured && file.ownedKeys !== undefined ? { ownedKeys: file.ownedKeys } : {}),
         };
       })
       .sort((a, b) => compareCodepoints(a.path, b.path)),

@@ -17,7 +17,7 @@ import { readLockfile } from '../../lock/lockfile.js';
 import { verifyRendererIdentity } from '../../render/identity.js';
 import type { RenderTarget } from '../../render/port.js';
 import { prepareRender } from '../../render/prepare.js';
-import { findSkillTreeExtras, findStaleRenders } from '../../render/root-cleanliness.js';
+import { findSkillTreeExtras } from '../../render/root-cleanliness.js';
 import {
   canonicalOwnedSubset,
   parseStructuredDocument,
@@ -62,22 +62,25 @@ const NOT_A_FILE_DETAIL = 'managed path is not a regular file';
  * Regenerate into a disposable stage and compare the result with the working
  * tree. Never writes. Exit 0 when identical, 1 when anything drifted.
  *
+ * Ownership is explicit, never inferred from a file name. When `.farna/lock.json`
+ * is absent and a planned managed output already exists, there is no record of
+ * what this tool wrote, so `check` refuses with the same `F007` and the action
+ * `run generate --adopt`. `check` never adopts.
+ *
  * Drift is scoped to what this tool owns: every path in the fresh plan (a
  * missing or changed managed file) and every path the committed lockfile
  * records (an output the source no longer produces). An unrecorded file in a
- * managed directory or at the repository root belongs to the user and is never
- * reported *unless it is a plausible prior render* (see below), so a repository
- * may legitimately keep its own `opencode.jsonc` or its own
- * `.opencode/commands/custom.md`.
+ * managed directory or at the repository root belongs to the user and is not
+ * reported, so a repository may legitimately keep its own `opencode.jsonc` or
+ * its own `.opencode/commands/custom.md`.
  *
  * A `structured` file (`opencode.jsonc`) is compared by its owned keys only: a
- * user's `theme` or `$schema` is theirs, so editing it is not drift; editing the
- * `mcp` value this tool wrote is.
+ * user's `theme`, `$schema` or comment is theirs, so editing it is not drift;
+ * editing the `mcp` value this tool wrote is.
  *
- * Root cleanliness (profile mode): a path a declared persona or resource could
- * have produced, that is neither planned nor recorded, is a plausible prior
- * render and is reported as `W107_OUTSIDE_OWNERSHIP` without being deleted. The
- * same code reports an extra file inside a skill tree this tool owns.
+ * The one unrecorded path `check` does report is an extra file inside a skill
+ * directory this tool owns (recorded or planned), as `W107_OUTSIDE_OWNERSHIP`.
+ * It is reported and never deleted.
  *
  * The source root is validated before the lockfile is read, so a broken source
  * tree is reported as itself rather than after a lockfile read. The renderer
@@ -100,6 +103,33 @@ export async function runCheck(
   const prepared = await prepareRender(repoRoot, renderer, {
     ...(options.persona === undefined ? {} : { persona: options.persona }),
   });
+  if (lockfile === undefined) {
+    // With no record, an existing planned output could be this tool's earlier
+    // render or the user's file. `check` cannot tell, so it refuses and asks for
+    // the explicit adoption `generate --adopt` performs.
+    const existing: string[] = [];
+    for (const file of prepared.files) {
+      if (file.path === LOCK_PATH) {
+        continue;
+      }
+      const absolute = await containedTarget(repoRoot, file.path);
+      if ((await lstatOrUndefined(absolute, file.path)) !== undefined) {
+        existing.push(file.path);
+      }
+    }
+    if (existing.length > 0) {
+      existing.sort(compareCodepoints);
+      throw new FarnaError(
+        DRIFT_CODE,
+        `refusing to check: ${LOCK_PATH} is missing but ${existing.length} managed output(s) from this plan already exist (${existing.join(', ')})`,
+        {
+          ...(existing[0] === undefined ? {} : { subject: existing[0] }),
+          action:
+            'run generate --adopt to take ownership of every existing managed output; check never adopts',
+        },
+      );
+    }
+  }
   const drift: DriftItem[] = [];
 
   // A source change that renders no different byte — an edit to a persona that
@@ -208,21 +238,6 @@ export async function runCheck(
 
   if (prepared.source.mode === MODE_PROFILE) {
     const recordedEntries = lockfile?.files ?? [];
-    for (const stale of await findStaleRenders(
-      repoRoot,
-      prepared.declaredPaths,
-      expected,
-      recorded,
-    )) {
-      drift.push({
-        code: OUTSIDE_OWNERSHIP_CODE,
-        path: stale.path,
-        kind: 'unexpected',
-        detail: stale.symbolicLink
-          ? 'a symbolic link is present where a prior render would be; the lockfile does not record it'
-          : 'a plausible prior render is present but the lockfile does not record it',
-      });
-    }
     for (const extra of await findSkillTreeExtras(repoRoot, expected, recordedEntries)) {
       drift.push({
         code: OUTSIDE_OWNERSHIP_CODE,

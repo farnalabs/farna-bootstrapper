@@ -1,4 +1,4 @@
-import { LOCK_PATH, MODE_PROFILE, type RenderMode } from '../../core/constants.js';
+import { LOCK_PATH, type RenderMode } from '../../core/constants.js';
 import { driftRefused, FarnaError } from '../../core/errors.js';
 import { decodeUtf8 } from '../../core/fs.js';
 import { compareCodepoints } from '../../core/json.js';
@@ -14,13 +14,7 @@ import { withGenerateLock } from '../../render/generate-lock.js';
 import { planOrphans, removeOrphans } from '../../render/orphans.js';
 import type { RenderTarget } from '../../render/port.js';
 import { type PreparedRender, prepareRender } from '../../render/prepare.js';
-import { findStaleRenders } from '../../render/root-cleanliness.js';
-import {
-  mergeStructured,
-  parseStructuredDocument,
-  serialiseStructured,
-  structuredOwnedKeys,
-} from '../../render/structured.js';
+import { mergeStructuredText, structuredOwnedKeys } from '../../render/structured.js';
 import type { Warning } from '../../report/warnings.js';
 
 export type GenerateOptions = {
@@ -28,6 +22,12 @@ export type GenerateOptions = {
   dryRun: boolean;
   /** The `--persona` override. It selects profile mode and wins over the config. */
   persona?: string;
+  /**
+   * Take ownership of every existing planned managed output. Required when the
+   * lockfile is absent and a planned output exists: without it the tool cannot
+   * tell its own render from a file the user wrote.
+   */
+  adopt?: boolean;
   /**
    * The filesystem seam the commit uses. Production never sets it; a failure
    * test injects a rename or write failure to prove the recovery path.
@@ -45,6 +45,8 @@ export type GenerateResult = {
   /** Personas resolved but not live. Empty in agent mode. */
   notLive: string[];
   dryRun: boolean;
+  /** Paths taken over by `--adopt` (or, in a dry run, that would be). */
+  adopted: string[];
   personas: string[];
   files: Array<{ path: string; status: FileStatus | 'would-write' }>;
   /** Recorded paths this run no longer produces, removed (or planned on a dry run). */
@@ -74,97 +76,111 @@ async function recordedState(cwd: string): Promise<RecordedState> {
   };
 }
 
+/** The planned managed outputs that already exist on disk. */
+function existingOutputs(
+  files: PreparedRender['files'],
+  inspected: Map<string, ManagedTarget>,
+): string[] {
+  return files
+    .filter((file) => file.path !== LOCK_PATH)
+    .filter((file) => inspected.get(file.path)?.existing !== undefined)
+    .map((file) => file.path)
+    .sort(compareCodepoints);
+}
+
 /**
- * Refuse an existing path this tool cannot prove it owns, unless its bytes are
- * exactly what this run would write.
- *
- * An unrecorded path is adoptable when it already holds the fresh render: that
- * is the recovery path after a deleted lockfile, where the outputs are this
- * tool's own and only the record was lost. Rewriting the lockfile records them
- * again. An unrecorded path that differs is refused (F007), because taking it
- * over would destroy bytes this tool did not write.
+ * A missing lockfile with outputs already on disk is not proof of ownership.
+ * The tool cannot tell its own earlier render from a file the user wrote, so it
+ * refuses and asks for an explicit `--adopt` rather than guessing from names.
  */
+function lockfileMissing(existing: readonly string[]): FarnaError {
+  return driftRefused(
+    `refusing to continue: ${LOCK_PATH} is missing but ${existing.length} managed output(s) from this plan already exist (${existing.join(', ')})`,
+    {
+      ...(existing[0] === undefined ? {} : { subject: existing[0] }),
+      action:
+        'run generate --adopt to take ownership of every existing managed output; a file not in the plan is never adopted or removed',
+    },
+  );
+}
+
+/** Resolve every planned target to its current bytes, or `undefined` when absent. */
 async function inspectPlan(
   cwd: string,
   files: PreparedRender['files'],
-  recorded: Set<string>,
 ): Promise<Map<string, ManagedTarget>> {
   const inspected = new Map<string, ManagedTarget>();
   for (const file of files) {
-    const current = await inspectManagedTarget(cwd, file.path);
-    if (current.existing !== undefined && !recorded.has(file.path)) {
-      if (!current.existing.equals(Buffer.from(file.bytes, 'utf8'))) {
-        throw driftRefused(
-          `refusing to overwrite ${file.path}: it exists but is not recorded in the committed lockfile and its bytes differ from a fresh render`,
-          {
-            subject: file.path,
-            action:
-              'move the managed outputs aside, or remove them deliberately, then re-run generate',
-          },
-        );
-      }
-    }
-    inspected.set(file.path, current);
+    inspected.set(file.path, await inspectManagedTarget(cwd, file.path));
   }
   return inspected;
 }
 
 /**
- * The bytes this run will write for a structured file: the generated document
- * merged into the user's, preserving every key this tool does not own.
+ * Refuse an unrecorded path this tool cannot prove it owns, unless its bytes are
+ * exactly what this run would write or the caller explicitly adopted it.
  *
- * The merge is only for a file the lockfile records. An unrecorded file that
- * already exists was checked by `inspectPlan` and is either byte-identical (the
- * recovery path) or refused, so this function never takes one over.
+ * An unrecorded path is adoptable when it already holds the fresh render: that
+ * is the recovery path after a deleted lockfile, where the outputs are this
+ * tool's own and only the record was lost. An unrecorded path that differs is
+ * refused (F007) unless `--adopt` was passed, because taking it over would
+ * destroy bytes this tool did not write.
+ */
+function assertOwnership(
+  files: PreparedRender['files'],
+  inspected: Map<string, ManagedTarget>,
+  recorded: Set<string>,
+  adopt: boolean,
+): void {
+  if (adopt) {
+    return;
+  }
+  for (const file of files) {
+    const current = inspected.get(file.path)?.existing;
+    if (current === undefined || recorded.has(file.path)) {
+      continue;
+    }
+    if (!current.equals(Buffer.from(file.bytes, 'utf8'))) {
+      throw driftRefused(
+        `refusing to overwrite ${file.path}: it exists but is not recorded in the committed lockfile and its bytes differ from a fresh render`,
+        {
+          subject: file.path,
+          action:
+            'run generate --adopt to take ownership of the existing managed output, or move it aside deliberately',
+        },
+      );
+    }
+  }
+}
+
+/**
+ * The bytes this run will write for a structured file: the owned keys merged
+ * into the user's document **in place**, preserving every other byte including
+ * comments and whitespace.
+ *
+ * The merge applies to a path in the committed lockfile and, with `--adopt`, to
+ * an existing planned file the lockfile does not record. Any other file is
+ * either absent (the fresh render is written) or was refused by
+ * `assertOwnership`.
  */
 function mergeStructuredFiles(
   files: PreparedRender['files'],
   inspected: Map<string, ManagedTarget>,
   recorded: Set<string>,
+  adopt: boolean,
 ): Array<{ path: string; bytes: string }> {
   return files.map((file) => {
     const ownedKeys = structuredOwnedKeys(file.path);
     const existing = inspected.get(file.path)?.existing;
-    if (ownedKeys === undefined || existing === undefined || !recorded.has(file.path)) {
+    const owned = recorded.has(file.path) || adopt;
+    if (ownedKeys === undefined || existing === undefined || !owned) {
       return { path: file.path, bytes: file.bytes };
     }
-    const existingDocument = parseStructuredDocument(decodeUtf8(existing, file.path), file.path);
-    const generatedDocument = parseStructuredDocument(file.bytes, file.path);
     return {
       path: file.path,
-      bytes: serialiseStructured(mergeStructured(existingDocument, generatedDocument, ownedKeys)),
+      bytes: mergeStructuredText(decodeUtf8(existing, file.path), file.bytes, ownedKeys, file.path),
     };
   });
-}
-
-/**
- * In profile mode, a file a declared persona or resource could have produced,
- * that is neither in the plan nor recorded, is a plausible prior render: a
- * persona switched while the lockfile was lost, or output from an older
- * version. `generate` refuses rather than overwriting or ignoring it.
- */
-async function assertNoStaleRenders(
-  cwd: string,
-  prepared: PreparedRender,
-  recorded: Set<string>,
-): Promise<void> {
-  if (prepared.source.mode !== MODE_PROFILE) {
-    return;
-  }
-  const planned = new Set(prepared.files.map((file) => file.path));
-  const stale = await findStaleRenders(cwd, prepared.declaredPaths, planned, recorded);
-  if (stale.length === 0) {
-    return;
-  }
-  const names = stale.map((entry) => entry.path).join(', ');
-  throw driftRefused(
-    `refusing to generate: ${stale.length} path(s) look like an earlier render but the lockfile does not record them: ${names}`,
-    {
-      ...(stale[0] === undefined ? {} : { subject: stale[0].path }),
-      action:
-        'remove those paths deliberately, then re-run generate; the lockfile records what this tool wrote',
-    },
-  );
 }
 
 /**
@@ -195,15 +211,16 @@ function commitFailure(error: unknown, removed: readonly string[]): unknown {
  * working tree so the plan distinguishes `unchanged` from `would-write`.
  *
  * The whole read → plan → remove → commit sequence runs under an exclusive
- * `.farna/.generate.lock`, so two concurrent runs cannot each plan from the same
- * lockfile and delete each other's output.
+ * `.farna/.generate.lock` directory, so two concurrent runs cannot each plan
+ * from the same lockfile and delete each other's output.
  *
- * Before anything is written, every managed target that already exists must be
- * either recorded in the committed lockfile or byte-identical to the fresh
- * render. Without that check `generate` would take over a user's
- * `opencode.jsonc` (or any other file whose name matches a managed path) merely
- * because it happened to exist. `F007_DRIFT` is the refusal: the path is not
- * this run's output and rewriting it would lose content.
+ * Ownership is explicit, never inferred from a file name. When the lockfile is
+ * absent and a planned output already exists, this refuses (`F007`) and names
+ * `generate --adopt`; `check` refuses the same tree and never adopts. With
+ * `--adopt` every existing planned managed output is taken over: `opencode.jsonc`
+ * keeps the user's other keys (only the owned `mcp` key is merged), every other
+ * planned file is overwritten with the fresh render, and the lockfile records
+ * the result. A file not in the plan is neither adopted nor removed.
  *
  * A recorded path the new plan no longer produces is an orphan (a persona
  * switch, a removed resource). It is preflighted with the same rigour and
@@ -218,19 +235,23 @@ export async function runGenerate(
   options: GenerateOptions,
   renderer: RenderTarget,
 ): Promise<GenerateResult> {
+  const adopt = options.adopt === true;
   return await withGenerateLock(options.cwd, async () => {
     const prepared = await prepareRender(options.cwd, renderer, {
       ...(options.persona === undefined ? {} : { persona: options.persona }),
     });
     const personas = prepared.source.personas.map((persona) => persona.id);
     const recorded = await recordedState(options.cwd);
-    // The stale-render refusal runs first: it names the earlier persona's
-    // artefacts, which is the actionable answer when the lockfile is lost.
-    await assertNoStaleRenders(options.cwd, prepared, recorded.paths);
-    const inspected = await inspectPlan(options.cwd, prepared.files, recorded.paths);
+    const inspected = await inspectPlan(options.cwd, prepared.files);
+    const existing = existingOutputs(prepared.files, inspected);
+    if (recorded.lockfile === undefined && existing.length > 0 && !adopt) {
+      throw lockfileMissing(existing);
+    }
+    assertOwnership(prepared.files, inspected, recorded.paths, adopt);
+    const adopted = existing.filter((path) => !recorded.paths.has(path));
     const expected = new Set(prepared.files.map((file) => file.path));
     const orphans = await planOrphans(options.cwd, recorded.entries, expected);
-    const planned = mergeStructuredFiles(prepared.files, inspected, recorded.paths);
+    const planned = mergeStructuredFiles(prepared.files, inspected, recorded.paths, adopt);
 
     if (options.dryRun) {
       const files: GenerateResult['files'] = [];
@@ -238,8 +259,8 @@ export async function runGenerate(
         // Compare bytes: decoded text can collapse an invalid byte and a genuine
         // U+FFFD to the same string, reporting "unchanged" for a file that needs
         // repair.
-        const existing = inspected.get(file.path)?.existing;
-        const matches = existing?.equals(Buffer.from(file.bytes, 'utf8')) === true;
+        const current = inspected.get(file.path)?.existing;
+        const matches = current?.equals(Buffer.from(file.bytes, 'utf8')) === true;
         files.push({
           path: file.path,
           status: matches ? 'unchanged' : 'would-write',
@@ -252,6 +273,7 @@ export async function runGenerate(
         activePersona: prepared.source.active,
         notLive: prepared.source.notLive,
         dryRun: true,
+        adopted,
         personas,
         files,
         removed: orphans.map((entry) => ({
@@ -279,6 +301,7 @@ export async function runGenerate(
       activePersona: prepared.source.active,
       notLive: prepared.source.notLive,
       dryRun: false,
+      adopted,
       personas,
       files: committed.statuses,
       removed: removed.sort((a, b) => compareCodepoints(a.path, b.path)),

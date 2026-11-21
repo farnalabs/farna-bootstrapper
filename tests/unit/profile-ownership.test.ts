@@ -1,4 +1,4 @@
-import { appendFile, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { appendFile, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { runCheck } from '../../src/cli/commands/check.js';
@@ -6,13 +6,15 @@ import { runGenerate } from '../../src/cli/commands/generate.js';
 import { runInit } from '../../src/cli/commands/init.js';
 import { OUTSIDE_OWNERSHIP_CODE } from '../../src/core/constants.js';
 import { FarnaError } from '../../src/core/errors.js';
+import { parseJsonc } from '../../src/core/json.js';
+import { stagingName } from '../../src/render/staging.js';
+import { mergeStructuredText } from '../../src/render/structured.js';
 import { UpstreamRenderTarget } from '../../src/render/upstream.js';
 import { formatCheck, formatGenerate } from '../../src/report/format.js';
 import {
   createEmptyTempDir,
   createTempRepo,
   hashTree,
-  listFiles,
   readText,
   type TempRepo,
 } from '../support/temp-repo.js';
@@ -34,49 +36,44 @@ async function setActive(repo: TempRepo, persona: string): Promise<void> {
 }
 
 async function jsonOf(repo: TempRepo, path: string): Promise<Record<string, unknown>> {
-  return JSON.parse(await readText(repo.root, path)) as Record<string, unknown>;
+  return parseJsonc<Record<string, unknown>>(await readText(repo.root, path), { subject: path });
 }
 
 describe('structured ownership of opencode.jsonc', () => {
-  it('preserves a user key across generate and check, and is not drift', async () => {
+  it("preserves the user's comments, whitespace and foreign keys across generate", async () => {
     const repo = await generated();
     try {
-      const document = await jsonOf(repo, 'opencode.jsonc');
-      document['theme'] = 'dark';
-      document['instructions'] = ['AGENTS.md'];
-      document['$schema'] = 'https://example.test/opencode.schema.json';
-      await writeFile(
-        join(repo.root, 'opencode.jsonc'),
-        `${JSON.stringify(document, null, 2)}\n`,
-        'utf8',
-      );
+      const merged = await readText(repo.root, 'opencode.jsonc');
+      const withComments = [
+        "// the user's own header comment",
+        '{',
+        '  // their theme, their comment',
+        '  "theme": "dark",',
+        '  "instructions": ["AGENTS.md"],',
+        '  "$schema": "https://example.test/opencode.schema.json",',
+        `  "mcp": ${JSON.stringify(JSON.parse(merged)['mcp'], null, 2).replaceAll('\n', '\n  ')}`,
+        '}',
+        '',
+      ].join('\n');
+      await writeFile(join(repo.root, 'opencode.jsonc'), withComments, 'utf8');
 
       const foreignEdit = await runCheck(repo.root, new UpstreamRenderTarget());
       expect(foreignEdit.drift).toEqual([]);
       expect(foreignEdit.ok).toBe(true);
 
-      // We preserve the user's values, not their whitespace: the first merge
-      // canonicalises the document (sorted keys), so it is a write. The next
-      // run is byte-stable.
       const again = await runGenerate(
         { cwd: repo.root, dryRun: false },
         new UpstreamRenderTarget(),
       );
-      expect(again.files.find((file) => file.path === 'opencode.jsonc')?.status).toBe('written');
-      const merged = await jsonOf(repo, 'opencode.jsonc');
-      expect(merged['theme']).toBe('dark');
-      expect(merged['instructions']).toEqual(['AGENTS.md']);
-      expect(merged['$schema']).toBe('https://example.test/opencode.schema.json');
-      expect(merged['mcp']).toEqual(document['mcp']);
+      expect(again.files.find((file) => file.path === 'opencode.jsonc')?.status).toBe('unchanged');
+      const after = await readText(repo.root, 'opencode.jsonc');
+      expect(after).toBe(withComments);
+      expect(after).toContain("// the user's own header comment");
+      expect(after).toContain('// their theme, their comment');
+      expect((await jsonOf(repo, 'opencode.jsonc'))['theme']).toBe('dark');
 
       const clean = await runCheck(repo.root, new UpstreamRenderTarget());
       expect(clean.ok).toBe(true);
-
-      const third = await runGenerate(
-        { cwd: repo.root, dryRun: false },
-        new UpstreamRenderTarget(),
-      );
-      expect(third.files.find((file) => file.path === 'opencode.jsonc')?.status).toBe('unchanged');
     } finally {
       await repo.cleanup();
     }
@@ -110,13 +107,30 @@ describe('structured ownership of opencode.jsonc', () => {
     }
   });
 
-  it('never takes over an unrecorded user file that carries no owned key', async () => {
+  it('deletes the owned key in place when the generated document has no mcp', () => {
+    const existing = '// keep me\n{\n  "theme": "dark",\n  "mcp": { "servers": {} }\n}\n';
+    const merged = mergeStructuredText(existing, '{}\n', ['mcp'], 'opencode.jsonc');
+    expect(parseJsonc<Record<string, unknown>>(merged, { subject: 'merged' })).toEqual({
+      theme: 'dark',
+    });
+    expect(merged).toContain('// keep me');
+    expect(merged).not.toContain('"mcp"');
+  });
+
+  it('adopts a user opencode.jsonc only with --adopt, merging the owned key', async () => {
     const repo = await createTempRepo('profile');
     try {
-      const userConfig = `${JSON.stringify({ theme: 'dark' }, null, 2)}\n`;
+      const userConfig = [
+        '// user header',
+        '{',
+        '  "theme": "dark",',
+        '  "mcp": { "servers": { "user": { "type": "local" } } }',
+        '}',
+        '',
+      ].join('\n');
       await writeFile(join(repo.root, 'opencode.jsonc'), userConfig, 'utf8');
-      const before = await hashTree(repo.root);
 
+      // Without a lockfile the tool refuses and names the outputs, not the bytes.
       let failure: FarnaError | undefined;
       try {
         await runGenerate({ cwd: repo.root, dryRun: false }, new UpstreamRenderTarget());
@@ -124,10 +138,65 @@ describe('structured ownership of opencode.jsonc', () => {
         failure = error as FarnaError;
       }
       expect(failure?.code).toBe('F007_DRIFT');
-      expect(failure?.subject).toBe('opencode.jsonc');
-      expect(failure?.message).toContain('not recorded in the committed lockfile');
+      expect(failure?.message).toContain('is missing');
+      expect(failure?.message).toContain('opencode.jsonc');
+      expect(failure?.action).toContain('run generate --adopt');
       expect(await readText(repo.root, 'opencode.jsonc')).toBe(userConfig);
+
+      const adopted = await runGenerate(
+        { cwd: repo.root, dryRun: false, adopt: true },
+        new UpstreamRenderTarget(),
+      );
+      expect(adopted.ok).toBe(true);
+      expect(adopted.adopted).toContain('opencode.jsonc');
+      const after = await readText(repo.root, 'opencode.jsonc');
+      expect(after).toContain('// user header');
+      const document = parseJsonc<Record<string, unknown>>(after, { subject: 'opencode.jsonc' });
+      expect(document['theme']).toBe('dark');
+      // The owned key is replaced by the fresh render; the user's server is gone
+      // because it was inside the key this tool owns.
+      expect((document['mcp'] as { servers: Record<string, unknown> }).servers).toHaveProperty(
+        'scan',
+      );
+      const check = await runCheck(repo.root, new UpstreamRenderTarget());
+      expect(check.ok).toBe(true);
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
+  it('refuses a differing owned key without --adopt, and keeps the file', async () => {
+    const repo = await generated();
+    try {
+      await rm(join(repo.root, '.farna/lock.json'));
+      const text = await readText(repo.root, 'opencode.jsonc');
+      const document = JSON.parse(text) as Record<string, unknown>;
+      (
+        document['mcp'] as { servers: Record<string, { command?: string[]; type?: string }> }
+      ).servers['scan'] = {
+        command: ['npx', '-y', 'a-different-server'],
+        type: 'local',
+      };
+      const edited = `${JSON.stringify(document, null, 2)}\n`;
+      await writeFile(join(repo.root, 'opencode.jsonc'), edited, 'utf8');
+      const before = await hashTree(repo.root);
+
+      await expect(
+        runGenerate({ cwd: repo.root, dryRun: false }, new UpstreamRenderTarget()),
+      ).rejects.toMatchObject({
+        code: 'F007_DRIFT',
+        action: expect.stringContaining('run generate --adopt'),
+      });
+      expect(await readText(repo.root, 'opencode.jsonc')).toBe(edited);
       expect(await hashTree(repo.root)).toBe(before);
+
+      const adopted = await runGenerate(
+        { cwd: repo.root, dryRun: false, adopt: true },
+        new UpstreamRenderTarget(),
+      );
+      expect(adopted.ok).toBe(true);
+      const check = await runCheck(repo.root, new UpstreamRenderTarget());
+      expect(check.ok).toBe(true);
     } finally {
       await repo.cleanup();
     }
@@ -161,32 +230,34 @@ describe('structured ownership of opencode.jsonc', () => {
   });
 });
 
-describe('profile root cleanliness', () => {
-  it('reports the previous persona artefacts after the lockfile is lost', async () => {
+describe('a missing lockfile', () => {
+  it('refuses check with the drift code, naming the outputs and the adopt action', async () => {
     const repo = await generated();
     try {
       await rm(join(repo.root, '.farna/lock.json'));
-      await setActive(repo, 'reviewer');
-
-      const check = await runCheck(repo.root, new UpstreamRenderTarget());
-      expect(check.ok).toBe(false);
-      const outside = check.drift
-        .filter((item) => item.code === OUTSIDE_OWNERSHIP_CODE)
-        .map((item) => item.path);
-      expect(outside).toEqual([
-        '.opencode/agents/builder.md',
-        '.opencode/commands/pytest.md',
-        '.opencode/plugins/rulesync-hooks.js',
-        '.opencode/skills/secure-review/SKILL.md',
-        '.opencode/skills/secure-review/scripts/check.sh',
-      ]);
-      for (const item of check.drift.filter((entry) => entry.code === OUTSIDE_OWNERSHIP_CODE)) {
-        expect(item.detail).toBe(
-          'a plausible prior render is present but the lockfile does not record it',
-        );
+      const before = await hashTree(repo.root);
+      let failure: FarnaError | undefined;
+      try {
+        await runCheck(repo.root, new UpstreamRenderTarget());
+      } catch (error) {
+        failure = error as FarnaError;
       }
+      expect(failure?.code).toBe('F007_DRIFT');
+      expect(failure?.exitCode).toBe(1);
+      expect(failure?.message).toContain('.farna/lock.json is missing');
+      expect(failure?.message).toContain('.opencode/agents/builder.md');
+      expect(failure?.action).toContain('run generate --adopt');
+      expect(failure?.action).toContain('check never adopts');
+      expect(await hashTree(repo.root)).toBe(before);
+    } finally {
+      await repo.cleanup();
+    }
+  });
 
-      // `generate` reports the same tree instead of overwriting or ignoring it.
+  it('refuses generate and writes nothing until --adopt is passed', async () => {
+    const repo = await generated();
+    try {
+      await rm(join(repo.root, '.farna/lock.json'));
       const before = await hashTree(repo.root);
       let failure: FarnaError | undefined;
       try {
@@ -195,61 +266,58 @@ describe('profile root cleanliness', () => {
         failure = error as FarnaError;
       }
       expect(failure?.code).toBe('F007_DRIFT');
-      expect(failure?.message).toContain('look like an earlier render');
-      expect(failure?.message).toContain('.opencode/agents/builder.md');
+      expect(failure?.message).toContain('opencode.jsonc');
+      expect(failure?.action).toContain('run generate --adopt');
       expect(await hashTree(repo.root)).toBe(before);
+
+      const adopted = await runGenerate(
+        { cwd: repo.root, dryRun: false, adopt: true },
+        new UpstreamRenderTarget(),
+      );
+      expect(adopted.ok).toBe(true);
+      expect(adopted.adopted).toContain('.opencode/agents/builder.md');
+      expect(adopted.adopted).toContain('opencode.jsonc');
+      const clean = await runCheck(repo.root, new UpstreamRenderTarget());
+      expect(clean.ok).toBe(true);
     } finally {
       await repo.cleanup();
     }
   });
 
-  it('does not report a file whose name no declaration would emit', async () => {
+  it('ignores a staging sibling inside a skill directory', async () => {
+    const repo = await generated();
+    try {
+      const staging = `.opencode/skills/secure-review/scripts/${stagingName('check.sh')}`;
+      await writeFile(join(repo.root, staging), 'partial write\n', 'utf8');
+      const check = await runCheck(repo.root, new UpstreamRenderTarget());
+      expect(check.ok).toBe(true);
+      expect(check.drift.filter((item) => item.code === OUTSIDE_OWNERSHIP_CODE)).toEqual([]);
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
+  it('neither adopts nor removes a file that is not in the plan', async () => {
     const repo = await generated();
     try {
       await rm(join(repo.root, '.farna/lock.json'));
-      await writeFile(
-        join(repo.root, '.opencode/commands/custom.md'),
-        '---\ndescription: Mine\n---\n',
-        'utf8',
-      );
-      await mkdir(join(repo.root, '.opencode/skills/custom'), { recursive: true });
-      await writeFile(
-        join(repo.root, '.opencode/skills/custom/SKILL.md'),
-        '---\nname: custom\ndescription: Mine\n---\n',
-        'utf8',
-      );
+      const custom = join(repo.root, '.opencode/commands/custom.md');
+      const customText = '---\ndescription: Mine\n---\n\nMy own command.\n';
+      await writeFile(custom, customText, 'utf8');
 
-      const check = await runCheck(repo.root, new UpstreamRenderTarget());
-      const outside = check.drift.filter((item) => item.code === OUTSIDE_OWNERSHIP_CODE);
-      expect(outside).toEqual([]);
-    } finally {
-      await repo.cleanup();
-    }
-  });
-
-  it('reports an extra file inside a skill tree and never deletes it (skill-extra-file)', async () => {
-    const repo = await generated();
-    try {
-      const extra = join(repo.root, '.opencode/skills/secure-review/scripts/extra.sh');
-      await writeFile(extra, 'echo extra\n', 'utf8');
-
-      const check = await runCheck(repo.root, new UpstreamRenderTarget());
-      expect(check.ok).toBe(false);
-      expect(check.drift).toContainEqual({
-        code: OUTSIDE_OWNERSHIP_CODE,
-        path: '.opencode/skills/secure-review/scripts/extra.sh',
-        kind: 'unexpected',
-        detail: 'an unrecorded file is inside a managed skill directory',
-      });
-
-      const regenerated = await runGenerate(
-        { cwd: repo.root, dryRun: false },
+      const adopted = await runGenerate(
+        { cwd: repo.root, dryRun: false, adopt: true },
         new UpstreamRenderTarget(),
       );
-      expect(regenerated.ok).toBe(true);
-      expect(await listFiles(repo.root)).toContain(
-        '.opencode/skills/secure-review/scripts/extra.sh',
+      expect(adopted.ok).toBe(true);
+      expect(await readText(repo.root, '.opencode/commands/custom.md')).toBe(customText);
+      const lock = await jsonOf(repo, '.farna/lock.json');
+      expect((lock['files'] as Array<{ path: string }>).map((file) => file.path)).not.toContain(
+        '.opencode/commands/custom.md',
       );
+
+      const check = await runCheck(repo.root, new UpstreamRenderTarget());
+      expect(check.ok).toBe(true);
     } finally {
       await repo.cleanup();
     }
@@ -330,6 +398,99 @@ describe('profile mode reports the personas it deactivates', () => {
     }
   });
 
+  it('computes W109 from the live persona, so an inactive mcp or hook does not force the profile', async () => {
+    const repo = await createTempRepo('profile');
+    try {
+      await writeFile(
+        join(repo.root, '.farna/personas/builder.yaml'),
+        [
+          'kind: persona',
+          'id: builder',
+          'displayName: Builder',
+          'purpose: Writes code.',
+          'resources:',
+          '  - rule/house-style',
+          '  - permission/builder-default',
+          '',
+        ].join('\n'),
+        'utf8',
+      );
+      await writeFile(
+        join(repo.root, '.farna/personas/reviewer.yaml'),
+        [
+          'kind: persona',
+          'id: reviewer',
+          'displayName: Reviewer',
+          'purpose: Reviews a change.',
+          'resources:',
+          '  - rule/review-checklist',
+          '  - mcp/docs',
+          '  - hook/format-on-save',
+          '',
+        ].join('\n'),
+        'utf8',
+      );
+
+      const result = await runGenerate(
+        { cwd: repo.root, dryRun: false },
+        new UpstreamRenderTarget(),
+      );
+      expect(result.activePersona).toBe('builder');
+      expect(result.notLive).toEqual(['reviewer']);
+      expect(result.warnings).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ code: 'W109_PROFILE_BY_CHOICE', persona: 'builder' }),
+        ]),
+      );
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
+  it("reports a non-live persona's source-derived warning, scoped by persona", async () => {
+    const repo = await createTempRepo('profile');
+    try {
+      await writeFile(
+        join(repo.root, '.farna/personas/reviewer.yaml'),
+        [
+          'kind: persona',
+          'id: reviewer',
+          'displayName: Reviewer',
+          'purpose: Reviews a change.',
+          'resources:',
+          '  - rule/review-checklist',
+          '  - hook/session-audit',
+          '',
+        ].join('\n'),
+        'utf8',
+      );
+
+      const result = await runGenerate(
+        { cwd: repo.root, dryRun: false },
+        new UpstreamRenderTarget(),
+      );
+      expect(result.personas).toEqual(['builder']);
+      const loss = result.warnings.find((entry) => entry.code === 'W101_CAPABILITY_DROPPED');
+      expect(loss).toMatchObject({
+        code: 'W101_CAPABILITY_DROPPED',
+        severity: 'high',
+        persona: 'reviewer',
+        capability: 'hook',
+      });
+      const lock = await jsonOf(repo, '.farna/lock.json');
+      expect(lock['warnings']).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ code: 'W101_CAPABILITY_DROPPED', persona: 'reviewer' }),
+        ]),
+      );
+      // The inactive persona's loss does not make the tree dirty.
+      const check = await runCheck(repo.root, new UpstreamRenderTarget());
+      expect(check.ok).toBe(true);
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
   it('validates the committed active persona even when --persona overrides it', async () => {
     const repo = await createTempRepo('profile');
     try {
@@ -377,6 +538,44 @@ describe('source digest', () => {
       await repo.cleanup();
     }
   });
+});
+
+it('fails check when only a config comment changes', async () => {
+  const repo = await generated();
+  try {
+    await appendFile(join(repo.root, '.farna/config.jsonc'), '\n// a new comment\n', 'utf8');
+    const check = await runCheck(repo.root, new UpstreamRenderTarget());
+    expect(check.ok).toBe(false);
+    expect(check.drift).toContainEqual({
+      code: 'F007_DRIFT',
+      path: '.farna/lock.json',
+      kind: 'modified',
+      detail: 'the source or config changed since the lockfile was written; re-run generate',
+    });
+
+    await runGenerate({ cwd: repo.root, dryRun: false }, new UpstreamRenderTarget());
+    expect((await runCheck(repo.root, new UpstreamRenderTarget())).ok).toBe(true);
+  } finally {
+    await repo.cleanup();
+  }
+});
+
+it('fails check when a parsed config value changes', async () => {
+  const repo = await generated();
+  try {
+    const path = join(repo.root, '.farna/config.jsonc');
+    const text = await readFile(path, 'utf8');
+    await writeFile(
+      path,
+      text.replace('anthropic/claude-sonnet-4-5', 'anthropic/claude-opus-4-5'),
+      'utf8',
+    );
+    const check = await runCheck(repo.root, new UpstreamRenderTarget());
+    expect(check.ok).toBe(false);
+    expect(check.drift.map((item) => item.path)).toContain('.farna/lock.json');
+  } finally {
+    await repo.cleanup();
+  }
 });
 
 describe('init to profile to check', () => {
@@ -536,6 +735,7 @@ describe('reporting', () => {
       activePersona: 'reviewer',
       notLive: ['builder'],
       dryRun: false,
+      adopted: [],
       personas: ['reviewer'],
       files: [{ path: '.opencode/agents/reviewer.md', status: 'written' }],
       removed: [
@@ -580,6 +780,97 @@ describe('reporting', () => {
     } finally {
       await repo.cleanup();
     }
+  });
+
+  it('escapes a control character in the message and the action', () => {
+    const failure = new FarnaError('F001_INVALID_CONFIG', 'message\u001b[31mred', {
+      subject: 'subject',
+      action: 'action\u0007bell',
+    });
+    const formatted = failure.format();
+    expect(formatted).toContain('message\\u001b[31mred');
+    expect(formatted).toContain('action\\u0007bell');
+    expect(formatted).not.toContain('\u001b');
+    expect(formatted).not.toContain('\u0007');
+  });
+
+  it.skipIf(process.platform === 'win32')(
+    'escapes a control character in a source filename',
+    async () => {
+      const repo = await createTempRepo('profile');
+      try {
+        await writeFile(
+          join(repo.root, '.farna/personas/bad\u001b.yaml'),
+          'kind: persona\nid: other\ndisplayName: Other\npurpose: Mismatched id.\nresources: []\n',
+          'utf8',
+        );
+        let failure: FarnaError | undefined;
+        try {
+          await runGenerate({ cwd: repo.root, dryRun: false }, new UpstreamRenderTarget());
+        } catch (error) {
+          failure = error as FarnaError;
+        }
+        expect(failure?.code).toBe('F001_INVALID_CONFIG');
+        const formatted = failure?.format() ?? '';
+        expect(formatted).toContain('bad\\u001b');
+        expect(formatted).not.toContain('\u001b');
+      } finally {
+        await repo.cleanup();
+      }
+    },
+  );
+
+  it('escapes a foreign key carried in a removal refusal', async () => {
+    const repo = await generated();
+    try {
+      const document = await jsonOf(repo, 'opencode.jsonc');
+      document['bad\u001bkey'] = 'mine';
+      await writeFile(
+        join(repo.root, 'opencode.jsonc'),
+        `${JSON.stringify(document, null, 2)}\n`,
+        'utf8',
+      );
+      const personaPath = join(repo.root, '.farna/personas/builder.yaml');
+      const persona = await readFile(personaPath, 'utf8');
+      await writeFile(personaPath, persona.replace('  - mcp/scan\n', ''), 'utf8');
+
+      let failure: FarnaError | undefined;
+      try {
+        await runGenerate({ cwd: repo.root, dryRun: false }, new UpstreamRenderTarget());
+      } catch (error) {
+        failure = error as FarnaError;
+      }
+      expect(failure?.code).toBe('F007_DRIFT');
+      const formatted = failure?.format() ?? '';
+      expect(formatted).toContain('bad\\u001bkey');
+      expect(formatted).not.toContain('\u001b');
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
+  it('escapes a control character in a printed warning message', async () => {
+    const report = formatCheck({
+      ok: true,
+      target: 'opencode',
+      mode: 'profile',
+      activePersona: 'builder',
+      notLive: [],
+      exitCode: 0,
+      checked: [],
+      drift: [],
+      warnings: [
+        {
+          code: 'W107_OUTSIDE_OWNERSHIP',
+          severity: 'low',
+          persona: 'builder',
+          target: 'opencode',
+          message: 'message\u001b[31mred',
+        },
+      ],
+    });
+    expect(report).toContain('message\\u001b[31mred');
+    expect(report).not.toContain('\u001b');
   });
 
   it('escapes a control character in a printed subject', () => {

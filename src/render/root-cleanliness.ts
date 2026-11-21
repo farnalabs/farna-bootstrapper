@@ -4,50 +4,26 @@ import { isOsMetadataName, OPENCODE_SKILLS_DIR } from '../core/constants.js';
 import { compareCodepoints } from '../core/json.js';
 import { containedTarget, lstatOrUndefined } from '../core/paths.js';
 import type { LockFileEntry } from '../lock/lockfile.js';
+import { isStagingName } from './staging.js';
 
 /**
- * The design's **root cleanliness** control (`ownership.md` section 9): produce
- * no stale render, and notice one when it is already on disk.
+ * The one unrecorded path `check` reports: an extra file inside a **skill
+ * directory this tool owns**.
  *
- * The lockfile is the only proof that this tool wrote a path. When it is lost,
- * or when the source stops producing a path so nothing records it any more, a
- * file left in a managed location is indistinguishable from a clue that an older
- * persona is still live. `check` must not call that tree clean, and `generate`
- * must not claim it produced the tree.
+ * The lockfile is the only proof that this tool wrote a regular path. A skill
+ * directory is different: it is a tree this tool owns as a whole, so a file
+ * inside a recorded or planned skill directory that neither the plan nor the
+ * lockfile names was not produced by a generate, and it would otherwise sit
+ * inside our own directory forever. It is reported (W107) and never deleted.
  *
- * Only *plausible renders* are reported: a path some declared persona or
- * resource would have produced. A file the user keeps in a managed directory
- * under a name no declaration would ever emit (`custom.md`, `skills/custom/`)
- * is genuinely theirs and stays invisible.
+ * Nothing here scans for "plausible prior renders" by name. With no lockfile
+ * there is no record of what this tool wrote, so `generate` refuses and asks for
+ * `--adopt` rather than guessing from a file path; a stale output not recorded
+ * and not in the plan is the user's responsibility.
  */
 
 /** A file that exists but is neither planned nor recorded. */
 export type StalePath = { path: string; symbolicLink: boolean };
-
-/**
- * Paths in `declared` that exist on disk but are neither in the fresh plan nor
- * recorded in the lockfile. Nothing is deleted.
- */
-export async function findStaleRenders(
-  repoRoot: string,
-  declared: readonly string[],
-  planned: ReadonlySet<string>,
-  recorded: ReadonlySet<string>,
-): Promise<StalePath[]> {
-  const stale: StalePath[] = [];
-  for (const path of declared) {
-    if (planned.has(path) || recorded.has(path)) {
-      continue;
-    }
-    const absolute = await containedTarget(repoRoot, path);
-    const stats = await lstatOrUndefined(absolute, path);
-    if (stats === undefined) {
-      continue;
-    }
-    stale.push({ path, symbolicLink: stats.isSymbolicLink() });
-  }
-  return stale.sort((a, b) => compareCodepoints(a.path, b.path));
-}
 
 /** The skill directories a run has a reason to inspect: one per declared skill id. */
 function skillDirectories(paths: Iterable<string>): string[] {
@@ -91,6 +67,12 @@ async function walk(
   }
   for (const entry of entries.sort((a, b) => compareCodepoints(a.name, b.name))) {
     if (isOsMetadataName(entry.name)) {
+      continue;
+    }
+    // A staging sibling is this tool's own temporary file, not an extra: a
+    // concurrent or killed generate can leave one, and reporting it would make
+    // `check` red for our own in-flight write.
+    if (isStagingName(entry.name)) {
       continue;
     }
     const path = `${directory}/${entry.name}`;

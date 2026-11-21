@@ -159,30 +159,37 @@ remains the default.`,
     .exitOverride()
     .description('render every live persona and write the verified files into the repository')
     .option('--dry-run', 'print the plan without writing anything')
+    .option(
+      '--adopt',
+      'take ownership of every existing planned managed output (required when the lockfile is missing)',
+    )
     .option('--persona <id>', 'run profile mode as this persona (overrides the configured active)')
     .option('--json', 'print one JSON object')
-    .action(async (options: { dryRun?: boolean; json?: boolean; persona?: string }) => {
-      await emit('generate', options.json === true, context, async () => {
-        const result = await runGenerate(
-          {
-            cwd: context.cwd,
-            dryRun: options.dryRun === true,
-            ...(options.persona === undefined ? {} : { persona: options.persona }),
-          },
-          context.renderer,
-        );
-        return {
-          payload: {
-            schemaVersion: SCHEMA_VERSION,
-            command: 'generate',
-            ...result,
+    .action(
+      async (options: { adopt?: boolean; dryRun?: boolean; json?: boolean; persona?: string }) => {
+        await emit('generate', options.json === true, context, async () => {
+          const result = await runGenerate(
+            {
+              cwd: context.cwd,
+              dryRun: options.dryRun === true,
+              ...(options.adopt === true ? { adopt: true } : {}),
+              ...(options.persona === undefined ? {} : { persona: options.persona }),
+            },
+            context.renderer,
+          );
+          return {
+            payload: {
+              schemaVersion: SCHEMA_VERSION,
+              command: 'generate',
+              ...result,
+              exitCode: EXIT.ok,
+            },
+            text: formatGenerate(result),
             exitCode: EXIT.ok,
-          },
-          text: formatGenerate(result),
-          exitCode: EXIT.ok,
-        };
-      });
-    });
+          };
+        });
+      },
+    );
 
   program
     .command('check')
@@ -202,8 +209,12 @@ remains the default.`,
         };
         if (!result.ok) {
           // The same failure keys the typed-error path carries, so a consumer
-          // never has to special-case drift to learn it failed.
-          payload['code'] = result.drift[0]?.code ?? DRIFT_CODE;
+          // never has to special-case drift to learn it failed. The top-level
+          // code is always the drift code; an item's own code (`W107` for
+          // content outside ownership) stays in the `drift` array, because a
+          // path that sorts first must not decide what kind of failure the run
+          // is.
+          payload['code'] = DRIFT_CODE;
           payload['subject'] = result.drift[0]?.path ?? null;
           payload['message'] = 'managed output drifted from a fresh render';
         }

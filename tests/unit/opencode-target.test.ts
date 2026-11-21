@@ -238,15 +238,12 @@ describe('opencode target', () => {
     }
   });
 
-  it('refuses to overwrite a pre-existing agent file with no lockfile record', async () => {
+  it('refuses a pre-existing agent file with no lockfile, then adopts it on request', async () => {
     const repo = await createTempRepo('opencode');
     try {
       await mkdir(join(repo.root, '.opencode/agents'), { recursive: true });
-      await writeFile(
-        join(repo.root, '.opencode/agents/builder.md'),
-        '---\nname: user-builder\n---\nhand written\n',
-        'utf8',
-      );
+      const userFile = '---\nname: user-builder\n---\nhand written\n';
+      await writeFile(join(repo.root, '.opencode/agents/builder.md'), userFile, 'utf8');
       const before = await hashTree(repo.root);
       let failure: FarnaError | undefined;
       try {
@@ -256,24 +253,36 @@ describe('opencode target', () => {
       }
       expect(failure?.code).toBe('F007_DRIFT');
       expect(failure?.exitCode).toBe(1);
-      expect(failure?.subject).toBe('.opencode/agents/builder.md');
-      expect(failure?.message).toContain('not recorded in the committed lockfile');
+      expect(failure?.message).toContain('.farna/lock.json is missing');
+      expect(failure?.message).toContain('.opencode/agents/builder.md');
+      expect(failure?.action).toContain('run generate --adopt');
       expect(await hashTree(repo.root)).toBe(before);
+
+      const adopted = await runGenerate(
+        { cwd: repo.root, dryRun: false, adopt: true },
+        new UpstreamRenderTarget(),
+      );
+      expect(adopted.ok).toBe(true);
+      expect(adopted.adopted).toContain('.opencode/agents/builder.md');
+      expect(await readText(repo.root, '.opencode/agents/builder.md')).not.toBe(userFile);
+      const check = await runCheck(repo.root, new UpstreamRenderTarget());
+      expect(check.ok).toBe(true);
     } finally {
       await repo.cleanup();
     }
   });
 
-  it('adopts byte-identical outputs when the lockfile was deleted', async () => {
-    // `check` on a missing lockfile tells the user to regenerate. That recovery
-    // must work: the outputs already on disk are this tool's own bytes, so they
-    // are adopted and the lockfile is rewritten rather than refused as drift.
+  it('adopts byte-identical outputs only with --adopt when the lockfile was deleted', async () => {
     const repo = await generated();
     try {
       const originalLock = await readText(repo.root, '.farna/lock.json');
       await rm(join(repo.root, '.farna/lock.json'));
+      await expect(
+        runGenerate({ cwd: repo.root, dryRun: false }, new UpstreamRenderTarget()),
+      ).rejects.toMatchObject({ code: 'F007_DRIFT', action: expect.stringContaining('--adopt') });
+
       const result = await runGenerate(
-        { cwd: repo.root, dryRun: false },
+        { cwd: repo.root, dryRun: false, adopt: true },
         new UpstreamRenderTarget(),
       );
       expect(result.files.find((file) => file.path === '.farna/lock.json')?.status).toBe('written');
@@ -299,9 +308,8 @@ describe('opencode target', () => {
       }
       expect(failure?.code).toBe('F007_DRIFT');
       expect(failure?.exitCode).toBe(1);
-      expect(failure?.subject).toBe('.opencode/agents/builder.md');
-      expect(failure?.message).toContain('not recorded in the committed lockfile');
-      expect(failure?.action).toContain('move the managed outputs aside');
+      expect(failure?.message).toContain('.farna/lock.json is missing');
+      expect(failure?.action).toContain('run generate --adopt');
       expect(await hashTree(repo.root)).toBe(before);
     } finally {
       await repo.cleanup();

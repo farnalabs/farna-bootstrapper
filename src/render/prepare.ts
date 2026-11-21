@@ -13,7 +13,7 @@ import { materialiseSourceTree, renderFeatures } from '../materialise/source-tre
 import { sortWarnings, type Warning, warning } from '../report/warnings.js';
 import { sourceConfigDigest } from '../source/digest.js';
 import { loadSource } from '../source/load.js';
-import { declaredOutputPaths, verifyRender } from '../verify/containment.js';
+import { verifyRender } from '../verify/containment.js';
 import { integrityRecordOf } from './identity.js';
 import type { RendererIdentity, RenderTarget } from './port.js';
 import { withStage } from './stage.js';
@@ -36,11 +36,6 @@ export type PreparedRender = {
   files: RenderedFile[];
   /** Source warnings plus any renderer-level warning, in the report's stable order. */
   warnings: Warning[];
-  /**
-   * Every path any declared persona or resource could render for this target.
-   * A superset of the plan in profile mode; used by the root-cleanliness check.
-   */
-  declaredPaths: string[];
   /** Digest of the resolved config plus every persona and resource file. */
   configDigest: string;
 };
@@ -49,6 +44,11 @@ export type PreparedRender = {
  * Record the ownership metadata of a structured file. The lockfile entry for
  * `opencode.jsonc` describes the owned subset, not the whole document, so the
  * lockfile stays source-derived and a user's own key never becomes drift.
+ *
+ * A generated document that carries none of the owned keys is recorded as a
+ * whole file, without `shape`. A `structured` entry whose `ownedKeys` is empty
+ * is refused by the lockfile schema, so stamping the shape would produce a
+ * document this tool cannot read back.
  */
 function annotateOwnership(file: RenderedFile): RenderedFile {
   const ownedKeys = structuredOwnedKeys(file.path);
@@ -57,6 +57,9 @@ function annotateOwnership(file: RenderedFile): RenderedFile {
   }
   const document = parseStructuredDocument(file.bytes, file.path);
   const present = ownedKeys.filter((key) => Object.hasOwn(document, key));
+  if (present.length === 0) {
+    return file;
+  }
   const digest = structuredOwnedDigest(document, present);
   return {
     ...file,
@@ -146,7 +149,6 @@ export async function prepareRender(
   const tree = await loadSource(repoRoot);
   const source = resolveSource(tree, config, selection);
   const warnings = sortWarnings([...source.warnings, ...rendererWarnings(renderer, source.target)]);
-  const declaredPaths = declaredOutputPaths(source.target, tree);
   // Every source file, including a persona that is not live: an edit to a
   // declaration no mode renders still has to be visible to `check`.
   const configDigest = await sourceConfigDigest(repoRoot, config);
@@ -181,6 +183,6 @@ export async function prepareRender(
     );
     files.push({ path: LOCK_PATH, bytes: serialiseLockfile(lock) });
     files.sort((a, b) => compareCodepoints(a.path, b.path));
-    return { source, files, warnings, declaredPaths, configDigest };
+    return { source, files, warnings, configDigest };
   });
 }

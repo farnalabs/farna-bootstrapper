@@ -131,7 +131,7 @@ farna-bootstrapper init
     skills/
     commands/
     hooks/
-.gitignore        # .farna/local.jsonc, the journal, the staging namespace and OS metadata
+.gitignore        # .farna/local.jsonc, the journal, the generate lock, the staging namespace and OS metadata
 .gitattributes    # every generated path, for both targets, pinned to LF
 ```
 
@@ -213,6 +213,7 @@ Then run:
 ```sh
 farna-bootstrapper generate          # write the agent files and the lockfile
 farna-bootstrapper generate --dry-run # print the plan, write nothing
+farna-bootstrapper generate --adopt  # take ownership of existing outputs (see below)
 farna-bootstrapper check             # prove the tree matches a fresh render
 farna-bootstrapper generate --persona <id>  # OpenCode profile mode, overriding the config
 farna-bootstrapper check --persona <id>      # check the same selection
@@ -345,11 +346,13 @@ A hook OpenCode cannot represent (`session-end`, or a matcher on a non-tool even
 A persona switch, a removed resource or a target edit leaves output the committed lockfile records
 but the current source no longer produces. `check` reports every such recorded path as
 `F007_DRIFT` drift with kind `unexpected`. An unrecorded file is ordinarily ignored, because it
-belongs to the user; the exception is a **plausible prior render** (see *Root cleanliness* below).
+belongs to the user.
 
 `check` also compares a `configDigest` recorded in the lockfile: a change to the config or to **any**
 persona or resource file is drift even when the live persona renders no different byte, so an edit
-to a non-live persona's declaration cannot hide.
+to a non-live persona's declaration cannot hide. The digest covers the **raw** `config.jsonc`
+bytes as well as the parsed value, so a comment or whitespace edit in the config is drift exactly
+like a comment edit in a persona file.
 
 `generate` may remove a recorded orphan, under four guards:
 
@@ -375,20 +378,29 @@ the removals it already made, so the error never claims "nothing was written" fo
 partially updated. An empty directory left after removing a skill's last file is not removed: the
 contract is to remove recorded regular files, not directories.
 
-### Root cleanliness
+### A missing lockfile: refuse, then adopt
 
-The lockfile is the only proof that a path is this tool's output. When a lockfile is lost, or when
-the source stops producing a path so nothing records it, a file left in a managed location may be a
-render from an earlier persona that is still live. In profile mode `check` reports every **plausible
-prior render** — a path any declared persona or resource could have produced (another persona's
-agent file, `opencode.jsonc`, the hooks plugin, a declared skill tree or command) — that is neither
-planned nor recorded, as `W107_OUTSIDE_OWNERSHIP` drift (exit `1`). `generate` refuses the same tree
-with `F007_DRIFT` rather than overwriting or ignoring it. Nothing unrecorded is ever deleted.
+The lockfile is the only proof that a path is this tool's output. When it is absent, a file at a
+planned path could be this tool's earlier render or the user's own file, and the tool has no way to
+tell. It therefore **refuses** rather than guessing from a file name: if `.farna/lock.json` is
+missing and any planned managed output already exists, `generate` and `check` fail with
+`F007_DRIFT` naming those outputs and the action `run generate --adopt`.
 
-A file under a name no declaration would emit (`.opencode/commands/custom.md`,
-`.opencode/skills/custom/`) is genuinely the user's and is not reported. Inside a **skill
-directory** this tool owns, however, an unrecorded file is an extra and is reported as
-`W107_OUTSIDE_OWNERSHIP` (never deleted).
+`generate --adopt` is the explicit adoption. It takes ownership of every existing planned managed
+output: `opencode.jsonc` is merged in place so only the owned `mcp` key changes and the user's keys
+and comments survive, every other planned file is overwritten with the fresh render, and the
+lockfile records the result. A file **not in the plan** is neither adopted nor removed. `check`
+never adopts; it only tells the user to run `generate --adopt`.
+
+The trade-off is deliberate: with no lockfile the tool does not scan for stale renders by path. A
+stale output that is not recorded and not in the plan is the user's responsibility; naming a file
+is not proof that this tool wrote it.
+
+The one unrecorded path `check` still reports is an extra file inside a **skill directory** this
+tool owns (recorded or planned at `W107_OUTSIDE_OWNERSHIP`, never deleted), which is a recorded-path
+question rather than a name guess. A file under a name no declaration would emit
+(`.opencode/commands/custom.md`, `.opencode/skills/custom/`) is genuinely the user's and is not
+reported.
 
 MCP `env` and `headers` values are references only. A resource declares
 `{ "fromEnv": "EXAMPLE_TOKEN" }`; the materialiser writes rulesync's canonical `${EXAMPLE_TOKEN}`.
@@ -499,9 +511,11 @@ target rather than silently ignored.
 Only harness-specific category names reach the renderer source tree; a product category name is
 never written there, and a test asserts it.
 
-Warnings are printed by `generate` and `check`, and recorded in `.farna/lock.json`.
-`W107_OUTSIDE_OWNERSHIP` is reported by `check` as a drift item rather than a source warning: it
-describes the working tree (a plausible prior render or an extra skill file), not the source.
+Warnings are printed by `generate` and `check`, and recorded in `.farna/lock.json`. The warning set
+covers every resolved persona, not only the live one: each warning names its persona, so a
+declaration an inactive persona makes is still visible in profile mode. `W107_OUTSIDE_OWNERSHIP` is
+reported by `check` as a drift item rather than a source warning: it describes the working tree (an
+extra skill file), not the source.
 
 ## Layout
 
@@ -517,9 +531,9 @@ src/
   render/         port.ts (the seam), upstream.ts (the only rulesync import),
                   identity.ts (installed vs pinned renderer), prepare.ts (the pipeline),
                   stage.ts (the disposable stage), commit.ts (the write), staging.ts,
-                  orphans.ts (recorded-orphan preflight and removal), generate-lock.ts,
-                  structured.ts (key-level ownership of opencode.jsonc),
-                  root-cleanliness.ts (plausible prior renders and skill-tree extras)
+                  orphans.ts (recorded-orphan preflight and removal), generate-lock.ts
+                  (the atomic lock directory), structured.ts (in-place, key-level
+                  ownership of opencode.jsonc), root-cleanliness.ts (skill-tree extras)
   verify/         containment and cross-persona isolation gates
   lock/           lockfile construction and validated reading
   core/           constants, typed errors, paths, strict UTF-8 reads, canonical JSON
@@ -676,10 +690,12 @@ These are deliberate limits of the current controls, stated rather than implied 
   never treated as "no records". A lockfile written before profile mode existed (no `mode`, no
   `activePersona`) is still accepted and normalised to agent mode, so its recorded paths are not
   silently forgotten.
-- **One `generate` at a time.** `.farna/.generate.lock` is taken exclusively (`O_EXCL`, owner pid
-  recorded) around the whole read → plan → remove → commit sequence, and released in a `finally`.
-  A second live run is a typed F001 ("lock held"). A lock whose owner pid is dead, or that is older
-  than the age bound, is reclaimed.
+- **One `generate` at a time.** `.farna/.generate.lock` is a **directory** created with `mkdir`
+  (atomic on every supported filesystem), its owner recorded in `pid`, around the whole read →
+  plan → remove → commit sequence, and released in a `finally`. A second live run is a typed F001
+  ("lock held"). A lock whose owner pid is dead, or that is older than the age bound, is reclaimed
+  by renaming it aside (only one reclaimer can win) and retrying the `mkdir`. A non-directory at the
+  lock path is a typed error, never "another generate is running".
 - **Generated modes are explicit.** Managed files are created `0644` and managed directories
   `0755`, then re-asserted with `chmod`; the process umask no longer decides whether generated
   output is group- or world-writable.
@@ -693,7 +709,7 @@ These are deliberate limits of the current controls, stated rather than implied 
   paths already removed, `check` reports them, and re-running `generate` completes the switch. A
   recorded orphan replaced by a directory, a symlink or edited bytes is refused rather than guessed
   at, and must be removed deliberately. The bytes are re-read and re-hashed immediately before each
-  `rm`, so the window between the preflight and the removal cannot delete a file that changed.
+  `rm`: a file changed between the preflight and the removal is refused rather than deleted.
 - **An empty directory is left after a skill's last file is removed.** Only recorded regular files
   are removed; the now-empty `<skill>/` (or `scripts/`) directory is harmless and carries no
   declaration.
@@ -706,26 +722,25 @@ These are deliberate limits of the current controls, stated rather than implied 
 - **Windows-specific test skips.** The symlink regression tests are skipped on Windows because
   creating a symlink needs a privilege the runner does not grant. CI runs them on Linux; the guard
   code itself is platform-independent.
-- **Unrecorded files are not drift unless they look like a prior render.** `check` compares the
-  paths in the fresh plan (missing or changed), the paths the committed lockfile records (an output
-  the source no longer produces), and, in profile mode, a plausible prior render that is neither
-  (see *Root cleanliness*). A file the user keeps under a name no declaration would emit is not this
-  tool's output, so it is neither reported nor followed; a repository may keep its own commands and
-  its own skill directories. A symlink at a *managed* path is still drift, and a symlinked ancestor
-  is still refused.
+- **Unrecorded files are not drift.** With a lockfile present, `check` compares the paths in the
+  fresh plan (missing or changed) and the paths the committed lockfile records (an output the source
+  no longer produces). A file the user keeps in a managed directory is not this tool's output, so it
+  is neither reported nor followed; a repository may keep its own commands and its own skill
+  directories. The exceptions are an extra file inside a recorded or planned skill directory
+  (`W107`) and a missing lockfile, which refuses rather than guessing (see *A missing lockfile*). A
+  symlink at a *managed* path is still drift, and a symlinked ancestor is still refused.
 - **The hooks plugin is verified by structure, with one provenance gap.** Containment compares the
-  commands, events and matchers the plugin registers. rulesync writes the escaped form `\`` for a
-  backtick in a hook command; the gate unescapes it before comparing, because it is the renderer's
-  representation of the same command. The parser matches rulesync 43.11.0's two registration shapes
+  commands, events and matchers the plugin registers. rulesync escapes a hook command for a template
+  literal (backslashes doubled, backticks and `${` prefixed with a backslash); the gate undoes that
+  escaping in the inverse order before comparing, because it is the renderer's representation of the
+  same command. Each command's matcher is read from the slice between the previous command and this
+  one, so a matcher-less hook cannot inherit a neighbour's guard and a dropped matcher cannot be
+  replaced by an earlier identical one. The parser matches rulesync 43.11.0's two registration shapes
   and cannot recognise a registration emitted as a template literal under a future renderer, so a
   plugin that keeps the same commands but changes its registration shape is caught only by `check`
   against a fresh render of the pinned renderer. A change to rulesync's generated helper code that
   keeps the same registrations is likewise caught only by `check`, not by a committed plugin
   golden.
-- **The hooks plugin is verified by structure, not by a committed golden.** Containment asserts the
-  exact commands, events and matchers; a change to rulesync's generated helper code that keeps the
-  same commands and events is caught only by `check` against a fresh render of the pinned renderer,
-  not by a committed plugin golden.
 - **Skill extra files must be UTF-8.** The managed-output pipeline compares and writes text, so a
   binary asset inside a skill directory is refused (F001) rather than carried; decoding and
   re-encoding a valid UTF-8 file is byte-identical.
@@ -765,12 +780,12 @@ extend them further. The differences, all deliberate:
    yet: an unknown-key error is louder than a setting that quietly does nothing.
 7. **`check` exits `1` on any drift; `generate` refuses an unowned managed path with `F007`.**
    The brief requires `0` clean / `1` drift, so `check` returns `1` and reports `F007_DRIFT` in
-   its payload. `generate` uses the same code and exit `1` when a managed target already exists
-   but is not recorded in the committed lockfile **and its bytes differ from the fresh render**:
-   taking over a file this tool did not write is drift, not a renderer failure. An unrecorded
-   target whose bytes are identical to the fresh render is adopted and the lockfile is rewritten;
-   that is the recovery path after a deleted lockfile, and it does not destroy any content.
-   When the bytes differ the diagnostic tells the user to move the managed outputs aside. `F007`
+   its payload. `generate` uses the same code and exit `1` when `.farna/lock.json` is missing and a
+   planned managed output exists, or when a managed target exists but is not recorded in the
+   committed lockfile **and its bytes differ from the fresh render**: taking over a file this tool
+   did not write is drift, not a renderer failure. The explicit recovery is `generate --adopt`,
+   which takes ownership of every existing planned output; an unrecorded target whose bytes are
+   already identical is adopted by that run too, and nothing unrecorded is destroyed. `F007`
    therefore stays out of the exception table (`EXIT_BY_CODE`) while remaining a reportable
    diagnostic code with exit `1`. `generate` keeps the design's per-code exits for the rest
    (`F008` is `4`, `F011` is `3`).
@@ -789,13 +804,14 @@ extend them further. The differences, all deliberate:
     changes.
 11. **W101, W106, W107, W109, W111, W112, W113, W114, W115 and W116 are emitted in this
     milestone.** The full codes are `W101_CAPABILITY_DROPPED`, `W106_DENY_WINS`,
-    `W107_OUTSIDE_OWNERSHIP` (a plausible prior render or an extra skill-tree file, reported by
-    `check` as drift), `W109_PROFILE_BY_CHOICE` (profile selected where no persona forces it, info),
+    `W107_OUTSIDE_OWNERSHIP` (an extra skill-tree file, reported by `check` as drift),
+    `W109_PROFILE_BY_CHOICE` (profile selected where the live persona forces nothing, info),
     `W111_ASK_DOWNGRADED`, `W112_PERMISSION_LOSSY` (OpenCode's `write` fold only; `write` is native
     on Claude Code), `W113_ALLOW_LIST_NARROWS`, `W114_RENDERER_INTEGRITY_UNVERIFIED`,
     `W115_CREDENTIAL_IN_URL` and `W116_SECRET_IN_ARGS`. W101 is emitted in profile
-    mode when the active persona declares a hook OpenCode cannot represent; agent mode refuses a
-    hook reference before representability is considered, so it has no W101 to report. W113 is emitted whenever a resource opts into the `tools`
+    mode when any resolved persona declares a hook OpenCode cannot represent (including an inactive
+    persona, whose warning is still reported); agent mode refuses a hook reference before
+    representability is considered, so it has no W101 to report. W113 is emitted whenever a resource opts into the `tools`
     allow-list: it names the tools the narrowing removes, and an opt-in whose categories all
     resolve deny/ask is reported as having no effect (no `tools` is emitted, and the digest records
     the same effective value the artefact does). W114 is emitted when the installed renderer's
@@ -889,11 +905,14 @@ extend them further. The differences, all deliberate:
     failed commit is reported as a partial update rather than as an unrecorded leftover.
 28. **`opencode.jsonc` is structured, not whole-file.** The design's ownership model has five
     shapes; this build implements `whole`, `tree` and `structured`. `opencode.jsonc` owns the `mcp`
-    key only: `generate` reads the existing document, replaces that key, and preserves every other
-    key (`$schema`, `theme`, `instructions`, the user's own providers). `check` compares the owned
-    key only, so a foreign-key edit is not drift, and the lockfile records the owned subset's digest
-    rather than the whole file, so two roots with the same source still produce identical lockfile
-    bytes. An existing `opencode.jsonc` the lockfile does not record is never taken over. Region
+    key only and edits it **in place** with `jsonc-parser`'s `modify`/`applyEdits`: setting the
+    owned `mcp` key, deleting it when the generated document has none, and preserving every other
+    byte including comments, whitespace and the user's own keys (`$schema`, `theme`,
+    `instructions`, providers). `check` compares the owned key only, so a foreign-key or comment
+    edit is not drift, and the lockfile records the owned subset's digest rather than the whole
+    file, so two roots with the same source still produce identical lockfile bytes. An existing
+    `opencode.jsonc` the lockfile does not record is adopted only with `generate --adopt`, which
+    merges the owned key and keeps the user's keys. Region
     ownership (`CLAUDE.md`, `AGENTS.md`) is still later work, and the persona's permissions stay in
     its per-agent file: the per-agent permission array is the matrix's native per-persona carrier on
     OpenCode, and a shared permissions block would be a second structured key this milestone does
