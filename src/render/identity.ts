@@ -2,7 +2,7 @@ import { closeSync, constants, fstatSync, openSync, readFileSync } from 'node:fs
 import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 import { LOCKFILE_MAX_BYTES } from '../core/constants.js';
-import { rendererMismatch } from '../core/errors.js';
+import { FarnaError, rendererMismatch } from '../core/errors.js';
 import type { RendererIdentity } from './port.js';
 
 /**
@@ -16,13 +16,10 @@ const requireFromHere = createRequire(import.meta.url);
 type JsonObject = Record<string, unknown>;
 
 /**
- * Read an npm lock record, bounded before any allocation. This is the one
- * synchronous read of a repository-controlled path: the identity is resolved
- * from a synchronous context, so it cannot use `readBoundedBytes`. A lockfile
- * over `LOCKFILE_MAX_BYTES` is skipped exactly like an absent one, which
- * makes the compile-time pin stand in for it. The read is best-effort: an
- * absent file, a symlink, a FIFO or a parse failure also yields `undefined`,
- * never a typed refusal, because this metadata is not the product's source.
+ * Read a JSON file best-effort. An absent, unreadable, oversized or malformed
+ * file yields `undefined`, because this is used for `package.json` metadata the
+ * caller reports as a typed refusal itself. Lock records are read through
+ * `readLockRecord`, which never treats a present record as absent.
  */
 function readJson(path: string): JsonObject | undefined {
   let fd: number | undefined;
@@ -45,6 +42,80 @@ function readJson(path: string): JsonObject | undefined {
     if (fd !== undefined) {
       closeSync(fd);
     }
+  }
+}
+
+function isMissing(cause: unknown): boolean {
+  return (cause as NodeJS.ErrnoException | undefined)?.code === 'ENOENT';
+}
+
+/** A lock record that exists but cannot be verified. Never a fallback. */
+function unreadableLockRecord(path: string, cause?: unknown): FarnaError {
+  const detail = cause instanceof Error ? `: ${cause.message}` : '';
+  return rendererMismatch(
+    `${path} exists but could not be read${detail}, so the installed renderer's integrity cannot be verified`,
+    {
+      subject: path,
+      action:
+        're-install dependencies so npm writes a readable lock record, or restore it from version control',
+      ...(cause === undefined ? {} : { cause }),
+    },
+  );
+}
+
+/**
+ * Read an npm lock record. The three outcomes are deliberately distinct:
+ *
+ * - no record at all (`ENOENT`) yields `undefined`, the one case where a global
+ *   install's compile-time pin stands in for a missing integrity;
+ * - a record over `LOCKFILE_MAX_BYTES` is refused (F010), naming the record and
+ *   the bound, because a present-but-unverifiable integrity must fail exactly
+ *   like a differing one rather than become a pass;
+ * - a record that exists but cannot be read (a symlink, a FIFO, an I/O or parse
+ *   failure, a non-object) is refused the same way.
+ *
+ * The bound is applied before any allocation: this is the one synchronous read
+ * of a repository-controlled path, so it cannot use `readBoundedBytes`.
+ */
+function readLockRecord(path: string): JsonObject | undefined {
+  let fd: number;
+  try {
+    fd = openSync(
+      path,
+      constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0),
+    );
+  } catch (cause) {
+    if (isMissing(cause)) {
+      return undefined;
+    }
+    throw unreadableLockRecord(path, cause);
+  }
+  try {
+    const stats = fstatSync(fd);
+    if (!stats.isFile()) {
+      throw unreadableLockRecord(path, new Error('it is not a regular file'));
+    }
+    if (stats.size > LOCKFILE_MAX_BYTES) {
+      throw rendererMismatch(
+        `${path} is ${stats.size} bytes, over the ${LOCKFILE_MAX_BYTES}-byte bound for a lock record; it is refused rather than read, so the installed renderer's integrity cannot be verified`,
+        {
+          subject: path,
+          action: 're-install dependencies so npm writes a lock record inside the bound',
+        },
+      );
+    }
+    const value: unknown = JSON.parse(readFileSync(fd, 'utf8'));
+    if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+      throw unreadableLockRecord(path, new Error('it is not a JSON object'));
+    }
+    return value as JsonObject;
+  } catch (cause) {
+    if (cause instanceof FarnaError) {
+      throw cause;
+    }
+    throw unreadableLockRecord(path, cause);
+  } finally {
+    closeSync(fd);
   }
 }
 
@@ -95,22 +166,22 @@ function integrityFromLock(lock: JsonObject | undefined, name: string): string |
 /**
  * npm records the tarball integrity in `node_modules/.package-lock.json`; a
  * project lockfile is the fallback for layouts that do not write the hidden
- * one. The result is best-effort: a missing or oversized integrity source omits
- * the field rather than inventing a value, and the pinned target then uses its
- * compile-time pin. Every read is bounded by `readJson`.
+ * one. Only a record that does not exist is skipped: a present record that
+ * cannot be read, or is over `LOCKFILE_MAX_BYTES`, is refused with F010 instead
+ * of being treated as an absent one and replaced by the compile-time pin.
  *
  * @internal Exported so a test can prove the bound on an ancestor lockfile;
  * callers use `installedRendererIdentity`.
  */
 export function readRecordedIntegrity(packageDir: string, name: string): string | undefined {
-  const hidden = readJson(join(dirname(packageDir), '.package-lock.json'));
+  const hidden = readLockRecord(join(dirname(packageDir), '.package-lock.json'));
   const fromHidden = integrityFromLock(hidden, name);
   if (fromHidden !== undefined) {
     return fromHidden;
   }
   let current = packageDir;
   for (let depth = 0; depth < 8; depth += 1) {
-    const fromLock = integrityFromLock(readJson(join(current, 'package-lock.json')), name);
+    const fromLock = integrityFromLock(readLockRecord(join(current, 'package-lock.json')), name);
     if (fromLock !== undefined) {
       return fromLock;
     }

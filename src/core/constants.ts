@@ -78,7 +78,13 @@ export const GITATTRIBUTES_LINES: readonly string[] = [
  */
 export const STAGING_INFIX = '.farna-tmp-';
 
-/** A lockfile is derived and small; anything larger is refused rather than read. */
+/**
+ * A lockfile is derived and small. Both this product's own lockfile
+ * (`.farna/lock.json`) and an npm lock record the installed renderer identity
+ * is read from are refused rather than read above this bound: a present record
+ * that cannot be read is never treated as absent. Only a genuinely missing npm
+ * record (a global install) falls back to the compile-time pin.
+ */
 export const LOCKFILE_MAX_BYTES = 4 * 1024 * 1024;
 
 /**

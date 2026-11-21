@@ -4,7 +4,7 @@ import { cp, mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from 'n
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { createTempRepo } from '../support/temp-repo.js';
+import { createTempRepo, hashTree } from '../support/temp-repo.js';
 
 /**
  * A published package installed into a *global* prefix has no npm lockfile
@@ -91,6 +91,48 @@ describe.skipIf(process.platform === 'win32')('install layouts', () => {
       const body = JSON.parse(result.stdout) as { ok: boolean; renderer?: unknown };
       expect(body.ok).toBe(true);
       expect(existsSync(join(repo.root, '.claude', 'agents', 'builder.md'))).toBe(true);
+    } finally {
+      await rm(tarball, { force: true });
+      await repo.cleanup();
+      await rm(prefix, { recursive: true, force: true });
+    }
+  }, 300_000);
+
+  it('refuses an over-size npm lock record instead of falling back to the pin', async () => {
+    const prefix = await mkdtemp(join(tmpdir(), 'fbs-oversized-record-'));
+    const tarball = await packTarball();
+    const repo = await createTempRepo('demo');
+    try {
+      const packageDir = join(prefix, 'lib', 'node_modules', 'farna-bootstrapper');
+      await unpackInto(tarball, packageDir);
+      await installDependencies(packageDir, true);
+
+      // A present lock record that is over the bound must be refused, not
+      // skipped: skipping it would let this differing integrity pass through
+      // the compile-time pin. 5 MiB of valid JSON keeps the record parseable,
+      // so only the size bound can be what refuses it.
+      const record = JSON.stringify({
+        packages: { 'node_modules/rulesync': { integrity: 'sha512-DIFFERENT-NOT-THE-PIN' } },
+        padding: 'x'.repeat(5 * 1024 * 1024),
+      });
+      expect(Buffer.byteLength(record)).toBeGreaterThan(4 * 1024 * 1024);
+      await writeFile(join(packageDir, 'node_modules', '.package-lock.json'), record, 'utf8');
+
+      const before = await hashTree(repo.root);
+      const result = run(repo.root, [join(packageDir, GLOBAL_ENTRY), 'generate', '--json']);
+
+      expect(result.status, result.stderr).toBe(5);
+      expect(result.stderr).toContain('F010_RENDERER_MISMATCH');
+      expect(result.stderr).toContain('.package-lock.json');
+      expect(result.stderr).toContain(`${Buffer.byteLength(record)} bytes`);
+      const body = JSON.parse(result.stdout) as { ok: boolean; code: string; exitCode: number };
+      expect(body.ok).toBe(false);
+      expect(body.code).toBe('F010_RENDERER_MISMATCH');
+      expect(body.exitCode).toBe(5);
+      // Nothing was rendered or written: the identity check runs before the
+      // render, so the tree is byte-for-byte what it was.
+      expect(await hashTree(repo.root)).toBe(before);
+      expect(existsSync(join(repo.root, '.claude', 'agents', 'builder.md'))).toBe(false);
     } finally {
       await rm(tarball, { force: true });
       await repo.cleanup();
