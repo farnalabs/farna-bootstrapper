@@ -7,3 +7,6 @@ coverage/
 # per-developer state, never committed
 .farna/local.jsonc
 .farna/.journal.json
+
+# CI test report
+vitest-report.json
