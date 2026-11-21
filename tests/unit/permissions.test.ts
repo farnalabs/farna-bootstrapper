@@ -116,6 +116,83 @@ describe('permission mapping', () => {
     expect(frontmatter).toContain('- Read');
   });
 
+  it('reports an explicit allow-list that resolved to no allow entry, and emits no tools', () => {
+    // Every category is deny: the opt-in has nothing to list. Emitting
+    // `tools: []` would remove every tool, so the field is omitted and the
+    // no-effect case is reported rather than silently dropped.
+    const { entries, allowlist, warnings } = map({ read: 'deny' }, {}, true);
+    expect(entries.allow).toEqual([]);
+    expect(allowlist).toBe(false);
+    const narrowing = warnings.filter((entry) => entry.code === 'W113_ALLOW_LIST_NARROWS');
+    expect(narrowing).toHaveLength(1);
+    expect(narrowing[0]?.message).toContain('has no effect');
+    expect(narrowing[0]?.message).toContain('read');
+
+    const frontmatter = personaSource({ read: 'deny' }, {}, true);
+    expect(frontmatter).not.toContain('tools:');
+    expect(frontmatter).toContain('disallowedTools:');
+  });
+
+  it('reports a deny that removed every allow entry from an opted-in list', () => {
+    // One resource opts in with `read: allow`; a second denies read. Deny wins,
+    // the allow set is empty, and the opt-in must not silently become a
+    // no-effect flag the digest still records.
+    const { warnings } = resolve([
+      { id: 'allow-list', tools: { read: 'allow' }, patterns: {}, allowlist: true },
+      { id: 'deny-read', tools: { read: 'deny' }, patterns: {}, allowlist: false },
+    ]);
+    const mapped = mapPermissions(
+      resolve([
+        { id: 'allow-list', tools: { read: 'allow' }, patterns: {}, allowlist: true },
+        { id: 'deny-read', tools: { read: 'deny' }, patterns: {}, allowlist: false },
+      ]).permissions,
+      { persona: 'builder', target: 'claudecode' },
+    );
+    expect(mapped.allowlist).toBe(false);
+    const all = [...warnings, ...mapped.warnings];
+    expect(codes(all)).toContain('W106_DENY_WINS');
+    const narrowing = all.filter((entry) => entry.code === 'W113_ALLOW_LIST_NARROWS');
+    expect(narrowing).toHaveLength(1);
+    expect(narrowing[0]?.message).toContain('removed by read (deny by permission/deny-read)');
+  });
+
+  it('records the effective allow-list in the digest, so a no-effect opt-in changes nothing', () => {
+    const source = (allowlist: boolean): SourceTree => ({
+      personas: [
+        {
+          kind: 'persona',
+          id: 'builder',
+          displayName: 'Builder',
+          purpose: 'Writes code.',
+          resources: ['permission/locked'],
+          path: '.farna/personas/builder.yaml',
+        },
+      ],
+      rules: [],
+      permissions: [
+        {
+          kind: 'permission',
+          id: 'locked',
+          tools: { read: 'deny' },
+          allowlist,
+          path: '.farna/resources/permissions/locked.jsonc',
+        },
+      ],
+    });
+    const opted = resolveSource(source(true), CONFIG).personas[0];
+    const plain = resolveSource(source(false), CONFIG).personas[0];
+    expect(opted).toBeDefined();
+    expect(plain).toBeDefined();
+    if (opted === undefined || plain === undefined) {
+      return;
+    }
+    // The opt-in has no effect on the emitted form, so it must not change the
+    // digest either: the digest is derived from the value that decides emission.
+    expect(opted.claude.allowlist).toBe(false);
+    expect(opted.permissionDigest).toBe(plain.permissionDigest);
+    expect(personaSourceFile(opted)).toBe(personaSourceFile(plain));
+  });
+
   it('treats two symmetric declarations differently, not as one allow-list', () => {
     // The same declaration, once implicit (deny-list) and once explicit
     // (allow-list). The lens report's failure was that the first silently

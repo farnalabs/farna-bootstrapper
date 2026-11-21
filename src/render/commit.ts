@@ -1,6 +1,8 @@
-import { mkdir, readFile, rename, rm, rmdir, writeFile } from 'node:fs/promises';
+import { mkdir, rename, rm, rmdir, writeFile } from 'node:fs/promises';
 import { dirname, isAbsolute, join, posix } from 'node:path';
+import { MANAGED_FILE_MAX_BYTES } from '../core/constants.js';
 import { pathUnsafe, writeFailed } from '../core/errors.js';
+import { describeFsError, readBoundedBytes } from '../core/fs.js';
 import { containedTarget, lstatOrUndefined } from '../core/paths.js';
 import { stagingName, sweepStaging } from './staging.js';
 
@@ -28,7 +30,7 @@ export type CommitResult = {
  */
 export type CommitOperations = {
   mkdir: (path: string) => Promise<void>;
-  writeFile: (path: string, data: string) => Promise<void>;
+  writeFile: (path: string, data: string | Uint8Array) => Promise<void>;
   rename: (from: string, to: string) => Promise<void>;
   remove: (path: string) => Promise<void>;
   removeDirectory: (path: string) => Promise<void>;
@@ -42,7 +44,9 @@ const defaultOperations: CommitOperations = {
     await mkdir(path);
   },
   writeFile: async (path, data) => {
-    await writeFile(path, data, 'utf8');
+    // The raw bytes are written as-is: a restore must not round-trip a
+    // repository file through a lossy text encoding.
+    await writeFile(path, data);
   },
   rename: async (from, to) => {
     await rename(from, to);
@@ -58,7 +62,8 @@ const defaultOperations: CommitOperations = {
 export type ManagedTarget = {
   path: string;
   target: string;
-  existing: string | undefined;
+  /** The exact bytes on disk, or `undefined` when the path does not exist. */
+  existing: Buffer | undefined;
 };
 
 /**
@@ -66,6 +71,10 @@ export type ManagedTarget = {
  * ancestor, a symlink at the target, a directory in the way, or any other
  * non-regular file. Shared by the write path and by `--dry-run`, so the plan
  * cannot report a state the write path would refuse.
+ *
+ * The read returns bytes, never decoded text: a managed file holding an invalid
+ * byte decodes to U+FFFD, which can equal a rule that legitimately contains
+ * U+FFFD. Comparing the text would call such a file clean and never repair it.
  */
 export async function inspectManagedTarget(repoRoot: string, path: string): Promise<ManagedTarget> {
   assertSafeRelativePath(path);
@@ -91,7 +100,13 @@ export async function inspectManagedTarget(repoRoot: string, path: string): Prom
   return {
     path,
     target,
-    existing: stats === undefined ? undefined : await readFile(target, 'utf8'),
+    existing:
+      stats === undefined
+        ? undefined
+        : await readBoundedBytes(target, path, {
+            action: 'make the managed file readable and re-run generate',
+            maxBytes: MANAGED_FILE_MAX_BYTES,
+          }),
   };
 }
 
@@ -148,9 +163,14 @@ export async function commitFiles(
 
   const statuses: CommitResult['statuses'] = planned.map((item) => ({
     path: item.path,
-    status: item.existing === item.bytes ? 'unchanged' : 'written',
+    status:
+      item.existing !== undefined && item.existing.equals(Buffer.from(item.bytes, 'utf8'))
+        ? 'unchanged'
+        : 'written',
   }));
-  const writes = planned.filter((item) => item.existing !== item.bytes);
+  const writes = planned.filter(
+    (item) => item.existing === undefined || !item.existing.equals(Buffer.from(item.bytes, 'utf8')),
+  );
 
   const staged: StagedFile[] = [];
   const createdDirectories: CreatedDirectory[] = [];
@@ -170,9 +190,20 @@ export async function commitFiles(
       current = parent;
     }
     // Parent first, recording each level the moment it is created: a failure on
-    // a deeper level leaves the earlier levels known to the rollback.
+    // a deeper level leaves the earlier levels known to the rollback. A
+    // concurrent process may create one of these levels first; `EEXIST` for a
+    // directory that is now present is success, never a failure to roll back.
     for (const level of [...missing].reverse()) {
-      await operations.mkdir(level);
+      try {
+        await operations.mkdir(level);
+      } catch (error) {
+        const stats =
+          describeFsError(error) === 'EEXIST' ? await lstatOrUndefined(level, subject) : undefined;
+        if (stats?.isDirectory() !== true) {
+          throw error;
+        }
+        continue;
+      }
       createdDirectories.push({ path: level, subject });
     }
   };
@@ -221,6 +252,7 @@ export async function commitFiles(
 
   const replaced: StagedFile[] = [];
   const restoreFailures: string[] = [];
+  const changedByAnotherWriter: string[] = [];
   let renamePath = staged[0]?.path ?? '';
   try {
     for (const item of staged) {
@@ -235,14 +267,30 @@ export async function commitFiles(
     );
     for (const item of [...replaced].reverse()) {
       try {
+        // Re-check the target before restoring it. Another process may have
+        // written its own (newer) bytes since this call renamed: overwriting
+        // them would undo a concurrent winner. Only restore a file that still
+        // holds exactly the bytes this call put there; a missing target needs
+        // no restore.
+        const stats = await lstatOrUndefined(item.target, item.path);
+        if (stats === undefined) {
+          continue;
+        }
+        const current = await readBoundedBytes(item.target, item.path, {
+          action: 'make the managed file readable and re-run generate',
+          maxBytes: MANAGED_FILE_MAX_BYTES,
+        });
+        if (!current.equals(Buffer.from(item.bytes, 'utf8'))) {
+          changedByAnotherWriter.push(item.path);
+          continue;
+        }
         if (item.existing === undefined) {
           await operations.remove(item.target);
         } else {
           await operations.writeFile(item.target, item.existing);
         }
       } catch (restoreError) {
-        const detail = restoreError instanceof Error ? restoreError.message : String(restoreError);
-        restoreFailures.push(`${item.path} (${detail})`);
+        restoreFailures.push(`${item.path} (${describeFsError(restoreError)})`);
       }
     }
     const leftBehind = await removeCreatedDirectories();
@@ -250,9 +298,11 @@ export async function commitFiles(
     const outcome =
       restoreFailures.length > 0
         ? `${restoreFailures.length} earlier file(s) could NOT be restored: ${restoreFailures.join(', ')}`
-        : replaced.length > 0
-          ? 'earlier files were restored'
-          : 'no earlier file was replaced';
+        : changedByAnotherWriter.length > 0
+          ? `earlier files were left as another writer left them: ${changedByAnotherWriter.join(', ')}`
+          : replaced.length > 0
+            ? 'earlier files were restored'
+            : 'no earlier file was replaced';
     const directories =
       leftBehind.length === 0
         ? ''

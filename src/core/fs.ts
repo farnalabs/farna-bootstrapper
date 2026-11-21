@@ -1,4 +1,6 @@
-import { readFile } from 'node:fs/promises';
+import { constants } from 'node:fs';
+import { type FileHandle, open } from 'node:fs/promises';
+import { SOURCE_MAX_BYTES } from './constants.js';
 import { invalidConfig, pathUnsafe } from './errors.js';
 
 /**
@@ -7,6 +9,72 @@ import { invalidConfig, pathUnsafe } from './errors.js';
  * an edited config be compiled as though the bytes were what the author meant.
  * Every source read is strict UTF-8 and refused with the byte offset instead.
  */
+
+const NO_FOLLOW = constants.O_NOFOLLOW ?? 0;
+const NO_BLOCK = constants.O_NONBLOCK ?? 0;
+
+function errorCode(error: unknown): string | undefined {
+  return error instanceof Error && 'code' in error && typeof error.code === 'string'
+    ? error.code
+    : undefined;
+}
+
+export type ReadBytesOptions = {
+  action?: string;
+  maxBytes?: number;
+};
+
+/**
+ * Read a repository-controlled file into bytes, bounded and without following a
+ * symlink. The open fd is authoritative: a path swapped for a symlink or a FIFO
+ * after the caller's `lstat` is refused rather than followed or blocked on.
+ * A file larger than `maxBytes` is a typed refusal naming the repository-relative
+ * subject, never an `Invalid string length` from the allocation that would
+ * otherwise follow.
+ */
+export async function readBoundedBytes(
+  path: string,
+  subject: string,
+  options: ReadBytesOptions = {},
+): Promise<Buffer> {
+  const maxBytes = options.maxBytes ?? SOURCE_MAX_BYTES;
+  const action = options.action ?? 'make the path readable and re-run';
+  let handle: FileHandle;
+  try {
+    handle = await open(path, constants.O_RDONLY | NO_FOLLOW | NO_BLOCK);
+  } catch (error) {
+    const code = errorCode(error);
+    if (code === 'ELOOP') {
+      throw pathUnsafe(`symlink not allowed: ${subject}`, {
+        subject,
+        action: 'replace the symbolic link with a real file',
+      });
+    }
+    throw invalidConfig(`cannot read ${subject} (${describeFsError(error)})`, {
+      subject,
+      action,
+      cause: error,
+    });
+  }
+  try {
+    const stats = await handle.stat();
+    if (!stats.isFile()) {
+      throw pathUnsafe(`${subject} is not a regular file`, {
+        subject,
+        action: 'replace it with a regular file, or remove it',
+      });
+    }
+    if (stats.size > maxBytes) {
+      throw pathUnsafe(`${subject} is larger than ${maxBytes} bytes; refusing to read it`, {
+        subject,
+        action: 'replace it with a file this tool can inspect, then re-run',
+      });
+    }
+    return await handle.readFile();
+  } finally {
+    await handle.close();
+  }
+}
 
 /** The first byte offset of an invalid UTF-8 sequence, or `undefined`. */
 export function firstInvalidUtf8Offset(bytes: Uint8Array): number | undefined {
@@ -79,23 +147,16 @@ export type ReadUtf8Options = {
 /**
  * Read a source file as strict UTF-8. A filesystem failure is a typed error with
  * the repository-relative subject, never a raw `EACCES` carrying an absolute
- * path; the CLI's error boundary has one shape for every failure.
+ * path; the CLI's error boundary has one shape for every failure. The read is
+ * bounded before any allocation (see `SOURCE_MAX_BYTES`).
  */
 export async function readUtf8File(
   path: string,
   subject: string,
   options: ReadUtf8Options = {},
 ): Promise<string> {
-  let bytes: Uint8Array;
-  try {
-    bytes = await readFile(path);
-  } catch (error) {
-    throw invalidConfig(`cannot read ${subject}`, {
-      subject,
-      action: options.action ?? 'make the path readable and re-run',
-      cause: error,
-    });
-  }
+  const action = options.action ?? 'make the path readable and re-run';
+  const bytes = await readBoundedBytes(path, subject, { action, maxBytes: SOURCE_MAX_BYTES });
   return decodeUtf8(bytes, subject);
 }
 

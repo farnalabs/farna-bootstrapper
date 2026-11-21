@@ -102,6 +102,11 @@ export type JsoncParseOptions = {
 /**
  * Parse JSONC with comments and trailing commas, rejecting duplicate keys at
  * every depth. CRLF is normalised before parsing.
+ *
+ * No nesting-depth limit is imposed by the grammar, so a repository-controlled
+ * file can be deep enough to exhaust the stack. That surfaces as a `RangeError`
+ * from the parser or the duplicate-key walk; it is mapped to the same typed
+ * diagnostic as any other invalid input, never allowed to escape untyped.
  */
 export function parseJsonc<T = unknown>(text: string, options: JsoncParseOptions): T {
   if (hasBom(text)) {
@@ -111,25 +116,35 @@ export function parseJsonc<T = unknown>(text: string, options: JsoncParseOptions
     });
   }
   const normalised = text.replace(/\r\n/g, '\n');
-  const errors: ParseError[] = [];
-  const tree = parseTree(normalised, errors, {
-    allowTrailingComma: true,
-    disallowComments: false,
-  });
-  if (errors.length > 0 || tree === undefined) {
-    const first = errors[0];
-    const detail =
-      first === undefined
-        ? 'file did not parse'
-        : `${printParseErrorCode(first.error)} at offset ${first.offset}`;
-    throw invalidConfig(detail, { subject: options.subject });
-  }
-  const duplicate = findDuplicateKey(tree, '');
-  if (duplicate !== undefined) {
-    throw invalidConfig(`duplicate key "${duplicate}"`, {
-      subject: options.subject,
-      action: 'remove one of the duplicate keys; the last value is never silently kept',
+  try {
+    const errors: ParseError[] = [];
+    const tree = parseTree(normalised, errors, {
+      allowTrailingComma: true,
+      disallowComments: false,
     });
+    if (errors.length > 0 || tree === undefined) {
+      const first = errors[0];
+      const detail =
+        first === undefined
+          ? 'file did not parse'
+          : `${printParseErrorCode(first.error)} at offset ${first.offset}`;
+      throw invalidConfig(detail, { subject: options.subject });
+    }
+    const duplicate = findDuplicateKey(tree, '');
+    if (duplicate !== undefined) {
+      throw invalidConfig(`duplicate key "${duplicate}"`, {
+        subject: options.subject,
+        action: 'remove one of the duplicate keys; the last value is never silently kept',
+      });
+    }
+    return getNodeValue(tree) as T;
+  } catch (error) {
+    if (error instanceof RangeError) {
+      throw invalidConfig('file is nested too deeply to parse', {
+        subject: options.subject,
+        action: 'flatten the structure; a file this deep would exhaust the stack',
+      });
+    }
+    throw error;
   }
-  return getNodeValue(tree) as T;
 }

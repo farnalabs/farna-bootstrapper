@@ -1,16 +1,18 @@
 import type { Dirent } from 'node:fs';
-import { readdir, readFile } from 'node:fs/promises';
+import { readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import {
   CLAUDE_AGENTS_DIR,
   CLAUDE_DIR,
   DRIFT_CODE,
   EXIT,
+  isOsMetadataName,
   LOCK_PATH,
+  MANAGED_FILE_MAX_BYTES,
   ROOT_DIR,
 } from '../../core/constants.js';
 import { invalidConfig } from '../../core/errors.js';
-import { describeFsError } from '../../core/fs.js';
+import { describeFsError, readBoundedBytes } from '../../core/fs.js';
 import { compareCodepoints } from '../../core/json.js';
 import {
   assertNoSymlink,
@@ -80,7 +82,7 @@ async function listAgentEntries(repoRoot: string): Promise<AgentEntry[]> {
     });
   }
   return entries
-    .filter((entry) => !isStagingName(entry.name))
+    .filter((entry) => !isStagingName(entry.name) && !isOsMetadataName(entry.name))
     .map((entry) => ({
       path: `${CLAUDE_AGENTS_DIR}/${entry.name}`,
       regular: entry.isFile(),
@@ -130,8 +132,11 @@ export async function runCheck(repoRoot: string, renderer: RenderTarget): Promis
       });
       continue;
     }
-    const existing = await readFile(absolute, 'utf8');
-    if (existing !== file.bytes) {
+    const existing = await readBoundedBytes(absolute, file.path, {
+      action: 'make the managed file readable and re-run check',
+      maxBytes: MANAGED_FILE_MAX_BYTES,
+    });
+    if (!existing.equals(Buffer.from(file.bytes, 'utf8'))) {
       drift.push({
         code: DRIFT_CODE,
         path: file.path,

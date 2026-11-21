@@ -40,10 +40,34 @@ export const SUPPORTED_TARGETS: readonly string[] = [DEFAULT_TARGET];
 export const CLAUDE_DIR = '.claude';
 export const CLAUDE_AGENTS_DIR = `${CLAUDE_DIR}/agents`;
 
-/** The two local-only paths `init` adds to `.gitignore`. */
+/**
+ * Operating-system metadata a checkout can create in a source directory. These
+ * are not source: a source tree that has been on macOS or Windows must not stop
+ * compiling because Finder wrote `.DS_Store`. Every other unexpected file stays a
+ * hard error.
+ */
+export const OS_METADATA_NAMES: readonly string[] = ['.DS_Store', 'Thumbs.db', 'desktop.ini'];
+
+export function isOsMetadataName(name: string): boolean {
+  return OS_METADATA_NAMES.includes(name);
+}
+
+/** The local-only paths `init` adds to `.gitignore`, plus OS metadata. */
 export const GITIGNORE_LINES: readonly string[] = [
   `${ROOT_DIR}/local.jsonc`,
   `${ROOT_DIR}/.journal.json`,
+  ...OS_METADATA_NAMES,
+];
+
+/**
+ * The two paths whose line endings change their committed bytes. `check`
+ * compares bytes, so a checkout that rewrites them to CRLF would report drift
+ * the source never declared. `init` merges these into the consumer's
+ * `.gitattributes`.
+ */
+export const GITATTRIBUTES_LINES: readonly string[] = [
+  `/${CLAUDE_AGENTS_DIR}/** text eol=lf`,
+  `/${LOCK_PATH} text eol=lf`,
 ];
 
 /**
@@ -57,6 +81,17 @@ export const STAGING_INFIX = '.farna-tmp-';
 /** A lockfile is derived and small; anything larger is refused rather than read. */
 export const LOCKFILE_MAX_BYTES = 4 * 1024 * 1024;
 
+/**
+ * A managed file and a source file are bounded for the same reason: a
+ * repository-controlled path must never make the process allocate until the JS
+ * string limit throws an untyped `Invalid string length`.
+ */
+export const MANAGED_FILE_MAX_BYTES = 4 * 1024 * 1024;
+export const SOURCE_MAX_BYTES = 4 * 1024 * 1024;
+
+/** A staging sibling older than this is swept even when its pid was reused. */
+export const STAGING_MAX_AGE_MS = 60 * 60 * 1000;
+
 export const ID_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 export const ID_MAX_LENGTH = 64;
 
@@ -65,13 +100,15 @@ export type Capability = 'rule' | 'permission' | 'model';
 /** Capabilities a persona resource reference may name in this slice. */
 export const SUPPORTED_RESOURCE_KINDS: readonly Capability[] = ['rule', 'model', 'permission'];
 
-export type ExitCode = 0 | 1 | 2 | 3 | 5;
+export type ExitCode = 0 | 1 | 2 | 3 | 4 | 5;
 
 export const EXIT = {
   ok: 0,
   invalidConfig: 1,
   conflict: 2,
   refused: 3,
+  /** `F008_DECLARED_NOT_EMITTED`: the renderer lost or invented declared content. */
+  declaredNotEmitted: 4,
   /** `check` reports drift as exit 1. Drift is not an exception, so it has no F-code. */
   drift: 1,
   renderFailed: 5,
@@ -95,7 +132,7 @@ export const EXIT_BY_CODE: Record<ErrorCode, ExitCode> = {
   F001_INVALID_CONFIG: EXIT.invalidConfig,
   F003_PATH_UNSAFE: EXIT.invalidConfig,
   F005_CONFLICT: EXIT.conflict,
-  F008_DECLARED_NOT_EMITTED: EXIT.drift,
+  F008_DECLARED_NOT_EMITTED: EXIT.declaredNotEmitted,
   F009_RENDER_FAILED: EXIT.renderFailed,
   F010_RENDERER_MISMATCH: EXIT.renderFailed,
   F011_PERMISSION_UNMAPPED: EXIT.refused,

@@ -9,6 +9,7 @@ import {
 } from '../core/constants.js';
 import { FarnaError } from '../core/errors.js';
 import type { RenderTarget } from '../render/port.js';
+import { RENDERER_PIN } from '../render/upstream.js';
 import { formatCheck, formatGenerate, formatInit, formatJson } from '../report/format.js';
 import { runCheck } from './commands/check.js';
 import { runGenerate } from './commands/generate.js';
@@ -105,14 +106,15 @@ async function emit(
 /** Commander wiring for the three commands this slice implements. */
 export function buildProgram(context: CliContext): Command {
   const program = new Command();
-  const identity = context.renderer.identity();
   program
     .name(PRODUCT_NAME)
     .description(
       'Compile named agent personas and resources into harness configuration, and prove the output still matches the source.',
     )
     .version(
-      `${PRODUCT_NAME} ${PRODUCT_VERSION} (renderer ${identity.name} ${identity.version})`,
+      // The compiled-in pin, never the installed renderer: `--version` and
+      // `init` must work when the renderer is missing or broken.
+      `${PRODUCT_NAME} ${PRODUCT_VERSION} (renderer ${RENDERER_PIN.name} ${RENDERER_PIN.version})`,
       '-v, --version',
     )
     .showSuggestionAfterError()

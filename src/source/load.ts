@@ -3,6 +3,7 @@ import { readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { ZodError } from 'zod';
 import {
+  isOsMetadataName,
   PERMISSION_FILE_EXT,
   PERMISSIONS_DIR,
   PERSONA_FILE_EXT,
@@ -103,7 +104,12 @@ async function listEntries(
       });
     }
   }
-  return entries.sort((a, b) => compareCodepoints(a.name, b.name));
+  // Finder, Explorer and desktop.ini write these into any directory a checkout
+  // has visited. They are not source and must not stop a valid tree compiling;
+  // every other unexpected name is still a hard error.
+  return entries
+    .filter((entry) => !isOsMetadataName(entry.name))
+    .sort((a, b) => compareCodepoints(a.name, b.name));
 }
 
 /** Only the resource kinds this milestone implements may exist on disk. */
@@ -111,7 +117,11 @@ const SUPPORTED_RESOURCE_DIRS: readonly string[] = [RULES_DIR, PERMISSIONS_DIR];
 
 async function assertSupportedResourceDirs(repoRoot: string): Promise<void> {
   const dirRelative = relative(RESOURCES_DIR);
-  const entries = await listEntries(join(repoRoot, ROOT_DIR, RESOURCES_DIR), dirRelative);
+  // Git does not track an empty directory, so a clone of a freshly initialised
+  // tree has no `resources/` at all.
+  const entries = await listEntries(join(repoRoot, ROOT_DIR, RESOURCES_DIR), dirRelative, {
+    optional: true,
+  });
   for (const entry of entries) {
     if (!entry.isDirectory() || !SUPPORTED_RESOURCE_DIRS.includes(entry.name)) {
       throw invalidConfig(`resource kind "${entry.name}" is not implemented in this slice`, {
@@ -124,7 +134,10 @@ async function assertSupportedResourceDirs(repoRoot: string): Promise<void> {
 
 async function loadPersonas(repoRoot: string): Promise<LoadedPersona[]> {
   const dirRelative = relative(PERSONAS_DIR);
-  const entries = await listEntries(join(repoRoot, ROOT_DIR, PERSONAS_DIR), dirRelative);
+  // A clone has no `personas/` when nothing was committed under it yet.
+  const entries = await listEntries(join(repoRoot, ROOT_DIR, PERSONAS_DIR), dirRelative, {
+    optional: true,
+  });
   const personas: LoadedPersona[] = [];
   for (const entry of entries) {
     const name = entry.name;
@@ -168,9 +181,11 @@ async function loadPersonas(repoRoot: string): Promise<LoadedPersona[]> {
 
 async function loadRules(repoRoot: string): Promise<RuleResource[]> {
   const dirRelative = relative(RESOURCES_DIR, RULES_DIR);
+  // Git does not track an empty `resources/rules/`, so a clone may not have it.
   const entries = await listEntries(
     join(repoRoot, ROOT_DIR, RESOURCES_DIR, RULES_DIR),
     dirRelative,
+    { optional: true },
   );
   const rules: RuleResource[] = [];
   for (const entry of entries) {

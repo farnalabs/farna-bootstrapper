@@ -2,6 +2,7 @@ import { appendFile, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { runGenerate } from '../../src/cli/commands/generate.js';
+import { formatGenerate } from '../../src/report/format.js';
 import { FakeRenderTarget } from '../support/fake-renderer.js';
 import { createTempRepo, hashTree, readText } from '../support/temp-repo.js';
 
@@ -88,6 +89,21 @@ describe('generate with the injected renderer', () => {
       ]);
       expect(result.files.every((file) => file.status === 'would-write')).toBe(true);
       expect(await hashTree(repo.root)).toBe(before);
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
+  it('summarises a dry-run by would-write count, not the size of the plan', async () => {
+    const repo = await createTempRepo();
+    try {
+      await runGenerate({ cwd: repo.root, dryRun: false }, new FakeRenderTarget());
+      const clean = await runGenerate({ cwd: repo.root, dryRun: true }, new FakeRenderTarget());
+      expect(formatGenerate(clean)).toContain('would write 0 file(s), 3 unchanged');
+
+      await appendFile(join(repo.root, '.claude/agents/reviewer.md'), ' ', 'utf8');
+      const drifted = await runGenerate({ cwd: repo.root, dryRun: true }, new FakeRenderTarget());
+      expect(formatGenerate(drifted)).toContain('would write 1 file(s), 2 unchanged');
     } finally {
       await repo.cleanup();
     }

@@ -1,8 +1,9 @@
 import { mkdir, mkdtemp, realpath, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { isAbsolute, join, relative } from 'node:path';
+import { basename, join } from 'node:path';
 import { pathUnsafe, renderFailed } from '../core/errors.js';
 import { describeFsError } from '../core/fs.js';
+import { isPathInside } from '../core/paths.js';
 
 export type Stage = {
   /** Canonical path to the stage root. */
@@ -37,40 +38,16 @@ const defaultRemoveStage: RemoveStage = async (path, options) => {
   await rm(path, options);
 };
 
-/** A path API, so the containment predicate is testable with Windows paths. */
-export type PathApi = {
-  relative: (from: string, to: string) => string;
-  isAbsolute: (path: string) => boolean;
-};
-
-/**
- * True when `candidate` is `root` or lies inside it. Uses `relative` rather
- * than string prefixes: on Windows the separator is `\`, and a hardcoded `/`
- * prefix made the stage refuse its own directory and leak it.
- */
-export function isPathInside(
-  root: string,
-  candidate: string,
-  api: PathApi = { relative, isAbsolute },
-): boolean {
-  const rel = api.relative(root, candidate);
-  if (rel === '') {
-    return true;
-  }
-  if (api.isAbsolute(rel)) {
-    return false;
-  }
-  return rel !== '..' && !rel.startsWith('../') && !rel.startsWith('..\\');
-}
-
 async function canonicalTmpRoot(operations: StageOperations): Promise<string> {
   const configured = operations.tmpdir();
   try {
     // Canonicalise once: on macOS /var is a symlink to /private/var.
     return await operations.realpath(configured);
   } catch (error) {
+    // The configured temporary directory is an absolute host path; never
+    // interpolate it into a diagnostic. The code says what failed.
     throw renderFailed(
-      `cannot use the temporary directory ${configured} (${describeFsError(error)})`,
+      `cannot use the configured temporary directory (${describeFsError(error)})`,
       {
         subject: 'temporary stage',
         action: 'set TMPDIR to a writable directory and re-run',
@@ -98,9 +75,10 @@ export async function cleanupStage(
     }
     await removeStage(root, { recursive: true, force: true });
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+    // The stage root is under the host temporary directory, so only its leaf
+    // name is safe to print; the absolute prefix is redacted.
     process.stderr.write(
-      `farna-bootstrapper: warning: could not remove temporary stage ${root}: ${message}\n`,
+      `farna-bootstrapper: warning: could not remove temporary stage ${basename(root)} (${describeFsError(error)})\n`,
     );
   }
 }

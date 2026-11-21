@@ -8,7 +8,8 @@ import { describe, expect, it, vi } from 'vitest';
  *
  * The read log is the observation: the stage artefacts live under `out/`, so a
  * second read of `/out/.claude/agents/<persona>.md` is visible here without
- * mocking the renderer.
+ * mocking the renderer. Reads go through the bounded byte reader, which opens
+ * the path and reads from the handle, so `open` is what is recorded.
  */
 const reads = vi.hoisted(() => [] as string[]);
 
@@ -16,12 +17,12 @@ vi.mock('node:fs/promises', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs/promises')>();
   return {
     ...actual,
-    readFile: (async (path: Parameters<typeof actual.readFile>[0], options?: unknown) => {
+    open: (async (path: unknown, ...rest: unknown[]) => {
       if (typeof path === 'string') {
         reads.push(path);
       }
-      return await actual.readFile(path, options as Parameters<typeof actual.readFile>[1]);
-    }) as typeof actual.readFile,
+      return await (actual.open as (...args: unknown[]) => Promise<unknown>)(path, ...rest);
+    }) as typeof actual.open,
   };
 });
 

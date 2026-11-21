@@ -127,13 +127,35 @@ describe('rulesync integration', () => {
       expect(result.files.every((file) => file.status === 'written')).toBe(true);
       const builder = await readText(repo.root, '.claude/agents/builder.md');
       expect(builder).toContain('name: builder');
-      expect(previous).not.toBe('');
+      // The renderer changed the process working directory for its call; it
+      // must be restored so a second render in this process is unaffected.
+      expect(process.cwd()).toBe(ambient.root);
     } finally {
       process.chdir(previous);
       await repo.cleanup();
       await ambient.cleanup();
     }
   }, 30_000);
+
+  it('restores the working directory when the renderer throws', async () => {
+    const repo = await createTempRepo();
+    const previous = process.cwd();
+    try {
+      const missing = join(repo.root, 'missing-stage');
+      await expect(
+        new UpstreamRenderTarget().generate({
+          target: 'claudecode',
+          stageRoot: missing,
+          sourceRoot: missing,
+          outputRoot: missing,
+        }),
+      ).rejects.toMatchObject({ code: 'F009_RENDER_FAILED' });
+      expect(process.cwd()).toBe(previous);
+    } finally {
+      process.chdir(previous);
+      await repo.cleanup();
+    }
+  });
 
   it('check is clean immediately after generate and fails after an edit', async () => {
     const repo = await createTempRepo();

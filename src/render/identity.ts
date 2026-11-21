@@ -26,7 +26,19 @@ function readJson(path: string): JsonObject | undefined {
 }
 
 function findPackageDir(name: string): string {
-  let current = dirname(requireFromHere.resolve(name));
+  let entry: string;
+  try {
+    entry = requireFromHere.resolve(name);
+  } catch (cause) {
+    // A global install, or a missing dependency, must not surface a raw
+    // module-resolution stack from a command that renders.
+    throw rendererMismatch(`the pinned renderer ${name} is not installed`, {
+      subject: name,
+      action: 'install the pinned dependencies, or reinstall farna-bootstrapper',
+      cause,
+    });
+  }
+  let current = dirname(entry);
   for (let depth = 0; depth < 16; depth += 1) {
     const manifest = readJson(join(current, 'package.json'));
     if (manifest?.['name'] === name && typeof manifest['version'] === 'string') {

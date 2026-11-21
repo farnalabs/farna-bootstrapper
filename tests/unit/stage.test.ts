@@ -1,14 +1,10 @@
 import { mkdir, mkdtemp, realpath, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join, win32 } from 'node:path';
+import { basename, join, win32 } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { renderFailed } from '../../src/core/errors.js';
-import {
-  cleanupStage,
-  isPathInside,
-  type StageOperations,
-  withStage,
-} from '../../src/render/stage.js';
+import { isPathInside } from '../../src/core/paths.js';
+import { cleanupStage, type StageOperations, withStage } from '../../src/render/stage.js';
 
 async function exists(path: string): Promise<boolean> {
   try {
@@ -88,7 +84,9 @@ describe('stage cleanup', () => {
       });
       const output = spy.mock.calls.map((call) => String(call[0])).join('');
       expect(output).toContain('could not remove temporary stage');
-      expect(output).toContain(stageRoot);
+      // The absolute stage root is redacted; only its leaf name is printed.
+      expect(output).toContain(basename(stageRoot));
+      expect(output).not.toContain(tmpdir());
     } finally {
       spy.mockRestore();
       if (stageRoot !== '') {
@@ -117,7 +115,9 @@ describe('stage cleanup', () => {
       ).resolves.toBeUndefined();
       const output = spy.mock.calls.map((call) => String(call[0])).join('');
       expect(output).toContain('could not remove temporary stage');
-      expect(output).toContain('refusing to remove a path outside the temporary root');
+      // A path outside the temporary root is refused by code, not by leaking
+      // the absolute path into the warning.
+      expect(output).toContain('F003_PATH_UNSAFE');
     } finally {
       spy.mockRestore();
     }

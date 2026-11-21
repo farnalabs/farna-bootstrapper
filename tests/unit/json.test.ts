@@ -49,4 +49,19 @@ describe('canonical json and hashing', () => {
   it('rejects a UTF-8 BOM', () => {
     expect(() => parseJsonc('\uFEFF{"a":1}', { subject: 'test.jsonc' })).toThrowError(FarnaError);
   });
+
+  it('maps a pathologically deep document to F001 instead of an untyped RangeError', () => {
+    const depth = 50_000;
+    const text = `${'{"a":'.repeat(depth)}1${'}'.repeat(depth)}`;
+    let error: unknown;
+    try {
+      parseJsonc(text, { subject: '.farna/config.jsonc' });
+    } catch (caught) {
+      error = caught;
+    }
+    expect(error).toBeInstanceOf(FarnaError);
+    expect((error as FarnaError).code).toBe('F001_INVALID_CONFIG');
+    expect((error as FarnaError).message).toContain('nested too deeply');
+    expect((error as FarnaError).subject).toBe('.farna/config.jsonc');
+  });
 });

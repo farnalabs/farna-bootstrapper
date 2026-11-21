@@ -1,11 +1,15 @@
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { runCheck } from '../../src/cli/commands/check.js';
+import { runGenerate } from '../../src/cli/commands/generate.js';
+import { runInit } from '../../src/cli/commands/init.js';
 import { resolveSource } from '../../src/compose/resolve.js';
 import { loadConfig } from '../../src/config/load.js';
 import { FarnaError } from '../../src/core/errors.js';
 import { loadSource } from '../../src/source/load.js';
-import { createTempRepo } from '../support/temp-repo.js';
+import { FakeRenderTarget } from '../support/fake-renderer.js';
+import { createEmptyTempDir, createTempRepo } from '../support/temp-repo.js';
 
 async function expectFarnaError(promise: Promise<unknown>, code: string): Promise<FarnaError> {
   try {
@@ -303,6 +307,47 @@ describe('source loader', () => {
       );
       const error = await expectFarnaError(loadConfig(repo.root), 'F001_INVALID_CONFIG');
       expect(error.message).toContain('target "opencode" is not configured');
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
+  it('ignores OS metadata files that a desktop checkout writes', async () => {
+    const repo = await createTempRepo('composed');
+    try {
+      for (const name of ['.DS_Store', 'Thumbs.db', 'desktop.ini']) {
+        await writeFile(join(repo.root, '.farna/personas', name), 'metadata', 'utf8');
+        await writeFile(join(repo.root, '.farna/resources/rules', name), 'metadata', 'utf8');
+        await writeFile(join(repo.root, '.farna/resources/permissions', name), 'metadata', 'utf8');
+        await writeFile(join(repo.root, '.farna/resources', name), 'metadata', 'utf8');
+      }
+      const source = await loadSource(repo.root);
+      expect(source.personas.map((persona) => persona.id)).not.toContain('.DS_Store');
+      const result = await runGenerate({ cwd: repo.root, dryRun: false }, new FakeRenderTarget());
+      expect(result.personas).toEqual(['builder', 'builder-python', 'reviewer']);
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
+  it('compiles a clone where git dropped the empty source directories', async () => {
+    const repo = await createEmptyTempDir();
+    try {
+      await runInit(repo.root);
+      // Simulate `git clone`: git does not track an empty directory, so the
+      // directories `init` created are absent until a file lands in them.
+      await rm(join(repo.root, '.farna/personas'), { recursive: true, force: true });
+      await rm(join(repo.root, '.farna/resources'), { recursive: true, force: true });
+
+      const source = await loadSource(repo.root);
+      expect(source.personas).toEqual([]);
+      expect(source.rules).toEqual([]);
+      expect(source.permissions).toEqual([]);
+
+      const result = await runGenerate({ cwd: repo.root, dryRun: false }, new FakeRenderTarget());
+      expect(result.personas).toEqual([]);
+      const check = await runCheck(repo.root, new FakeRenderTarget());
+      expect(check.ok).toBe(true);
     } finally {
       await repo.cleanup();
     }

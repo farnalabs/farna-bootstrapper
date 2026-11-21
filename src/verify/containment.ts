@@ -210,7 +210,7 @@ export async function verifyRender(
     const managedPath = expectedAgentPath(persona.id);
     const absolute = join(outputRoot, managedPath);
     // The renderer's own path list is not evidence that it wrote anything.
-    const stats = await lstatOrUndefined(absolute);
+    const stats = await lstatOrUndefined(absolute, managedPath);
     if (stats === undefined) {
       throw declaredNotEmitted('renderer listed a path it did not write', {
         subject: managedPath,
