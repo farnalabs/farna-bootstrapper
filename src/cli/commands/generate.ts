@@ -1,5 +1,4 @@
-import { join } from 'node:path';
-import { commitFiles, currentBytes, type FileStatus } from '../../render/commit.js';
+import { commitFiles, type FileStatus, inspectManagedTarget } from '../../render/commit.js';
 import type { RenderTarget } from '../../render/port.js';
 import { prepareRender } from '../../render/prepare.js';
 import type { Warning } from '../../report/warnings.js';
@@ -33,10 +32,12 @@ export async function runGenerate(
   if (options.dryRun) {
     const files: GenerateResult['files'] = [];
     for (const file of prepared.files) {
-      const existing = await currentBytes(join(options.cwd, file.path));
+      // The same containment and type checks the write path makes: dry-run
+      // must not read a plan through a symlinked or non-directory ancestor.
+      const current = await inspectManagedTarget(options.cwd, file.path);
       files.push({
         path: file.path,
-        status: existing === file.bytes ? 'unchanged' : 'would-write',
+        status: current.existing === file.bytes ? 'unchanged' : 'would-write',
       });
     }
     return {
