@@ -169,6 +169,7 @@ export const WARNING_CODES = [
   'W111_ASK_DOWNGRADED',
   'W112_PERMISSION_LOSSY',
   'W113_ALLOW_LIST_NARROWS',
+  'W114_RENDERER_INTEGRITY_UNVERIFIED',
 ] as const;
 
 export type WarningCode = (typeof WARNING_CODES)[number];
@@ -177,10 +178,19 @@ export type WarningCode = (typeof WARNING_CODES)[number];
  * A warning's default severity is a property of its code (schema.md section 7.2).
  * W106 is the only code whose severity depends on what it removes: a deny that
  * takes away an allow is medium, every other stricter-wins report is info.
+ *
+ * W114 is medium, not high: the renderer's version is still enforced, so a
+ * different renderer cannot pass. What is missing is the tarball digest that
+ * ties the installed bytes to the published package, which makes this a
+ * provenance caveat rather than a correctness failure. It is not info either:
+ * a run whose integrity could not be checked must never look like a clean
+ * integrity pass. High is reserved for a warning that records a real loss
+ * (W112), which this is not.
  */
 export const WARNING_SEVERITY: Record<WarningCode, Severity> = {
   W106_DENY_WINS: 'info',
   W111_ASK_DOWNGRADED: 'medium',
   W112_PERMISSION_LOSSY: 'high',
   W113_ALLOW_LIST_NARROWS: 'medium',
+  W114_RENDERER_INTEGRITY_UNVERIFIED: 'medium',
 };

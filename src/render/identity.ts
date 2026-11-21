@@ -3,7 +3,7 @@ import { createRequire } from 'node:module';
 import { basename, dirname, isAbsolute, join, relative } from 'node:path';
 import { LOCKFILE_MAX_BYTES, NPM_LOCKFILE_MAX_BYTES, PRODUCT_NAME } from '../core/constants.js';
 import { FarnaError, rendererMismatch } from '../core/errors.js';
-import type { RendererIdentity } from './port.js';
+import type { RecordedIntegrity, RendererIdentity } from './port.js';
 
 /**
  * The renderer that actually ran. The values are read from the installed
@@ -66,8 +66,9 @@ function unreadableLockRecord(path: string, cause?: unknown): FarnaError {
 /**
  * Read an npm lock record. The three outcomes are deliberately distinct:
  *
- * - no record at all (`ENOENT`) yields `undefined`, the one case where a global
- *   install's compile-time pin stands in for a missing integrity;
+ * - no record at all (`ENOENT`) yields `undefined`, which `readRecordedIntegrity`
+ *   reports as `no-record` so the renderer identity policy can name it with
+ *   W114 rather than substituting the pin for the missing digest;
  * - a record over `NPM_LOCKFILE_MAX_BYTES` is refused (F010), naming the record
  *   and the bound, because a present-but-unverifiable integrity must fail
  *   exactly like a differing one rather than become a pass;
@@ -179,33 +180,36 @@ function nestingLevel(key: string): number {
   return key.split('/').filter((segment) => segment === 'node_modules').length;
 }
 
+type LockLookup = { found: boolean; integrity?: string };
+
 /**
  * The renderer's recorded integrity from one npm lock record.
  *
  * The record is searched, not indexed by one literal key: a nested install
  * records the renderer under the package that depends on it
  * (`node_modules/<product>/node_modules/<renderer>`), and reading only the
- * hoisted key made a present record look absent, so `generate` silently fell
- * back to the compile-time pin. When several entries match, the one nested
- * under our own package wins (that is the copy the product actually imports),
- * then the shallowest. The key itself breaks a remaining tie so the same record
- * always yields the same answer.
+ * hoisted key made a present record look absent. When several entries match,
+ * the one nested under our own package wins (that is the copy the product
+ * actually imports), then the shallowest. The key itself breaks a remaining tie
+ * so the same record always yields the same answer.
  *
- * Only an entry that is a JSON object with a string `integrity` counts. A
- * matching key with no readable integrity leaves the record without an answer,
- * exactly as an absent key did: the caller's bound and refusal rules decide
- * what a present-but-unverifiable record means.
+ * `found` distinguishes the two ways a record can leave the integrity unknown:
+ * no matching key at all, and a matching key whose value is not a JSON object
+ * with a string `integrity`. The renderer identity policy reports both as
+ * `W114`, but the warning names which one happened.
  */
-function integrityFromLock(lock: JsonObject | undefined, name: string): string | undefined {
+function integrityFromLock(lock: JsonObject | undefined, name: string): LockLookup {
   const packages = lock?.['packages'];
   if (packages === null || typeof packages !== 'object' || Array.isArray(packages)) {
-    return undefined;
+    return { found: false };
   }
+  let found = false;
   let best: { key: string; underProduct: boolean; level: number; integrity: string } | undefined;
   for (const [key, value] of Object.entries(packages as JsonObject)) {
     if (!isRendererKey(key, name)) {
       continue;
     }
+    found = true;
     if (value === null || typeof value !== 'object' || Array.isArray(value)) {
       continue;
     }
@@ -224,7 +228,7 @@ function integrityFromLock(lock: JsonObject | undefined, name: string): string |
       best = { ...candidate, integrity };
     }
   }
-  return best?.integrity;
+  return best === undefined ? { found } : { found: true, integrity: best.integrity };
 }
 
 /**
@@ -241,6 +245,11 @@ function integrityFromLock(lock: JsonObject | undefined, name: string): string |
  * lockfile that records the renderer, keyed
  * `node_modules/<product>/node_modules/<renderer>`, sits at that last hop.
  *
+ * A scoped package adds one directory level between the package and its
+ * `node_modules` (`<root>/node_modules/@scope/<name>`), so the scope directory
+ * is skipped in the same climb; without that, a scoped install's project
+ * lockfile was never reached and a present record looked absent.
+ *
  * The walk must not climb above this boundary. An unrelated `package-lock.json`
  * in a parent directory (a home directory, a parent monorepo) would otherwise
  * be read as though it described this install and could refuse a healthy
@@ -255,13 +264,24 @@ function installRootFor(packageDir: string): string {
   let root = packageDir;
   for (let current = packageDir; ; ) {
     const parent = dirname(current);
-    if (parent === current || basename(parent) !== 'node_modules') {
+    if (parent === current) {
       break;
     }
-    // `current` is inside a `node_modules` directory, so the package that owns
-    // that directory is one level further out on the same chain.
-    root = dirname(parent);
-    current = root;
+    if (basename(parent) === 'node_modules') {
+      // `current` is inside a `node_modules` directory, so the package that
+      // owns that directory is one level further out on the same chain.
+      root = dirname(parent);
+      current = root;
+      continue;
+    }
+    if (basename(parent).startsWith('@') && basename(dirname(parent)) === 'node_modules') {
+      // A scoped package: `<root>/node_modules/@scope/<name>`. The scope
+      // directory is part of the package path, not an install boundary.
+      root = dirname(dirname(parent));
+      current = root;
+      continue;
+    }
+    break;
   }
   if (root !== packageDir) {
     return root;
@@ -281,17 +301,24 @@ function installRootFor(packageDir: string): string {
  * our own package (see `integrityFromLock`). Only a record that does not exist
  * is skipped: a present record that cannot be read, or is over
  * `NPM_LOCKFILE_MAX_BYTES`, is refused with F010 instead of being treated as an
- * absent one and replaced by the compile-time pin.
+ * absent one; only a genuinely absent entry is W114.
  *
  * The project-lockfile walk stops at the install root (the top of the renderer's
  * `node_modules` chain, so a nested install reaches the project record) and
  * never reads an unrelated lockfile above it.
  *
+ * The result is structured, never `undefined` for both "no record" and "no
+ * usable entry". The renderer identity policy reports those as `W114` and names
+ * which one happened, so they must not be indistinguishable at this seam.
+ * A record that exists but cannot be read, or is above the bound, still throws
+ * `F010`: only a genuinely absent entry is a warning.
+ *
  * @internal Exported so a test can prove the bound on an ancestor lockfile;
  * callers use `installedRendererIdentity`.
  */
-export function readRecordedIntegrity(packageDir: string, name: string): string | undefined {
+export function readRecordedIntegrity(packageDir: string, name: string): RecordedIntegrity {
   const installRoot = installRootFor(packageDir);
+  let sawEntry = false;
   // The hidden record beside the installed package first: it describes the
   // innermost `node_modules` the renderer was installed into. In every layout
   // npm writes its hidden lockfile at the install root, which is also read.
@@ -306,25 +333,45 @@ export function readRecordedIntegrity(packageDir: string, name: string): string 
     }
     seen.add(hiddenPath);
     const fromHidden = integrityFromLock(readLockRecord(hiddenPath), name);
-    if (fromHidden !== undefined) {
-      return fromHidden;
+    if (fromHidden.integrity !== undefined) {
+      return { verified: true, integrity: fromHidden.integrity };
     }
+    sawEntry = sawEntry || fromHidden.found;
   }
   let current = packageDir;
   for (;;) {
     const fromLock = integrityFromLock(readLockRecord(join(current, 'package-lock.json')), name);
-    if (fromLock !== undefined) {
-      return fromLock;
+    if (fromLock.integrity !== undefined) {
+      return { verified: true, integrity: fromLock.integrity };
     }
+    sawEntry = sawEntry || fromLock.found;
     if (current === installRoot) {
-      return undefined;
+      break;
     }
     const parent = dirname(current);
     if (parent === current) {
-      return undefined;
+      break;
     }
     current = parent;
   }
+  return sawEntry
+    ? { verified: false, reason: 'no-integrity' }
+    : { verified: false, reason: 'no-record' };
+}
+
+/**
+ * The structured integrity record for an identity. The real target attaches the
+ * npm lookup directly; an injected target that only supplied `integrity` has a
+ * present value treated as verified and a missing one as no record. This keeps
+ * the warning decision in one place instead of re-deriving it at each caller.
+ */
+export function integrityRecordOf(identity: RendererIdentity): RecordedIntegrity {
+  if (identity.integrityRecord !== undefined) {
+    return identity.integrityRecord;
+  }
+  return identity.integrity === undefined
+    ? { verified: false, reason: 'no-record' }
+    : { verified: true, integrity: identity.integrity };
 }
 
 /** Read the installed renderer's own package manifest and recorded integrity. */
@@ -338,19 +385,26 @@ export function installedRendererIdentity(name: string): RendererIdentity {
       action: 're-install dependencies so the pinned renderer is present',
     });
   }
-  const integrity = readRecordedIntegrity(packageDir, name);
-  return { name, version, ...(integrity === undefined ? {} : { integrity }) };
+  const integrityRecord = readRecordedIntegrity(packageDir, name);
+  return {
+    name,
+    version,
+    integrityRecord,
+    ...(integrityRecord.verified ? { integrity: integrityRecord.integrity } : {}),
+  };
 }
 
 /**
  * Compare the renderer recorded in the lockfile with the one that is installed.
- * A differing name or version always fails, and so does a missing integrity on
- * either side: the check never silently degrades to a version comparison. The
- * pinned target substitutes the compile-time pin for a global install that
- * recorded no npm integrity, so by the time this function runs a pinned renderer
- * always carries an integrity; an undefined one here means neither the install
- * nor a pin supplied it. The lockfile records the build's pin, so this compares
- * the installed package against that pin.
+ *
+ * A differing name or version always fails, and so does a lockfile that records
+ * no integrity: the committed bytes must be tied to a pinned renderer. An
+ * installed package whose npm lock record supplied no string integrity is not a
+ * mismatch: its version has already been enforced, and the caller reports the
+ * unverified digest as `W114_RENDERER_INTEGRITY_UNVERIFIED` rather than
+ * refusing a normal global or linked install. When an integrity was read, it is
+ * compared exactly; the check never degrades a known integrity to a
+ * version-only comparison.
  */
 export function verifyRendererIdentity(
   recorded: RendererIdentity,
@@ -384,18 +438,16 @@ export function verifyRendererIdentity(
       },
     );
   }
-  if (installed.integrity === undefined) {
-    throw rendererMismatch(
-      `the installed ${installed.name} ${installed.version} records no tarball integrity, so it cannot be checked against the lockfile`,
-      {
-        subject,
-        action: 're-install dependencies with npm so the integrity is recorded',
-      },
-    );
+  const installedRecord = integrityRecordOf(installed);
+  if (!installedRecord.verified) {
+    // Not a refusal: the version matched, and `prepareRender` names the
+    // unverified integrity as W114. An unknown integrity must not be compared
+    // to anything, and must not be silently treated as a pass either.
+    return;
   }
-  if (recorded.integrity !== installed.integrity) {
+  if (recorded.integrity !== installedRecord.integrity) {
     throw rendererMismatch(
-      `the lockfile records ${recorded.name} integrity ${recorded.integrity} but the installed package is ${installed.integrity}`,
+      `the lockfile records ${recorded.name} integrity ${recorded.integrity} but the installed package is ${installedRecord.integrity}`,
       {
         subject,
         action:

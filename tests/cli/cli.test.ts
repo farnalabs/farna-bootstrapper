@@ -211,6 +211,42 @@ describe('the built CLI', () => {
     }
   });
 
+  it('carries W114 into the --json generate envelope when integrity is unverified', async () => {
+    const repo = await createTempRepo();
+    const output: string[] = [];
+    try {
+      const program = buildProgram({
+        cwd: repo.root,
+        renderer: new FakeRenderTarget(
+          { kind: 'ok' },
+          {
+            name: 'fake-renderer',
+            version: '0.0.0-test',
+            integrityRecord: { verified: false, reason: 'no-record' },
+          },
+          { name: 'fake-renderer', version: '0.0.0-test', integrity: 'sha512-pin' },
+        ),
+        stdout: (text) => output.push(text),
+        argv: ['node', 'farna-bootstrapper', 'generate', '--json'],
+      });
+      await program.parseAsync(['node', 'farna-bootstrapper', 'generate', '--json']);
+      const body = parseObject(output.join(''));
+      const warnings = body['warnings'];
+      if (!Array.isArray(warnings)) {
+        throw new Error('expected a warnings array');
+      }
+      const w114 = warnings.find(
+        (entry) => (entry as { code?: string }).code === 'W114_RENDERER_INTEGRITY_UNVERIFIED',
+      );
+      expect(w114).toMatchObject({
+        code: 'W114_RENDERER_INTEGRITY_UNVERIFIED',
+        severity: 'medium',
+      });
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
   it('exits 4 for an F008 containment failure', async () => {
     const repo = await createTempRepo();
     const originalExit = process.exitCode;

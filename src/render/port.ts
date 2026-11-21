@@ -30,21 +30,47 @@ export type RenderResult = {
   sourceLoadFailed: boolean;
 };
 
+/**
+ * The outcome of looking for the installed renderer's integrity in the
+ * reachable npm lock records.
+ *
+ * The renderer identity policy is:
+ *
+ * - the installed **version** must equal `RENDERER_PIN.version`; a mismatch is
+ *   `F010_RENDERER_MISMATCH` (exit 5);
+ * - when a lock record supplies a string integrity, it must equal
+ *   `RENDERER_PIN.integrity`; a mismatch is also `F010`;
+ * - when no renderer entry exists anywhere (`reason: 'no-record'`) or the
+ *   entry has no string integrity (`reason: 'no-integrity'`), the version
+ *   check still applies, the run continues, and
+ *   `W114_RENDERER_INTEGRITY_UNVERIFIED` names what could not be checked.
+ *
+ * Only a genuinely absent entry, or an entry without a string integrity, is
+ * `W114`. A present-but-unreadable, over-size or non-object lock record remains
+ * a refusal (`F010`): an integrity that exists but cannot be read must fail
+ * exactly like one that differs.
+ */
+export type RecordedIntegrity =
+  | { verified: true; integrity: string; reason?: undefined }
+  | { verified: false; integrity?: undefined; reason: 'no-record' | 'no-integrity' };
+
 export type RendererIdentity = {
   name: string;
   version: string;
   /**
-   * The tarball integrity npm recorded for the installed package. A package
-   * that records none has `undefined` here: a global install writes no npm
-   * lockfile. The pinned target (`upstream.ts`) substitutes its compile-time
-   * pin when the version matches, so a global install is still checked by
-   * version and pin rather than refused; a version mismatch is always F010.
-   * `verifyRendererIdentity` itself refuses an `undefined` integrity, so a
-   * caller that has no pin cannot silently degrade to a version comparison.
-   * The version is always read from the installed package, never from a
+   * The tarball integrity npm recorded for the installed package, when one was
+   * found. `undefined` means no reachable lock record supplied a string
+   * integrity; the version check still runs and `W114` reports the gap. The
+   * version is always read from the installed package, never from a
    * compiled-in literal.
    */
   integrity?: string | undefined;
+  /**
+   * How `integrity` was established. The real target sets this from npm's lock
+   * records; an injected target may omit it, in which case a present
+   * `integrity` is treated as verified and an absent one as no record.
+   */
+  integrityRecord?: RecordedIntegrity | undefined;
 };
 
 export interface RenderTarget {
