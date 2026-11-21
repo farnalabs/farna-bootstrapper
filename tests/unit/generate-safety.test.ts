@@ -1,9 +1,11 @@
-import { lstat, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { execFileSync } from 'node:child_process';
+import { lstat, mkdir, readFile, rename, rm, stat, utimes, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { runGenerate } from '../../src/cli/commands/generate.js';
 import { FarnaError } from '../../src/core/errors.js';
 import { readLockfile } from '../../src/lock/lockfile.js';
+import { withGenerateLock } from '../../src/render/generate-lock.js';
 import { removeOrphans } from '../../src/render/orphans.js';
 import type {
   RendererIdentity,
@@ -70,8 +72,15 @@ function parseLock(text: string): {
   return JSON.parse(text) as ReturnType<typeof parseLock>;
 }
 
+async function writeLock(repo: TempRepo, pid: number | undefined): Promise<void> {
+  await mkdir(join(repo.root, GENERATE_LOCK), { recursive: true });
+  if (pid !== undefined) {
+    await writeFile(join(repo.root, GENERATE_LOCK, 'pid'), `${pid}\n`, 'utf8');
+  }
+}
+
 describe('the generate lock', () => {
-  it('refuses a second live run with F001 and releases the lock in a finally', async () => {
+  it('refuses a second live run with F001 and releases the lock directory in a finally', async () => {
     const repo = await createTempRepo('profile');
     const renderer = new GatedRenderTarget();
     try {
@@ -101,11 +110,11 @@ describe('the generate lock', () => {
     }
   });
 
-  it('reclaims a lock whose owner pid is dead', async () => {
+  it('reclaims a lock directory whose owner pid is dead', async () => {
     const repo = await createTempRepo('profile');
     try {
       // 2^31-1 is not a live pid on any supported platform.
-      await writeFile(join(repo.root, GENERATE_LOCK), '2147483646\n', 'utf8');
+      await writeLock(repo, 2147483646);
       const result = await runGenerate(
         { cwd: repo.root, dryRun: false },
         new UpstreamRenderTarget(),
@@ -119,13 +128,123 @@ describe('the generate lock', () => {
     }
   });
 
-  it('honours a lock held by a live pid', async () => {
+  it('reclaims a lock older than the age bound even while its pid is alive', async () => {
     const repo = await createTempRepo('profile');
     try {
-      await writeFile(join(repo.root, GENERATE_LOCK), `${process.pid}\n`, 'utf8');
+      await writeLock(repo, process.pid);
+      const old = new Date(Date.now() - 25 * 60 * 60 * 1000);
+      await utimes(join(repo.root, GENERATE_LOCK), old, old);
+      const result = await runGenerate(
+        { cwd: repo.root, dryRun: false },
+        new UpstreamRenderTarget(),
+      );
+      expect(result.ok).toBe(true);
+      await expect(lstat(join(repo.root, GENERATE_LOCK))).rejects.toMatchObject({
+        code: 'ENOENT',
+      });
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
+  it('reclaims a pid-less lock directory only once it is older than the grace window', async () => {
+    const repo = await createTempRepo('profile');
+    try {
+      await writeLock(repo, undefined);
       await expect(
         runGenerate({ cwd: repo.root, dryRun: false }, new UpstreamRenderTarget()),
       ).rejects.toMatchObject({ code: 'F001_INVALID_CONFIG', subject: GENERATE_LOCK });
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
+  it('honours a lock directory held by a live pid', async () => {
+    const repo = await createTempRepo('profile');
+    try {
+      await writeLock(repo, process.pid);
+      await expect(
+        runGenerate({ cwd: repo.root, dryRun: false }, new UpstreamRenderTarget()),
+      ).rejects.toMatchObject({ code: 'F001_INVALID_CONFIG', subject: GENERATE_LOCK });
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
+  it('releases the lock when the body throws', async () => {
+    const repo = await createTempRepo('profile');
+    try {
+      await expect(
+        withGenerateLock(repo.root, async () => {
+          throw new Error('body failed');
+        }),
+      ).rejects.toThrow('body failed');
+      // The released lock must be acquirable again immediately.
+      const value = await withGenerateLock(repo.root, async () => 'acquired');
+      expect(value).toBe('acquired');
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
+  it('refuses a non-directory at the lock path as a typed error, not "already running"', async () => {
+    const repo = await createTempRepo('profile');
+    try {
+      await writeFile(join(repo.root, GENERATE_LOCK), 'not a lock directory\n', 'utf8');
+      let failure: FarnaError | undefined;
+      try {
+        await runGenerate({ cwd: repo.root, dryRun: false }, new UpstreamRenderTarget());
+      } catch (error) {
+        failure = error as FarnaError;
+      }
+      expect(failure?.code).toBe('F001_INVALID_CONFIG');
+      expect(failure?.subject).toBe(GENERATE_LOCK);
+      expect(failure?.message).toContain('is not a directory');
+      expect(failure?.message).not.toContain('another generate');
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
+  it.skipIf(process.platform === 'win32')(
+    'refuses a FIFO at the lock path without hanging',
+    async () => {
+      const repo = await createTempRepo('profile');
+      try {
+        execFileSync('mkfifo', [join(repo.root, GENERATE_LOCK)]);
+        const started = Date.now();
+        const outcome = await Promise.race([
+          runGenerate({ cwd: repo.root, dryRun: false }, new UpstreamRenderTarget()).then(
+            () => 'resolved',
+            (error: unknown) => (error as { code?: string }).code ?? 'rejected',
+          ),
+          new Promise<string>((resolve) => setTimeout(() => resolve('timed out'), 5_000)),
+        ]);
+        expect(outcome).toBe('F001_INVALID_CONFIG');
+        expect(Date.now() - started).toBeLessThan(5_000);
+      } finally {
+        await repo.cleanup();
+      }
+    },
+  );
+
+  it('validates .farna before taking the lock, so a broken source root reports itself', async () => {
+    const repo = await createTempRepo('profile');
+    try {
+      const root = join(repo.root, '.farna');
+      const moved = join(repo.root, 'farna-moved');
+      await rename(root, moved);
+      await writeFile(root, 'not a directory\n', 'utf8');
+      let failure: FarnaError | undefined;
+      try {
+        await runGenerate({ cwd: repo.root, dryRun: false }, new UpstreamRenderTarget());
+      } catch (error) {
+        failure = error as FarnaError;
+      }
+      expect(failure?.code).toBe('F001_INVALID_CONFIG');
+      expect(failure?.subject).toBe('.farna');
+      expect(failure?.message).toContain('is not a directory');
+      expect(failure?.subject).not.toBe(GENERATE_LOCK);
     } finally {
       await repo.cleanup();
     }
@@ -183,6 +302,39 @@ describe('removal honesty', () => {
       expect(result.ok).toBe(true);
       const rewritten = parseLock(await readFile(lockPath, 'utf8'));
       expect(rewritten.files.map((file) => file.path)).not.toContain('notes.txt');
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
+  it('names the removals already made when a later removal fails', async () => {
+    const repo = await generated();
+    try {
+      const lock = await readLockfile(repo.root);
+      const first = lock?.files.find((file) => file.path === '.opencode/agents/builder.md');
+      const second = lock?.files.find((file) => file.path === '.opencode/commands/pytest.md');
+      expect(first).toBeDefined();
+      expect(second).toBeDefined();
+      // A directory in the way fails the second removal after the first lands.
+      await rm(join(repo.root, '.opencode/commands/pytest.md'));
+      await mkdir(join(repo.root, '.opencode/commands/pytest.md'));
+
+      let failure: FarnaError | undefined;
+      try {
+        await removeOrphans(
+          repo.root,
+          [first, second].filter((entry) => entry !== undefined),
+        );
+      } catch (error) {
+        failure = error as FarnaError;
+      }
+      expect(failure?.code).toBe('F012_WRITE_FAILED');
+      expect(failure?.message).toContain('already removed 1 recorded path(s)');
+      expect(failure?.message).toContain('.opencode/agents/builder.md');
+      expect(failure?.message).toContain('partially updated');
+      await expect(lstat(join(repo.root, '.opencode/agents/builder.md'))).rejects.toMatchObject({
+        code: 'ENOENT',
+      });
     } finally {
       await repo.cleanup();
     }

@@ -1,6 +1,7 @@
 {
   "files": [
     "tests/cli/cli.test.ts",
+    "tests/cli/generate-lock.test.ts",
     "tests/cli/opencode-cli.test.ts",
     "tests/golden/builder-python.test.ts",
     "tests/golden/opencode.test.ts",
@@ -17,6 +18,7 @@
     "tests/unit/generate-gates.test.ts",
     "tests/unit/generate-safety.test.ts",
     "tests/unit/generate.test.ts",
+    "tests/unit/hook-containment.test.ts",
     "tests/unit/init.test.ts",
     "tests/unit/json.test.ts",
     "tests/unit/loader.test.ts",

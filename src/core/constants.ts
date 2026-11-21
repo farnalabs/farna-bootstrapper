@@ -37,11 +37,12 @@ export const LOCK_FILE = 'lock.json';
 export const LOCK_PATH = `${ROOT_DIR}/${LOCK_FILE}`;
 
 /**
- * The exclusive run lock. Two `generate` runs in one repository would each plan
- * from the same lockfile and each remove and rewrite the managed set, so the
- * second could delete what the first just wrote (or commit a plan it computed
- * before the first changed the tree). The lock is local-only state, never
- * committed, and its presence is not a managed output.
+ * The exclusive run lock: a **directory** created with `mkdir` (atomic on every
+ * supported filesystem), with the owner pid inside. Two `generate` runs in one
+ * repository would each plan from the same lockfile and each remove and rewrite
+ * the managed set, so the second could delete what the first just wrote (or
+ * commit a plan it computed before the first changed the tree). The lock is
+ * local-only state, never committed, and its presence is not a managed output.
  */
 export const GENERATE_LOCK_FILE = '.generate.lock';
 export const GENERATE_LOCK_PATH = `${ROOT_DIR}/${GENERATE_LOCK_FILE}`;
