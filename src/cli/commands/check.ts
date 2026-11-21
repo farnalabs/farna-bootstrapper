@@ -167,6 +167,6 @@ export async function runCheck(repoRoot: string, renderer: RenderTarget): Promis
     exitCode: drift.length === 0 ? EXIT.ok : EXIT.drift,
     checked: prepared.files.map((file) => file.path),
     drift,
-    warnings: prepared.source.warnings,
+    warnings: prepared.warnings,
   };
 }

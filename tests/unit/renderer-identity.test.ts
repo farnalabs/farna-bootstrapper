@@ -22,7 +22,8 @@ import {
 import { readLockfile } from '../../src/lock/lockfile.js';
 import { readRecordedIntegrity } from '../../src/render/identity.js';
 import type { RendererIdentity } from '../../src/render/port.js';
-import { assertPinned, RENDERER_PIN, resolvePinnedIdentity } from '../../src/render/upstream.js';
+import { rendererIntegrityWarning } from '../../src/render/prepare.js';
+import { assertPinned, RENDERER_PIN } from '../../src/render/upstream.js';
 import { FakeRenderTarget } from '../support/fake-renderer.js';
 import { createTempRepo, hashTree } from '../support/temp-repo.js';
 
@@ -113,11 +114,11 @@ describe('renderer identity verification', () => {
   it('records the pin rather than the installed integrity', async () => {
     const repo = await createTempRepo();
     try {
-      // This machine's package manager recorded nothing, which used to make the
-      // lockfile omit integrity and drift against a machine that recorded one.
+      // The installed package carries a local integrity, but the lockfile
+      // records the build's pin so two verified machines agree byte for byte.
       await runGenerate(
         { cwd: repo.root, dryRun: false },
-        new FakeRenderTarget({ kind: 'ok' }, WITHOUT_INTEGRITY, PIN),
+        new FakeRenderTarget({ kind: 'ok' }, { ...PIN, integrity: 'sha512-machine-local' }, PIN),
       );
       const lock = await readLockfile(repo.root);
       expect(lock?.renderer).toEqual(PIN);
@@ -130,7 +131,7 @@ describe('renderer identity verification', () => {
     }
   });
 
-  it('produces a byte-identical lockfile on a machine with a different install', async () => {
+  it('produces a byte-identical lockfile when each machine verified its install', async () => {
     const first = await createTempRepo();
     const second = await createTempRepo();
     try {
@@ -140,7 +141,7 @@ describe('renderer identity verification', () => {
       );
       await runGenerate(
         { cwd: second.root, dryRun: false },
-        new FakeRenderTarget({ kind: 'ok' }, WITHOUT_INTEGRITY, PIN),
+        new FakeRenderTarget({ kind: 'ok' }, { ...PIN, integrity: 'sha512-machine-b' }, PIN),
       );
       expect(await readFile(join(first.root, '.farna/lock.json'), 'utf8')).toBe(
         await readFile(join(second.root, '.farna/lock.json'), 'utf8'),
@@ -165,16 +166,43 @@ describe('renderer identity verification', () => {
     }
   });
 
-  it('fails F010 when the installed identity carries no integrity', async () => {
+  it('warns W114, and checks clean, when the installed identity carries no integrity', async () => {
     const repo = await createTempRepo();
     try {
+      // Both runs are unverified, so the lockfile's W114 records agree and the
+      // comparison is clean; only the warning distinguishes the run.
       await runGenerate(
         { cwd: repo.root, dryRun: false },
-        new FakeRenderTarget({ kind: 'ok' }, PIN, PIN),
+        new FakeRenderTarget({ kind: 'ok' }, WITHOUT_INTEGRITY, PIN),
       );
-      await expect(
-        runCheck(repo.root, new FakeRenderTarget({ kind: 'ok' }, WITHOUT_INTEGRITY, PIN)),
-      ).rejects.toMatchObject({ code: 'F010_RENDERER_MISMATCH' });
+      const check = await runCheck(
+        repo.root,
+        new FakeRenderTarget({ kind: 'ok' }, WITHOUT_INTEGRITY, PIN),
+      );
+      // The version still matched, so an unverified integrity is a named gap,
+      // not a refusal, and the bytes still verify.
+      expect(check.ok).toBe(true);
+      expect(check.warnings.map((entry) => entry.code)).toContain(W114);
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
+  it('records W114 in the lockfile when the install could not be verified', async () => {
+    const repo = await createTempRepo();
+    try {
+      const result = await runGenerate(
+        { cwd: repo.root, dryRun: false },
+        new FakeRenderTarget({ kind: 'ok' }, WITHOUT_INTEGRITY, PIN),
+      );
+      expect(result.warnings.map((entry) => entry.code)).toContain(W114);
+      const lock = await readLockfile(repo.root);
+      const entry = lock?.warnings.find((candidate) => candidate.code === W114);
+      expect(entry).toMatchObject({ code: W114, severity: 'medium', persona: '<renderer>' });
+      expect(entry?.message).toContain('no npm lock record');
+      // The installed integrity is still recorded as the build's pin; W114
+      // records that this machine could not check it.
+      expect(lock?.renderer).toEqual(PIN);
     } finally {
       await repo.cleanup();
     }
@@ -219,38 +247,64 @@ describe('renderer identity verification', () => {
   });
 });
 
-describe('the pinned renderer integrity fallback', () => {
-  it('accepts a global-style install with no npm integrity, using the compile-time pin', () => {
-    // A global install writes no npm lockfile. The pin stands in for the
-    // missing integrity; the version is still checked.
-    const resolved = resolvePinnedIdentity({
-      name: RENDERER_PIN.name,
-      version: RENDERER_PIN.version,
-    });
-    expect(resolved.integrity).toBe(RENDERER_PIN.integrity);
-    expect(() => assertPinned(resolved)).not.toThrow();
+const W114 = 'W114_RENDERER_INTEGRITY_UNVERIFIED';
+
+function noRecord(name = RENDERER_PIN.name, version = RENDERER_PIN.version): RendererIdentity {
+  return { name, version, integrityRecord: { verified: false, reason: 'no-record' } };
+}
+
+function noIntegrity(name = RENDERER_PIN.name, version = RENDERER_PIN.version): RendererIdentity {
+  return { name, version, integrityRecord: { verified: false, reason: 'no-integrity' } };
+}
+
+describe('the renderer identity policy', () => {
+  const pinned = { name: RENDERER_PIN.name, version: RENDERER_PIN.version };
+
+  it('accepts a matching version and integrity', () => {
+    expect(() => assertPinned({ ...pinned, integrity: RENDERER_PIN.integrity })).not.toThrow();
   });
 
-  it('still refuses a version mismatch when npm recorded no integrity', () => {
-    const resolved = resolvePinnedIdentity({ name: RENDERER_PIN.name, version: '9.9.9' });
-    expect(resolved.integrity).toBeUndefined();
-    expect(() => assertPinned(resolved)).toThrowError(
+  it('refuses a version mismatch even when npm recorded no integrity', () => {
+    // The version is the enforced half of the policy, so an absent integrity
+    // must never let a substituted renderer pass.
+    expect(() => assertPinned(noRecord(RENDERER_PIN.name, '9.9.9'))).toThrowError(
       expect.objectContaining({ code: 'F010_RENDERER_MISMATCH' }),
     );
   });
 
   it('refuses a recorded integrity that differs from the pin', () => {
     const installed: RendererIdentity = {
-      name: RENDERER_PIN.name,
-      version: RENDERER_PIN.version,
+      ...pinned,
       integrity: 'sha512-somebody-elses-tarball',
     };
-    const resolved = resolvePinnedIdentity(installed);
-    // A recorded integrity is never overwritten with the pin.
-    expect(resolved.integrity).toBe('sha512-somebody-elses-tarball');
-    expect(() => assertPinned(resolved)).toThrowError(
+    expect(() => assertPinned(installed)).toThrowError(
       expect.objectContaining({ code: 'F010_RENDERER_MISMATCH' }),
     );
+  });
+
+  it('does not substitute the pin for a missing integrity, and names it with W114', () => {
+    // The old fallback made a global install look verified. It must not: the
+    // version is still enforced, and the unverified integrity is reported.
+    const installed = noRecord();
+    expect(installed.integrity).toBeUndefined();
+    expect(() => assertPinned(installed)).not.toThrow();
+    const entry = rendererIntegrityWarning(installed);
+    expect(entry).toMatchObject({ code: W114, severity: 'medium' });
+    expect(entry?.message).toContain('no npm lock record');
+    expect(entry?.message).toContain('pinned version is still enforced');
+  });
+
+  it('names an entry without a string integrity with W114 and its reason', () => {
+    const entry = rendererIntegrityWarning(noIntegrity());
+    expect(entry).toMatchObject({ code: W114, severity: 'medium' });
+    expect(entry?.message).toContain('npm lock record');
+    expect(entry?.message).toContain('has no integrity');
+  });
+
+  it('does not warn when the installed integrity matches the pin', () => {
+    expect(
+      rendererIntegrityWarning({ ...pinned, integrity: RENDERER_PIN.integrity }),
+    ).toBeUndefined();
   });
 });
 
@@ -280,7 +334,10 @@ describe('the bounded npm integrity read', () => {
       JSON.stringify({ packages: { 'node_modules/rulesync': { integrity: 'sha512-small' } } }),
     );
     try {
-      expect(readRecordedIntegrity(packageDirOf(root), 'rulesync')).toBe('sha512-small');
+      expect(readRecordedIntegrity(packageDirOf(root), 'rulesync')).toEqual({
+        verified: true,
+        integrity: 'sha512-small',
+      });
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -300,16 +357,17 @@ describe('the bounded npm integrity read', () => {
     const root = await layout(record);
     try {
       const recorded = readRecordedIntegrity(packageDirOf(root), RENDERER_PIN.name);
-      expect(recorded).toBe(RENDERER_PIN.integrity);
-      if (recorded === undefined) {
+      expect(recorded).toEqual({ verified: true, integrity: RENDERER_PIN.integrity });
+      if (!recorded.verified) {
         throw new Error('expected the large record to be read');
       }
-      const resolved = resolvePinnedIdentity({
-        name: RENDERER_PIN.name,
-        version: RENDERER_PIN.version,
-        integrity: recorded,
-      });
-      expect(() => assertPinned(resolved)).not.toThrow();
+      expect(() =>
+        assertPinned({
+          name: RENDERER_PIN.name,
+          version: RENDERER_PIN.version,
+          integrity: recorded.integrity,
+        }),
+      ).not.toThrow();
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -321,18 +379,17 @@ describe('the bounded npm integrity read', () => {
     const root = await layout(record);
     try {
       const recorded = readRecordedIntegrity(packageDirOf(root), RENDERER_PIN.name);
-      expect(recorded).toBe('sha512-DIFFERENT-NOT-THE-PIN');
-      if (recorded === undefined) {
+      expect(recorded).toEqual({ verified: true, integrity: 'sha512-DIFFERENT-NOT-THE-PIN' });
+      if (!recorded.verified) {
         throw new Error('expected the large record to be read');
       }
-      const resolved = resolvePinnedIdentity({
-        name: RENDERER_PIN.name,
-        version: RENDERER_PIN.version,
-        integrity: recorded,
-      });
-      expect(() => assertPinned(resolved)).toThrowError(
-        expect.objectContaining({ code: 'F010_RENDERER_MISMATCH' }),
-      );
+      expect(() =>
+        assertPinned({
+          name: RENDERER_PIN.name,
+          version: RENDERER_PIN.version,
+          integrity: recorded.integrity,
+        }),
+      ).toThrowError(expect.objectContaining({ code: 'F010_RENDERER_MISMATCH' }));
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -387,7 +444,10 @@ describe('the bounded npm integrity read', () => {
         }),
         'utf8',
       );
-      expect(readRecordedIntegrity(packageDir, 'rulesync')).toBeUndefined();
+      expect(readRecordedIntegrity(packageDir, 'rulesync')).toEqual({
+        verified: false,
+        reason: 'no-record',
+      });
     } finally {
       await rm(parent, { recursive: true, force: true });
     }
@@ -410,7 +470,10 @@ describe('the bounded npm integrity read', () => {
         }),
         'utf8',
       );
-      expect(readRecordedIntegrity(packageDir, 'rulesync')).toBeUndefined();
+      expect(readRecordedIntegrity(packageDir, 'rulesync')).toEqual({
+        verified: false,
+        reason: 'no-record',
+      });
     } finally {
       await rm(parent, { recursive: true, force: true });
     }
@@ -502,21 +565,45 @@ describe('the bounded npm integrity read', () => {
     }
   });
 
-  it('returns no integrity when no lock record exists, so the pin stands in', async () => {
-    // The genuine global-install case: there is no record at all. This is the
-    // only fallback the pin may cover; an existing-but-unreadable record is
-    // refused (above).
+  it('returns a structured no-record result when no lock record exists', async () => {
+    // The genuine global-install case: there is no record at all. The version
+    // is still checked and the gap is named by W114, never silently passed.
     const root = await mkdtemp(join(tmpdir(), 'fbs-integrity-none-'));
     const packageDir = packageDirOf(root);
     try {
       await mkdir(packageDir, { recursive: true });
-      expect(readRecordedIntegrity(packageDir, 'rulesync')).toBeUndefined();
-      const resolved = resolvePinnedIdentity({
+      const record = readRecordedIntegrity(packageDir, 'rulesync');
+      expect(record).toEqual({ verified: false, reason: 'no-record' });
+      const installed: RendererIdentity = {
         name: RENDERER_PIN.name,
         version: RENDERER_PIN.version,
+        integrityRecord: record,
+      };
+      expect(() => assertPinned(installed)).not.toThrow();
+      expect(rendererIntegrityWarning(installed)).toMatchObject({ code: W114 });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('distinguishes a record whose renderer entry has no string integrity', async () => {
+    const root = await layout(
+      JSON.stringify({
+        packages: { 'node_modules/rulesync': { version: RENDERER_PIN.version } },
+      }),
+    );
+    try {
+      const record = readRecordedIntegrity(packageDirOf(root), 'rulesync');
+      // The reference to the renderer exists, so this is not "no record": the
+      // warning must name the missing integrity instead.
+      expect(record).toEqual({ verified: false, reason: 'no-integrity' });
+      const entry = rendererIntegrityWarning({
+        name: RENDERER_PIN.name,
+        version: RENDERER_PIN.version,
+        integrityRecord: record,
       });
-      expect(resolved.integrity).toBe(RENDERER_PIN.integrity);
-      expect(() => assertPinned(resolved)).not.toThrow();
+      expect(entry).toMatchObject({ code: W114 });
+      expect(entry?.message).toContain('has no integrity');
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -553,9 +640,10 @@ describe('a nested install layout', () => {
       await writeRecord(join(root, 'package-lock.json'), {
         [NESTED_KEY]: { integrity: 'sha512-from-the-nested-record' },
       });
-      expect(readRecordedIntegrity(packageDir, RENDERER_PIN.name)).toBe(
-        'sha512-from-the-nested-record',
-      );
+      expect(readRecordedIntegrity(packageDir, RENDERER_PIN.name)).toEqual({
+        verified: true,
+        integrity: 'sha512-from-the-nested-record',
+      });
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -567,9 +655,10 @@ describe('a nested install layout', () => {
       await writeRecord(join(root, 'node_modules', '.package-lock.json'), {
         [NESTED_KEY]: { integrity: 'sha512-from-the-hidden-record' },
       });
-      expect(readRecordedIntegrity(packageDir, RENDERER_PIN.name)).toBe(
-        'sha512-from-the-hidden-record',
-      );
+      expect(readRecordedIntegrity(packageDir, RENDERER_PIN.name)).toEqual({
+        verified: true,
+        integrity: 'sha512-from-the-hidden-record',
+      });
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -582,9 +671,10 @@ describe('a nested install layout', () => {
         'node_modules/rulesync': { integrity: 'sha512-hoisted-copy' },
         [NESTED_KEY]: { integrity: 'sha512-the-copy-we-import' },
       });
-      expect(readRecordedIntegrity(packageDir, RENDERER_PIN.name)).toBe(
-        'sha512-the-copy-we-import',
-      );
+      expect(readRecordedIntegrity(packageDir, RENDERER_PIN.name)).toEqual({
+        verified: true,
+        integrity: 'sha512-the-copy-we-import',
+      });
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -597,13 +687,13 @@ describe('a nested install layout', () => {
         [NESTED_KEY]: { integrity: 'sha512-DIFFERENT-NOT-THE-PIN' },
       });
       const recorded = readRecordedIntegrity(packageDir, RENDERER_PIN.name);
-      expect(recorded).toBe('sha512-DIFFERENT-NOT-THE-PIN');
-      if (recorded === undefined) {
+      expect(recorded).toEqual({ verified: true, integrity: 'sha512-DIFFERENT-NOT-THE-PIN' });
+      if (!recorded.verified) {
         throw new Error('expected the nested record to be read');
       }
       // A nested install is a real record: its integrity is compared, never
       // replaced by the pin.
-      expect(() => assertPinned(resolvePinnedIdentity(pinned(recorded)))).toThrowError(
+      expect(() => assertPinned(pinned(recorded.integrity))).toThrowError(
         expect.objectContaining({ code: 'F010_RENDERER_MISMATCH' }),
       );
     } finally {
@@ -619,7 +709,10 @@ describe('a nested install layout', () => {
       await writeRecord(join(root, 'package-lock.json'), {
         'node_modules/rulesync': { integrity: 'sha512-hoisted-entry' },
       });
-      expect(readRecordedIntegrity(packageDir, RENDERER_PIN.name)).toBe('sha512-hoisted-entry');
+      expect(readRecordedIntegrity(packageDir, RENDERER_PIN.name)).toEqual({
+        verified: true,
+        integrity: 'sha512-hoisted-entry',
+      });
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -633,24 +726,92 @@ describe('a nested install layout', () => {
           integrity: 'sha512-nested-elsewhere',
         },
       });
-      expect(readRecordedIntegrity(packageDir, RENDERER_PIN.name)).toBe('sha512-nested-elsewhere');
+      expect(readRecordedIntegrity(packageDir, RENDERER_PIN.name)).toEqual({
+        verified: true,
+        integrity: 'sha512-nested-elsewhere',
+      });
     } finally {
       await rm(root, { recursive: true, force: true });
     }
   });
 
-  it('falls back to the pin for a global install with no record anywhere', async () => {
+  it('names a nested install with no record anywhere with W114', async () => {
     // The genuine global-install case: the install tree exists but no npm lock
-    // record does. This is the only case the pin may cover.
+    // record does. The version is still checked; the gap is named, not passed.
     const { root, packageDir } = await nestedLayout();
     try {
-      expect(readRecordedIntegrity(packageDir, RENDERER_PIN.name)).toBeUndefined();
-      const resolved = resolvePinnedIdentity({
+      const record = readRecordedIntegrity(packageDir, RENDERER_PIN.name);
+      expect(record).toEqual({ verified: false, reason: 'no-record' });
+      const installed: RendererIdentity = {
         name: RENDERER_PIN.name,
         version: RENDERER_PIN.version,
+        integrityRecord: record,
+      };
+      expect(() => assertPinned(installed)).not.toThrow();
+      expect(rendererIntegrityWarning(installed)).toMatchObject({ code: W114 });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('install layouts that cannot supply an integrity', () => {
+  async function emptyPackage(packageDir: string): Promise<string> {
+    await mkdir(packageDir, { recursive: true });
+    return packageDir;
+  }
+
+  it('names a scoped install with no record with W114 instead of passing', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'fbs-scoped-'));
+    try {
+      const packageDir = await emptyPackage(join(root, 'node_modules', '@acme', 'renderer'));
+      const record = readRecordedIntegrity(packageDir, '@acme/renderer');
+      expect(record).toEqual({ verified: false, reason: 'no-record' });
+      const entry = rendererIntegrityWarning({
+        name: '@acme/renderer',
+        version: '1.2.3',
+        integrityRecord: record,
       });
-      expect(resolved.integrity).toBe(RENDERER_PIN.integrity);
-      expect(() => assertPinned(resolved)).not.toThrow();
+      expect(entry).toMatchObject({ code: W114 });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('names a linked install outside node_modules with no record with W114', async () => {
+    // `npm link` / `file:` installs place the package anywhere on disk, with no
+    // npm-owned lock record beside it. That is a named gap, not a pass.
+    const root = await mkdtemp(join(tmpdir(), 'fbs-linked-'));
+    try {
+      const packageDir = await emptyPackage(join(root, 'vendor', 'renderer'));
+      const record = readRecordedIntegrity(packageDir, 'renderer');
+      expect(record).toEqual({ verified: false, reason: 'no-record' });
+      const entry = rendererIntegrityWarning({
+        name: 'renderer',
+        version: '1.2.3',
+        integrityRecord: record,
+      });
+      expect(entry).toMatchObject({ code: W114 });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('reads a scoped renderer entry when its key is present', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'fbs-scoped-found-'));
+    try {
+      const packageDir = await emptyPackage(join(root, 'node_modules', '@acme', 'renderer'));
+      await writeFile(
+        join(root, 'package-lock.json'),
+        JSON.stringify({
+          packages: { 'node_modules/@acme/renderer': { integrity: 'sha512-scoped-entry' } },
+        }),
+        'utf8',
+      );
+      expect(readRecordedIntegrity(packageDir, '@acme/renderer')).toEqual({
+        verified: true,
+        integrity: 'sha512-scoped-entry',
+      });
     } finally {
       await rm(root, { recursive: true, force: true });
     }

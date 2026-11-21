@@ -3,7 +3,7 @@ import { join, relative, sep } from 'node:path';
 import { DEFAULT_TARGET } from '../core/constants.js';
 import { rendererMismatch, renderFailed } from '../core/errors.js';
 import { compareCodepoints } from '../core/json.js';
-import { installedRendererIdentity } from './identity.js';
+import { installedRendererIdentity, integrityRecordOf } from './identity.js';
 import type {
   RendererIdentity,
   RenderRequest,
@@ -17,10 +17,13 @@ import type {
  * lockfile and the pin the installed package is checked against: recording the
  * installed integrity instead made the lockfile differ per machine (one with
  * `node_modules/.package-lock.json`, one without) and `check` reported false
- * drift. A renderer whose version or npm-recorded tarball integrity differs
- * fails loudly. A global install records no npm integrity at all; in that one
- * case the compiled-in pin stands in for it (the version is still checked),
- * because otherwise every `npm i -g` install failed F010 on every command.
+ * drift. The renderer identity policy is: the installed version must match the
+ * pin (F010 on a mismatch); an npm-recorded integrity, when one is found, must
+ * match the pin (also F010); and when no record supplies a string integrity the
+ * version check still applies, the run continues, and
+ * `W114_RENDERER_INTEGRITY_UNVERIFIED` names the gap. The pin is never
+ * substituted for a missing integrity: that was the silent pass this policy
+ * removes.
  *
  * The renderer is imported lazily, inside `generate`. A static import made a
  * missing or broken renderer a raw module-resolution stack before any command
@@ -63,22 +66,13 @@ async function loadRenderer(): Promise<RendererModule> {
 }
 
 /**
- * The identity an installed package is checked against. A global install has no
- * npm lock record, so the compile-time pin stands in for the missing integrity
- * only when the version matches. The pin is provenance, not a sandbox.
+ * Refuse a renderer that is not the pinned one. The version check runs first,
+ * so a missing integrity can never let a different version pass.
  *
- * @internal Exported so a test can prove the fallback without a global install;
- * `UpstreamRenderTarget.identity()` is the production caller.
- */
-export function resolvePinnedIdentity(installed: RendererIdentity): RendererIdentity {
-  return installed.integrity === undefined && installed.version === RENDERER_PIN.version
-    ? { ...installed, integrity: RENDERER_PIN.integrity }
-    : installed;
-}
-
-/**
- * Refuse a renderer that is not the pinned one. The version check runs first, so
- * a substituted pin can never make a different install pass.
+ * The integrity is compared only when npm recorded one. Substituting the pin
+ * for a missing integrity made a global install look verified, which is the
+ * silent pass `W114` replaces; an unverified integrity is reported by
+ * `prepareRender`, never treated as a match.
  *
  * @internal Exported so a test can prove both outcomes; `render` is the
  * production caller.
@@ -93,13 +87,10 @@ export function assertPinned(identity: RendererIdentity): void {
       },
     );
   }
-  // A global install has no npm record. The compiled-in pin is the only
-  // integrity available there, and it is still compared against the one this
-  // build expects; the version check above is what catches a different install.
-  const integrity = identity.integrity ?? RENDERER_PIN.integrity;
-  if (integrity !== RENDERER_PIN.integrity) {
+  const record = integrityRecordOf(identity);
+  if (record.verified && record.integrity !== RENDERER_PIN.integrity) {
     throw rendererMismatch(
-      `the installed ${identity.name} has integrity ${integrity} but this build pins ${RENDERER_PIN.integrity}`,
+      `the installed ${identity.name} has integrity ${record.integrity} but this build pins ${RENDERER_PIN.integrity}`,
       {
         subject: identity.name,
         action: 're-install dependencies from the lockfile; a replaced renderer is refused',
@@ -138,7 +129,7 @@ export class UpstreamRenderTarget implements RenderTarget {
 
   identity(): RendererIdentity {
     if (this.cachedIdentity === undefined) {
-      this.cachedIdentity = resolvePinnedIdentity(installedRendererIdentity(RENDERER_PIN.name));
+      this.cachedIdentity = installedRendererIdentity(RENDERER_PIN.name);
     }
     return { ...this.cachedIdentity };
   }

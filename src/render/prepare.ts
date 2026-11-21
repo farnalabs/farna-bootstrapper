@@ -10,16 +10,57 @@ import {
   serialiseLockfile,
 } from '../lock/lockfile.js';
 import { materialiseSourceTree } from '../materialise/source-tree.js';
+import { sortWarnings, type Warning, warning } from '../report/warnings.js';
 import { loadSource } from '../source/load.js';
 import { verifyRender } from '../verify/containment.js';
+import { integrityRecordOf } from './identity.js';
 import type { RendererIdentity, RenderTarget } from './port.js';
 import { withStage } from './stage.js';
+
+/**
+ * The subject a renderer-level warning carries. A warning record is shaped per
+ * persona, but an unverified integrity belongs to the renderer, not to any one
+ * persona; angle brackets cannot collide with a valid persona id (`ID_RE`).
+ */
+const RENDERER_WARNING_SUBJECT = '<renderer>';
 
 export type PreparedRender = {
   source: ResolvedSource;
   /** Every managed file, repository-relative, sorted. Includes the lockfile. */
   files: RenderedFile[];
+  /** Source warnings plus any renderer-level warning, in the report's stable order. */
+  warnings: Warning[];
 };
+
+/**
+ * The `W114` warning, when the installed renderer's tarball integrity could not
+ * be verified. The version check is independent of this: it has already run and
+ * a mismatch is `F010`. The message names which lookup failed, so a reader never
+ * has to guess between "no record at all" and "a record with no integrity".
+ */
+export function rendererIntegrityWarning(identity: RendererIdentity): Warning | undefined {
+  const record = integrityRecordOf(identity);
+  if (record.verified) {
+    return undefined;
+  }
+  const subject = `${identity.name} ${identity.version}`;
+  const detail =
+    record.reason === 'no-integrity'
+      ? `the npm lock record for ${subject} has no integrity`
+      : `no npm lock record for ${subject} was found`;
+  return warning({
+    code: 'W114_RENDERER_INTEGRITY_UNVERIFIED',
+    persona: RENDERER_WARNING_SUBJECT,
+    target: DEFAULT_TARGET,
+    message: `${detail}, so the installed renderer's tarball integrity could not be verified; the pinned version is still enforced`,
+  });
+}
+
+/** The renderer-level warnings for one run. */
+export function rendererWarnings(renderer: RenderTarget): Warning[] {
+  const entry = rendererIntegrityWarning(renderer.identity());
+  return entry === undefined ? [] : [entry];
+}
 
 /**
  * The identity recorded in the lockfile. A renderer that pins its dependency
@@ -61,6 +102,7 @@ export async function prepareRender(
 ): Promise<PreparedRender> {
   const config = await loadConfig(repoRoot);
   const source = resolveSource(await loadSource(repoRoot), config);
+  const warnings = sortWarnings([...source.warnings, ...rendererWarnings(renderer)]);
 
   return withStage(async (stage) => {
     await materialiseSourceTree(stage.sourceRoot, source);
@@ -77,9 +119,9 @@ export async function prepareRender(
     const files: RenderedFile[] = [...verified.entries()]
       .map(([path, bytes]) => ({ path, bytes }))
       .sort((a, b) => compareCodepoints(a.path, b.path));
-    const lock = buildLockfile(source, lockfileRenderer(renderer), files);
+    const lock = buildLockfile(source, lockfileRenderer(renderer), files, warnings);
     files.push({ path: LOCK_PATH, bytes: serialiseLockfile(lock) });
     files.sort((a, b) => compareCodepoints(a.path, b.path));
-    return { source, files };
+    return { source, files, warnings };
   });
 }

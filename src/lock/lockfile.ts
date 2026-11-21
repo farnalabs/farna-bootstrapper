@@ -20,6 +20,7 @@ import { invalidConfig, pathUnsafe } from '../core/errors.js';
 import { decodeUtf8 } from '../core/fs.js';
 import { canonicalJsonFile, compareCodepoints, sha256Hex } from '../core/json.js';
 import { assertRealDirectory, assertRealFile } from '../core/paths.js';
+import type { Warning } from '../report/warnings.js';
 
 export type LockFileEntry = {
   path: string;
@@ -124,12 +125,19 @@ export type Lockfile = z.infer<typeof lockfileSchema>;
  * its resolved resource ids and its permission digest; every value is derived,
  * never timestamped. The renderer identity is the build's pin (see
  * `prepareRender`), so the bytes are identical on two machines with the same
- * source and toolchain. The lockfile does not list itself.
+ * source and toolchain except when a renderer-level warning such as `W114`
+ * records what this machine could not verify. The lockfile does not list
+ * itself.
+ *
+ * `warnings` is the full set for the run, source warnings plus renderer-level
+ * warnings; it is passed in rather than read from `source` so a warning about
+ * the renderer itself is recorded in `warnings[]` too.
  */
 export function buildLockfile(
   source: ResolvedSource,
   renderer: LockfileRenderer,
   files: RenderedFile[],
+  warnings: readonly Warning[],
 ): Lockfile {
   const personas = source.personas
     .map((persona) => ({
@@ -159,7 +167,7 @@ export function buildLockfile(
         size: Buffer.byteLength(file.bytes),
       }))
       .sort((a, b) => compareCodepoints(a.path, b.path)),
-    warnings: source.warnings.map((entry) => ({
+    warnings: warnings.map((entry) => ({
       code: entry.code,
       severity: entry.severity,
       persona: entry.persona,

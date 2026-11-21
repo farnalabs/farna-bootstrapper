@@ -51,7 +51,7 @@ export async function runGenerate(
       dryRun: true,
       personas,
       files,
-      warnings: prepared.source.warnings,
+      warnings: prepared.warnings,
     };
   }
 
@@ -62,6 +62,6 @@ export async function runGenerate(
     dryRun: false,
     personas,
     files: committed.statuses,
-    warnings: prepared.source.warnings,
+    warnings: prepared.warnings,
   };
 }

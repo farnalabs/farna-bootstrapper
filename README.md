@@ -41,14 +41,20 @@ farna-bootstrapper` all work. `prepare` builds `dist/` for a git install and `pr
 for the published tarball; a source checkout therefore produces a working `bin` without a manual
 build. The renderer's integrity is read from the npm lock record wherever npm recorded it,
 including a nested install (`npm install --install-strategy=nested`), where the entry is keyed
-`node_modules/farna-bootstrapper/node_modules/rulesync` instead of `node_modules/rulesync`. When the
-record contains no renderer entry at all — a global install that wrote no npm lockfile — the
-compile-time pin stands in for the missing integrity; the installed renderer's version is still
-checked and a mismatch is refused (F010). The fallback applies only when no renderer entry exists
-anywhere in the lock record: a record that is present but cannot be read, or is above the 64 MiB
-npm-record bound, is refused (F010) rather than replaced by the pin. That bound is separate from
-the 4 MiB bound on this product's own derived `.farna/lock.json`, because npm's record scales with
-the dependency tree.
+`node_modules/farna-bootstrapper/node_modules/rulesync` instead of `node_modules/rulesync`.
+
+The guarantee is exact: **the installed renderer version is enforced; the integrity is checked
+when a record is found; when it is not, `W114_RENDERER_INTEGRITY_UNVERIFIED` names the gap.** A
+different version is refused (F010, exit 5). A different npm-recorded integrity is refused the same
+way. When no renderer entry exists anywhere — a global or linked install that wrote no npm
+lockfile — or the entry has no string integrity, the version check still applies, the run
+continues, and the warning says which of the two happened. That warning appears in the human
+report, the `--json` warnings array and the lockfile's `warnings[]`, so a run never claims a clean
+integrity pass it could not make. A record that is present but cannot be read, or is above the
+64 MiB npm-record bound, is refused (F010) rather than treated as absent: an integrity that exists
+but cannot be read must fail exactly like one that differs. The pin is provenance, not a sandbox —
+it does not make an unverifiable install verified. That bound is separate from the 4 MiB bound on
+this product's own derived `.farna/lock.json`, because npm's record scales with the dependency tree.
 
 ## Develop
 
@@ -294,8 +300,10 @@ built from the managed files before its own record is appended, so its own bytes
 absent from `files`. It contains no timestamps, hostnames or absolute paths.
 
 The `renderer` record is the build's **pin** (`RENDERER_PIN`), not the integrity the local package
-manager wrote. That makes the lockfile byte-identical on two machines with the same source and
-toolchain, and it is what `check` compares the installed package against.
+manager wrote, and it is what `check` compares the installed package against. Two machines that
+both verified their install therefore produce byte-identical lockfiles. A machine that could not
+verify an integrity records `W114_RENDERER_INTEGRITY_UNVERIFIED` in `warnings[]`, which is a
+deliberate difference: the record states what that machine could and could not check.
 
 ## The renderer boundary
 
@@ -305,31 +313,41 @@ Unit tests use an independent fake renderer, so the failure modes the port exist
 exercised without the network or the real renderer.
 
 `rulesync` is pinned to exactly `43.11.0` with a tarball integrity. The lockfile records that pin,
-and `check` compares it with the installed package before any byte comparison: a different name or
-version fails `F010` with exit `5`, and so does a different npm-recorded integrity. The installed
-integrity is read from npm's `node_modules/.package-lock.json`, with the project
-`package-lock.json` as a fallback, and the `packages` map is searched for the renderer's entry
-under any key ending in `node_modules/rulesync` — a nested install records it as
-`node_modules/farna-bootstrapper/node_modules/rulesync`, and reading only the top-level key used to
-mistake that present record for an absent one and fall back to the pin. When more than one entry
-matches, the one nested under farna-bootstrapper's own package wins, then the shallowest. The
-project-lockfile walk stops at the install root — the top of the renderer's `node_modules` chain,
-the package that owns its outermost `node_modules`, so a nested install still reaches the project
-record — and an unrelated `package-lock.json` above the project (a home directory, a parent
-monorepo) is never read as though it described this install. Only a lock record with no renderer
-entry anywhere in it falls back to the compile-time pin: a record that exists but cannot be read,
-or is above the 64 MiB npm-record bound, is refused `F010` naming the record, so a
-present-but-unverifiable integrity never becomes a pass. The 64 MiB npm-record bound is deliberately
-separate from the 4 MiB bound on `.farna/lock.json`: npm's record scales with the dependency tree,
-so a legitimate monorepo lockfile is several megabytes. When npm recorded no integrity at all — no
-renderer entry anywhere in a global install's records — the compile-time pin stands in for it, so
-such an install works while the installed version is still checked and a mismatch is still `F010`.
-The check never degrades to a version-only comparison against an integrity it did read, and an
-integrity that is present on both sides is compared exactly.
+and `check` compares it with the installed package before any byte comparison. The renderer
+identity policy has three parts:
+
+1. **Version — enforced.** A different name or version fails `F010` with exit `5`. This runs first,
+   so a missing integrity can never let a substituted renderer pass.
+2. **Integrity — checked when a record is found.** The installed integrity is read from npm's
+   `node_modules/.package-lock.json`, with the project `package-lock.json` as a fallback, and the
+   `packages` map is searched for the renderer's entry under any key ending in
+   `node_modules/<renderer>` (a scoped name keeps its scope in the key). A nested install records
+   it as `node_modules/farna-bootstrapper/node_modules/rulesync`, and reading only the top-level
+   key used to mistake that present record for an absent one. When more than one entry matches,
+   the one nested under farna-bootstrapper's own package wins, then the shallowest. The
+   project-lockfile walk stops at the install root — the top of the renderer's `node_modules`
+   chain, the package that owns its outermost `node_modules`, so a nested install still reaches
+   the project record — and an unrelated `package-lock.json` above the project (a home directory,
+   a parent monorepo) is never read as though it described this install. A string integrity that
+   was found is compared exactly with the pin; a different one is `F010`.
+3. **Unverifiable — named, never silently passed.** A record that exists but cannot be read, or is
+   above the 64 MiB npm-record bound, is refused `F010` naming the record. Only a genuinely absent
+   entry, or an entry with no string integrity, is `W114_RENDERER_INTEGRITY_UNVERIFIED`: the
+   version check still applies, the run continues, and the warning names whether no record was
+   found or the record had no integrity. The pin is **not** substituted for a missing integrity
+   and the tool never claims a clean integrity pass it could not make.
+
+The 64 MiB npm-record bound is deliberately separate from the 4 MiB bound on `.farna/lock.json`:
+npm's record scales with the dependency tree, so a legitimate monorepo lockfile is several
+megabytes. The check never degrades a known integrity to a version-only comparison. A machine that
+could not verify its install records `W114` in the lockfile's `warnings[]`, so its lockfile
+deliberately differs from a verified machine's: the warning is evidence about that machine's
+verification, not a machine-independent fact.
 
 The renderer is imported **in-process**. The pin is provenance, not a sandbox: it ties the
-committed bytes to a published tarball, but a package patched in place with the same `package.json`
-and integrity is not detected (see the residual list). The product never uses rulesync's `--delete`;
+committed bytes to a published tarball when the integrity is verifiable, but a package patched in
+place with the same `package.json` and integrity is not detected, and an unverifiable install is
+reported rather than blocked (see the residual list). The product never uses rulesync's `--delete`;
 cleanup is ownership-scoped, and this slice never deletes a user file.
 
 The renderer call is hermetic: its working directory is the disposable stage and its `configPath`
@@ -451,14 +469,17 @@ them further. The differences, all deliberate:
 10. **The permission digest covers the resolved product map** (category values and patterns), not
     the emitted Claude Code entries. The target mapping is code, not source; the digest changes
     when the source changes.
-11. **W106, W111 and W113 are emitted in this milestone.** The full codes are
+11. **W106, W111, W113 and W114 are emitted in this milestone.** The full codes are
     `W106_DENY_WINS`, `W111_ASK_DOWNGRADED`, `W112_PERMISSION_LOSSY` (defined but not emitted on
-    Claude Code) and `W113_ALLOW_LIST_NARROWS`. W112 is not emitted because `write` is native
-    there, and the lossy mapping is OpenCode's (M2b). W113 is emitted whenever a resource opts
-    into the `tools` allow-list: it names the tools the narrowing removes, and an opt-in whose
-    categories all resolve deny/ask is reported as having no effect (no `tools` is emitted, and
-    the digest records the same effective value the artefact does). The remaining W table,
-    `--strict`, and severity promotion are deferred.
+    Claude Code), `W113_ALLOW_LIST_NARROWS` and `W114_RENDERER_INTEGRITY_UNVERIFIED`. W112 is not
+    emitted because `write` is native there, and the lossy mapping is OpenCode's (M2b). W113 is
+    emitted whenever a resource opts into the `tools` allow-list: it names the tools the narrowing
+    removes, and an opt-in whose categories all resolve deny/ask is reported as having no effect
+    (no `tools` is emitted, and the digest records the same effective value the artefact does).
+    W114 is emitted when the installed renderer's tarball integrity could not be verified from an
+    npm lock record; its medium severity reflects that the version check still runs, so this is a
+    provenance gap rather than a correctness failure, but it is never a silent pass. The remaining
+    W table, `--strict`, and severity promotion are deferred.
 12. **One recursive delete exists, in `src/render/stage.ts`.** It removes only the `mkdtemp`
     directory the stage created, after proving it is inside the canonical temporary root. The
     design's "no recursive delete in `src/`" rule is about never deleting user content; a
