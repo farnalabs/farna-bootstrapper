@@ -3,11 +3,13 @@
 Compile named agent personas and their resources into the configuration a coding harness
 actually reads, and prove that the committed output still matches the source.
 
-This repository is at **M2b: the OpenCode target and the workspace resource kinds**. It implements
-two targets (`claudecode` and `opencode`), three commands of the compiler loop (`generate`,
-`check`) plus `init`, six resource kinds (`rule`, `permission`, `mcp`, `skill`, `command`, `hook`)
-plus a model class, and one base persona per composed persona (`extends`). Exactly one configured
-target is rendered per run. Everything else is deliberately deferred; see
+This repository is at **M2b: the OpenCode target in agent mode**. It implements two targets
+(`claudecode` and `opencode`), three commands of the compiler loop (`generate`, `check`) plus
+`init`, six resource kinds (`rule`, `permission`, `mcp`, `skill`, `command`, `hook`) plus a model
+class, and one base persona per composed persona (`extends`). Exactly one configured target is
+rendered per run. OpenCode's workspace resource kinds (`mcp`, `skill`, `command`, `hook`) are read
+and validated but require profile mode, which is not in this slice: agent mode refuses them (F001)
+rather than emitting them workspace-wide. Everything else is deliberately deferred; see
 [What this slice does not do](#what-this-slice-does-not-do).
 
 ## The loop
@@ -15,8 +17,7 @@ target is rendered per run. Everything else is deliberately deferred; see
 1. You declare personas and their resources under `.farna/`, and select one target in the config.
 2. `farna-bootstrapper generate` renders that target's artefacts and records what it wrote in
    `.farna/lock.json`. Claude Code gets one whole file per persona under `.claude/agents/`; OpenCode
-   gets one whole file per persona under `.opencode/agents/` plus the workspace files its resource
-   kinds need.
+   in agent mode gets one whole file per persona under `.opencode/agents/` and no workspace file.
 3. `farna-bootstrapper check` renders the same input into a temporary directory and compares it
    with the repository. Exit `0` when identical, `1` when anything drifted.
 
@@ -36,6 +37,9 @@ string.
 
 - Node.js **22.22.0 or newer**
 - npm
+- For the `opencode` target, OpenCode **2.x**. The emitted per-agent file is the V2 shape
+  (`description`, `mode`, `model`, ordered permission records, no `name`); the 1.x layout is
+  unsupported. The tool does not shell out to OpenCode, so this is documented rather than probed.
 
 ## Install
 
@@ -133,7 +137,8 @@ Add one YAML file per persona under `.farna/personas/`, one Markdown file per ru
 `.farna/resources/rules/`, and one JSONC file per permission under
 `.farna/resources/permissions/`. The workspace resource kinds live in their own directories:
 `mcp/<id>.jsonc`, `skills/<id>/SKILL.md` (plus any extra files), `commands/<id>.md` and
-`hooks/<id>.jsonc`:
+`hooks/<id>.jsonc`. They are read and validated in this slice but require profile mode, so agent
+mode refuses a persona that references one (F001):
 
 ```yaml
 # .farna/personas/builder.yaml
@@ -247,64 +252,41 @@ claudecode, agent mode:
 
 opencode, agent mode:
   .opencode/agents/<id>.md          one whole file per persona
-  opencode.jsonc                    the workspace MCP servers, when any persona declares mcp
-  .opencode/skills/<id>/SKILL.md    one tree per skill, with every extra file
-  .opencode/commands/<id>.md        one whole file per command
-  .opencode/plugins/rulesync-hooks.js   the generated plugin, when a representable hook exists
 
 both:
   .farna/lock.json                  the manifest and the source-derived warnings
 ```
 
-Every path is conditional on a declaration. A tree that declares no MCP server writes no
-`opencode.jsonc`; a tree that declares no representable hook writes no plugin. `check` computes the
-expected set independently of what the renderer reports, so a dropped or invented workspace file is
-refused rather than written.
+Every path is conditional on a declaration. Agent mode writes no `opencode.jsonc`, skill tree,
+command file or hooks plugin; those paths belong to profile mode (M3). `check` computes the
+expected set independently of what the renderer reports, so a dropped or invented file is refused
+rather than written.
 
-### OpenCode workspace resources
+### OpenCode workspace resources require profile mode
 
 OpenCode carries MCP servers, skills, commands and hooks at the **workspace** level, not per agent.
-The product therefore emits each declaration once, from the union of the live personas, and reports
-the scoping loss rather than pretending the resource belongs to one persona:
+In agent mode a workspace emission would give every persona the declaring persona's resource, with
+no per-recipient record and no opt-out. That is not a capability the author declared for those
+personas, so the design makes all four boundary/workspace capabilities require profile mode, where
+exactly one persona is live.
 
-| Resource | Emitted as | Warning |
-|---|---|---|
-| `mcp/<id>` | `opencode.jsonc` `mcp.servers.<id>` | `W101_CAPABILITY_DROPPED`, HIGH |
-| `skill/<id>` | `.opencode/skills/<id>/**` | `W101_CAPABILITY_DROPPED`, MEDIUM |
-| `command/<id>` | `.opencode/commands/<id>.md` | `W101_CAPABILITY_DROPPED`, MEDIUM |
-| `hook/<id>` | `.opencode/plugins/rulesync-hooks.js` | `W101_CAPABILITY_DROPPED`, HIGH |
-
-Each warning names the resource and the persona that declared it, for example:
-
-```text
-W101_CAPABILITY_DROPPED high   builder: mcp/scan is applied to the whole OpenCode workspace, not to
-  persona builder alone: OpenCode configures MCP servers at the workspace level, not per agent
-```
-
-A hook OpenCode cannot express is **dropped**, never emitted as something that looks like a hook:
-
-| Hook phase | OpenCode |
-|---|---|
-| `before-tool` | carried as `preToolUse` |
-| `after-tool` | carried as `postToolUse` |
-| `session-start` | carried as `sessionStart` |
-| `stop` | carried as `stop` |
-| `session-end` | not representable, dropped with W101 |
-| any phase with a `matcher` other than `before-tool` / `after-tool` | matcher cannot be honoured, dropped with W101 |
-
-The hook plugin is generated JavaScript, so containment checks the executable surface: the exact
-multiset of declared commands, each bound to its declared event and matcher, with no undeclared
-command allowed. `check` still compares the plugin byte for byte against a fresh render, because a
-whole file is owned; the golden test pins the agent file and the workspace config.
+This slice implements agent mode only. A persona that references `mcp/<id>`, `skill/<id>`,
+`command/<id>` or `hook/<id>` on the `opencode` target is refused with `F001_INVALID_CONFIG`,
+naming the resource, the declaring persona and "requires profile mode". Nothing is written. The
+loaders, schemas and materialisation helpers for the four kinds remain in the source tree for M3,
+but agent mode emits none of them; there is no `W101_CAPABILITY_DROPPED` workspace record because
+nothing is emitted workspace-wide.
 
 MCP environment values are references only. A resource declares
-`{ "fromEnv": "EXAMPLE_TOKEN" }`; the materialiser writes rulesync's canonical `${EXAMPLE_TOKEN}`,
-and the OpenCode adapter emits `{env:EXAMPLE_TOKEN}`. A literal value in a credential position is
-`F002_SECRET_LITERAL` and is never echoed. Neither target ever reads the value.
+`{ "fromEnv": "EXAMPLE_TOKEN" }`; the materialiser writes rulesync's canonical `${EXAMPLE_TOKEN}`.
+A literal value in a credential position is `F002_SECRET_LITERAL` and is never echoed. An MCP
+`http` URL may not carry userinfo (`F002`, never echoed); a credential-shaped query parameter
+(`token`, `api_key`, `apikey`, `access_token`, `secret`, `password`) is reported as
+`W115_CREDENTIAL_IN_URL` and never echoed either. A stdio `command` is the program only: whitespace
+and control characters are refused (F001) with a message to put the arguments in `args`.
 
-The workspace resource kinds are **not** carried by `claudecode` in this slice. A persona that
-references one is refused (F001) rather than silently losing it, because Claude Code's per-agent
-surface for those capabilities is later work.
+The workspace resource kinds are **not** carried by `claudecode` either. A persona that references
+one is refused (F001) rather than silently losing it.
 
 ## Composition
 
@@ -345,12 +327,15 @@ They are validated at plan time and mapped to the target's own form before anyth
 | `*` | expands to every category | same | refused (F011), because it covers `network` |
 
 On OpenCode the records are an ordered array of `{ action, resource, effect }`. `bash` is emitted
-as `shell` and `task` as `subagent`, and the array preserves the materialiser's order so a later
-record is the effective one. `write` has no OpenCode category: it is folded into `edit`, and
-when a `write` declaration is the only source of an `allow`, the widening is reported as
-`W112_PERMISSION_LOSSY` (HIGH). A `write` that resolves `deny` is not reported: it narrows, and a
-stricter rule must never be presented as a loss. `ask` is emitted as `deny` on both targets and
-reported as `W111_ASK_DOWNGRADED`, because neither has a measured ask surface.
+as `shell` and `task` as `subagent`. OpenCode documents last-match-wins, so order is semantic: the
+catch-all is emitted first, and pattern resources keep their source declaration order. Sorting by
+codepoint could put an earlier allow after a later deny and silently turn a deny into an allow.
+The permission digest is order-sensitive for the same reason. `write` has no OpenCode category: it
+is folded into `edit`, and every write-derived `allow` that no edit declaration covers is reported
+as `W112_PERMISSION_LOSSY` (HIGH), including when an unrelated edit allow exists. A record whose
+emitted effect is deny is never reported: it narrows, and a stricter rule must never be presented
+as a loss. `ask` is emitted as `deny` on both targets and reported as `W111_ASK_DOWNGRADED`,
+because neither has a measured ask surface.
 
 ### Allow-list vs deny-list
 
@@ -394,7 +379,7 @@ src/
   config/         strict JSONC config schema and loader
   source/         YAML personas; markdown rules, skills and commands; JSONC permissions,
                   MCP servers and hooks; strict frontmatter and reference-only secrets
-  compose/        extends resolution, resource union, deny-wins merge, digests, W101
+  compose/        extends resolution, resource union, deny-wins merge, digests, workspace refusal
   permissions/    the canonical vocabulary and the Claude Code and OpenCode mappings
   materialise/    persona and workspace resources -> rulesync source tree
   render/         port.ts (the seam), upstream.ts (the only rulesync import),
@@ -407,8 +392,8 @@ src/
 tests/
   fixtures/demo/      the M1 fixture: two personas, two rules, no permissions
   fixtures/composed/  builder, builder-python (extends builder) and reviewer, with permissions
-  fixtures/opencode/  the OpenCode fixture: rules, permissions, MCP, a skill, a command, a hook
-  golden/             both targets' pinned emitted bytes and the OpenCode workspace config
+  fixtures/opencode/  the OpenCode fixture: rules, permissions and the files for the refused kinds
+  golden/             both targets' pinned emitted bytes
   unit/               composition, permissions, fake and mutating renderer gates, loader, init,
                       check, paths
   integration/        the real pinned renderer
@@ -419,8 +404,8 @@ scripts/              CI gates: the minimum test count, real-renderer suites and
 `.farna/lock.json` records `schemaVersion`, `product` (name and version), `target` (`claudecode` or
 `opencode`), `mode` (`agent`), the `renderer` identity, each persona's composition base and resolved
 resource ids (each with the persona that contributed it, across every loaded kind), a persona
-digest, a permission digest, every source-derived warning (including the OpenCode workspace-level
-`W101` records), and the path, size and SHA-256 of every managed file. It does **not** list
+digest, an order-sensitive permission digest, every source-derived warning, and the path, size and
+SHA-256 of every managed file. It does **not** list
 itself: the lockfile is built from the managed files before its own record is appended, so its own
 bytes are deliberately
 absent from `files`. It contains no timestamps, hostnames or absolute paths. A lockfile written
@@ -515,7 +500,8 @@ Deliberately out of scope, by milestone:
   configured target per run; every target other than `claudecode` and `opencode`; the full
   71-target capability matrix and the capability report page
 - model resources (a model is the persona's `model` class in this slice)
-- carrying `mcp`, `skill`, `command` or `hook` on `claudecode`
+- carrying `mcp`, `skill`, `command` or `hook` on either target in agent mode; profile mode is
+  where those workspace capabilities belong, and this slice refuses them
 - `patch` and `replaceWith` on a persona resource reference; `targets` filters on personas and
   resources; `--strict`; `--accept-config` gating; `.farna/local.jsonc`
 - deletion or sweeping of orphaned managed files: `check` reports an unexpected path inside a
@@ -596,17 +582,20 @@ them further. The differences, all deliberate:
 5. **A model conflict is detected on the resolved concrete model id.** Two classes that map to the
    same model id do not conflict; two classes that resolve to different ids do (F005).
 6. **A persona may reference `rule`, `permission`, `mcp`, `skill`, `command` and `hook`, and name
-   a `model` class.** The workspace kinds are loaded for every target but carried only by
-   `opencode`; a `claudecode` tree that references one is refused (F001) rather than silently
-   losing it. A `model/<id>` reference is still refused: a model is the persona's `model` class.
+   a `model` class.** The workspace kinds are loaded and validated for every target but require
+   profile mode; agent mode refuses a reference on either target (F001) rather than silently
+   losing it or emitting it workspace-wide. A `model/<id>` reference is still refused: a model is
+   the persona's `model` class.
    `targets.<t>.active` and `exclude` are also rejected: profile mode and per-target filters are
    later work, and accepting them here would be a silent no-op. For the same reason `ignoredFiles`
    is not accepted yet: an unknown-key error is louder than a setting that quietly does nothing.
-7. **`check` exits `1` on any drift, and `F007` is not an exception code.** The brief requires `0`
-   clean / `1` drift, so `check` returns `1` and reports `F007_DRIFT` in its payload. The design's
-   exit table assigned `F007` exit `4`; carrying that entry while returning `1` was two answers for
-   one code, so `F007` is removed from the exception table and `EXIT.drift` is `1`. `generate`
-   keeps the design's per-code exits (`F008` is `4`, `F011` is `3`).
+7. **`check` exits `1` on any drift; `generate` refuses an unowned managed path with `F007`.** The
+   brief requires `0` clean / `1` drift, so `check` returns `1` and reports `F007_DRIFT` in its
+   payload. `generate` uses the same code and exit `1` when a managed target already exists but is
+   not recorded in the committed lockfile: taking over a file this tool did not write is drift,
+   not a renderer failure. `F007` therefore stays out of the exception table (`EXIT_BY_CODE`)
+   while remaining a reportable diagnostic code with exit `1`. `generate` keeps the design's
+   per-code exits for the rest (`F008` is `4`, `F011` is `3`).
 8. **No matrix snapshot or matrix digest.** The one-target, seven-cell snapshot, `probe`, and the
     `matrixDigest` lockfile field are later work. The lockfile records the renderer identity,
     personas, resources, digests, managed files and source warnings only.
@@ -615,26 +604,27 @@ them further. The differences, all deliberate:
     resource `rank` is not recorded; `fromPersona` is. The array holds warnings derived from the
     source, never a renderer-level one such as `W114`: that is evidence about the machine, and
     recording it made two machines with the same source produce different lockfile bytes.
-10. **The permission digest covers the resolved product map** (category values and patterns), not
-    the emitted Claude Code entries. The target mapping is code, not source; the digest changes
-    when the source changes.
-11. **W101, W106, W111, W112, W113 and W114 are emitted in this milestone.** The full codes are
-    `W101_CAPABILITY_DROPPED` (workspace-level OpenCode resources), `W106_DENY_WINS`,
-    `W111_ASK_DOWNGRADED`, `W112_PERMISSION_LOSSY` (OpenCode's `write` fold only; `write` is
-    native on Claude Code), `W113_ALLOW_LIST_NARROWS` and
-    `W114_RENDERER_INTEGRITY_UNVERIFIED`. W101's severity is dynamic: HIGH for a boundary
-    capability (`mcp`, `hook`) and MEDIUM for content (`skill`, `command`); every record names the
-    resource and the persona. W113 is
-    emitted whenever a resource opts into the `tools` allow-list: it names the tools the narrowing
-    removes, and an opt-in whose categories all resolve deny/ask is reported as having no effect
-    (no `tools` is emitted, and the digest records the same effective value the artefact does).
-    W114 is emitted when the installed renderer's tarball integrity could not be located and
-    verified in the hidden (`<installRoot>/node_modules/.package-lock.json`) or install-root
-    (`<installRoot>/package-lock.json`) npm lock record; its medium severity reflects
-    that the version check still runs, so this is a provenance gap rather than a correctness
-    failure, but it is never a silent pass. It is reported by `generate` and `check` and is not
-    written into the lockfile. The remaining
-    W table, `--strict`, and severity promotion are deferred.
+10. **The permission digest covers the resolved product map** (category values and ordered
+    patterns), not the emitted Claude Code entries. Patterns are recorded as ordered arrays, so a
+    source that reorders two patterns has a different digest: OpenCode's last-match-wins makes
+    order semantic. The target mapping is code, not source; the digest changes when the source
+    changes.
+11. **W106, W111, W112, W113, W114 and W115 are emitted in this milestone.** The full codes are
+    `W106_DENY_WINS`, `W111_ASK_DOWNGRADED`, `W112_PERMISSION_LOSSY` (OpenCode's `write` fold only;
+    `write` is native on Claude Code), `W113_ALLOW_LIST_NARROWS`,
+    `W114_RENDERER_INTEGRITY_UNVERIFIED` and `W115_CREDENTIAL_IN_URL`. W101 remains in the code
+    vocabulary for M3 but is not emitted: agent mode writes no workspace resource, so there is no
+    workspace scoping loss to report. W113 is emitted whenever a resource opts into the `tools`
+    allow-list: it names the tools the narrowing removes, and an opt-in whose categories all
+    resolve deny/ask is reported as having no effect (no `tools` is emitted, and the digest records
+    the same effective value the artefact does). W114 is emitted when the installed renderer's
+    tarball integrity could not be located and verified in the hidden
+    (`<installRoot>/node_modules/.package-lock.json`) or install-root
+    (`<installRoot>/package-lock.json`) npm lock record; its medium severity reflects that the
+    version check still runs, so this is a provenance gap rather than a correctness failure, but it
+    is never a silent pass. It is reported by `generate` and `check` and is not written into the
+    lockfile. W115 flags a credential-shaped query parameter in an MCP URL and never echoes its
+    value. The remaining W table, `--strict`, and severity promotion are deferred.
 12. **One recursive delete exists, in `src/render/stage.ts`.** It removes only the `mkdtemp`
     directory the stage created, after proving it is inside the canonical temporary root. The
     design's "no recursive delete in `src/`" rule is about never deleting user content; a
@@ -661,30 +651,34 @@ them further. The differences, all deliberate:
 17. **Exactly one target is rendered per run.** `targets` admits one entry; a second is F001.
     Rendering both in one run needs a per-target lockfile and mode plan, which is later work. The
     committed lockfile records the target that produced it, and `check` compares the bytes.
-18. **OpenCode's workspace resources are emitted from the union of the live personas.** MCP,
-    skills, commands and hooks are workspace-level on OpenCode, so the materialiser writes each
-    declaration once and every persona receives a W101 record naming it. This is the honest
-    representation of the measured matrix, not a per-persona capability.
+18. **OpenCode's workspace resources require profile mode and are refused in agent mode.** MCP,
+    skills, commands and hooks are workspace-level on OpenCode. Emitting them from the union of the
+    live personas would hand every persona the declarer's resource, with no per-recipient record
+    and no opt-out, so agent mode refuses a reference with F001 naming the resource, the declaring
+    persona and "requires profile mode". The loaders, schema and materialisation helpers stay for
+    M3, when profile mode emits them for one live persona.
 19. **The OpenCode per-agent `task` category is authored as `task`, not `agent`.** The design's
     canonical mapping authors `task` as rulesync's `agent`. Measured at rulesync 43.11.0, the
     per-agent V2 raise path translates `task` to `subagent` but passes `agent` through
     untranslated, where OpenCode does not read it. Authoring `agent` would emit an inert record,
     so the materialiser authors `task` and a test pins the emitted `subagent` action.
-20. **An OpenCode hook it cannot represent is dropped, with W101.** `session-end` has no OpenCode
-    event, and a `matcher` is honoured only on the tool events (`before-tool`, `after-tool`). Those
-    hooks are not emitted and the loss is HIGH because a hook is a boundary capability.
+20. **OpenCode hook representability is M3 work.** `session-end` has no OpenCode event, and a
+    `matcher` is honoured only on the tool events (`before-tool`, `after-tool`). In this slice a
+    hook reference is refused in agent mode before representability is considered; the mapping is
+    kept for profile mode.
 21. **A skill's extra files are UTF-8 text.** The managed-output pipeline compares and writes text,
     so a valid UTF-8 file is reproduced byte for byte and a non-UTF-8 asset is refused (F001)
     rather than corrupted.
 22. **`"allowlist": true` is refused on OpenCode.** OpenCode's permission records are a deny-list
     and cannot name every unmodelled tool, so the Claude Code allow-list opt-in has no faithful
     representation; it is F001, never a silent no-op.
-23. **A per-agent command on Claude Code remains unsupported here.** The design's matrix marks
-    `command` as dropped per agent on both targets; this slice carries the command kind on OpenCode
-    only, and refuses it on Claude Code with the other workspace kinds.
-24. **The new resource kinds accept only fields the tool carries.** `command` and `skill` accept
-    `description` (emitted), not `displayName`; `mcp` and `hook` accept neither, because neither is
-    written into the artefact. `schema.md`'s generic `ResourceBase` allows a display name for every
+23. **The command kind is not carried per agent on either target in this slice.** The design's
+    matrix marks `command` as workspace-level; agent mode refuses it on OpenCode and on Claude Code
+    with the other workspace kinds. Profile mode is where it is carried.
+24. **The new resource kinds accept only fields the tool carries.** `command` and `skill` require
+    `description` (emitted; a command without one cannot be rendered, so the missing field is a
+    deliberate F001), and neither accepts `displayName`; `mcp` and `hook` accept neither, because
+    neither is written into the artefact. `schema.md`'s generic `ResourceBase` allows a display name for every
     resource; accepting one that is never emitted would be the silent no-op the strict schema exists
     to reject. A rule keeps `displayName`, because it names the rule's section in the persona body.
 
