@@ -34,6 +34,15 @@ string.
 - Node.js **22.22.0 or newer**
 - npm
 
+## Install
+
+`npm install farna-bootstrapper` (registry), `npm install <git-url>` and `npm install -g
+farna-bootstrapper` all work. `prepare` builds `dist/` for a git install and `prepack` builds it
+for the published tarball; a source checkout therefore produces a working `bin` without a manual
+build. A global install has no npm lockfile recording the renderer's tarball integrity, so the
+compile-time pin stands in for it; the installed renderer's version is still checked and a
+mismatch is refused (F010).
+
 ## Develop
 
 ```sh
@@ -51,9 +60,10 @@ node scripts/assert-pack.mjs     # after a build: the tarball contains dist
 
 The golden test in `tests/golden/` and the integration test in `tests/integration/` drive the
 real, pinned renderer. They always run: a missing or broken `rulesync` fails collection loudly
-rather than skipping. CI asserts a minimum total test count (not an exact one), that no test is
-pending or `todo`, that `numPassedTests` accounts for the whole run, and that both real-renderer
-suites ran. CI also type-checks `tests/`, audits dependencies at `moderate`, and proves that
+rather than skipping. CI enumerates `tests/**/*.test.ts` and asserts every file ran (so a deleted
+suite cannot hide behind the total), a minimum total test count (not an exact one), that no test
+is pending or `todo`, that `numPassedTests` accounts for the whole run, and that both
+real-renderer suites ran. CI also type-checks `tests/`, audits dependencies at `moderate`, and proves that
 `npm pack` from a tree with `dist/` moved aside still contains the entry points, which can only
 happen if `prepack` builds them.
 
@@ -73,8 +83,15 @@ farna-bootstrapper init
   resources/
     rules/
     permissions/
-.gitignore        # with .farna/local.jsonc and .farna/.journal.json
+.gitignore        # .farna/local.jsonc, .farna/.journal.json and OS metadata
+.gitattributes    # the two generated paths pinned to LF
 ```
+
+The `--json` object is `schemaVersion`, `command` (`init`), `ok`, `exitCode`, `root`,
+`configPath`, `created` and `updated` (the array of existing shared files this run appended to),
+and `nextStep`. It reports the shared files as `created` or `updated`; it never claims a file it
+did not touch. `init` preserves the existing bytes and mode of `.gitignore` and `.gitattributes`,
+appends only the missing lines, and restores both byte for byte if a later step fails.
 
 Add one YAML file per persona under `.farna/personas/`, one Markdown file per rule under
 `.farna/resources/rules/`, and one JSONC file per permission under
@@ -149,14 +166,16 @@ farna-bootstrapper check             # prove the tree matches a fresh render
 ```
 
 Every command accepts `--json`. A success object carries `schemaVersion`, `command`, `ok`,
-`exitCode` and the command's own fields; `init` adds `root`, `configPath`, `created` and
+`exitCode` and the command's own fields; `init` adds `root`, `configPath`, `created`, `updated` and
 `nextStep`.
 
 Every command emits one machine-readable object on stdout under `--json`, and every object carries
 `schemaVersion`, `command`, `ok` and `exitCode`; a typed failure also carries `code`,
 `subject` and `message`, and is emitted on stdout with the human line on stderr. `--dry-run`
 compares each managed path with the working tree, so `unchanged` and `would-write` are
-distinguished rather than every path being reported as a write.
+distinguished rather than every path being reported as a write. Its summary counts the
+`would-write` files, not the size of the plan: a tree that already matches reports
+`would write 0 file(s), N unchanged`.
 
 A persona's rule text is joined into the body of its Claude Code subagent, in canonical rule-id
 order, under a `## displayName` heading. The rule body itself is never re-wrapped or re-indented.
@@ -211,7 +230,10 @@ A permission resource may opt in with `"allowlist": true`. The resolved persona 
 ordered `tools` allow-list and a `W113_ALLOW_LIST_NARROWS` warning names every unmodelled tool the
 narrowing removes. The mode is persona-scoped: if any contributing resource opts in, the union of
 its resolved `allow` entries becomes the allow-list. `check` applies the same rule, so a renderer
-that invents or drops `tools` is refused either way.
+that invents or drops `tools` is refused either way. If the opt-in resolves to no `allow` entry
+(every category is denied, or a deny removed the only allow), `tools` is omitted and W113 reports
+that the opt-in had no effect, naming the categories that removed it; emitting `tools: []` would
+remove every tool. The persona's permission digest records that same effective value.
 
 `ask` has no per-agent surface on Claude Code, so it is emitted as `deny` and reported (W111).
 A pattern is resolved against its category before it is emitted: if the category's winning value is
@@ -404,9 +426,14 @@ them further. The differences, all deliberate:
 10. **The permission digest covers the resolved product map** (category values and patterns), not
     the emitted Claude Code entries. The target mapping is code, not source; the digest changes
     when the source changes.
-11. **Only W106 and W111 are emitted in this milestone.** W112 is defined in the design's code
-    table but is not emitted on Claude Code: `write` is native there, and the lossy mapping is
-    OpenCode's (M2b). The remaining W table, `--strict`, and severity promotion are deferred.
+11. **W106, W111 and W113 are emitted in this milestone.** The full codes are
+    `W106_DENY_WINS`, `W111_ASK_DOWNGRADED`, `W112_PERMISSION_LOSSY` (defined but not emitted on
+    Claude Code) and `W113_ALLOW_LIST_NARROWS`. W112 is not emitted because `write` is native
+    there, and the lossy mapping is OpenCode's (M2b). W113 is emitted whenever a resource opts
+    into the `tools` allow-list: it names the tools the narrowing removes, and an opt-in whose
+    categories all resolve deny/ask is reported as having no effect (no `tools` is emitted, and
+    the digest records the same effective value the artefact does). The remaining W table,
+    `--strict`, and severity promotion are deferred.
 12. **One recursive delete exists, in `src/render/stage.ts`.** It removes only the `mkdtemp`
     directory the stage created, after proving it is inside the canonical temporary root. The
     design's "no recursive delete in `src/`" rule is about never deleting user content; a

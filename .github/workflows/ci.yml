@@ -18,16 +18,25 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        # actions/checkout v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          # The job never pushes; do not leave a credential in .git/config for
+          # any later step (or a compromised dependency) to read.
+          persist-credentials: false
 
       - name: Set up Node 22
-        uses: actions/setup-node@v4
+        # actions/setup-node v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: '22'
           cache: npm
 
       - name: Install
-        run: npm ci
+        # No dependency needs an install script, and the package's own `prepare`
+        # build runs explicitly below; `--ignore-scripts` removes an entire
+        # supply-chain execution surface from CI.
+        run: npm ci --ignore-scripts
 
       - name: Lint
         run: npm run lint
@@ -51,10 +60,11 @@ jobs:
       - name: Test
         run: npm test -- --reporter=default --reporter=json --outputFile=vitest-report.json
 
-      # A green run proves nothing if a suite silently skipped, failed to
-      # collect, or left a `todo`. This asserts a minimum test count, that
-      # `numPassedTests` accounts for the whole run, and that both real-renderer
-      # suites executed. Adding tests does not require editing the gate.
+      # A green run proves nothing if a suite was deleted, silently skipped,
+      # failed to collect, or left a `todo`. This enumerates every
+      # tests/**/*.test.ts and requires it in the report, plus a minimum total,
+      # that `numPassedTests` accounts for the whole run, and that both
+      # real-renderer suites executed. Adding tests needs no gate edit.
       - name: Assert the minimum tests and real-renderer suites ran
         run: node scripts/assert-test-count.mjs vitest-report.json
 

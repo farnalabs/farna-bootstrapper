@@ -48,6 +48,7 @@
   "scripts": {
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "build": "tsc -p tsconfig.build.json",
+    "prepare": "npm run build",
     "prepack": "npm run build",
     "lint": "biome check .",
     "lint:fix": "biome check --write .",

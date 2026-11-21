@@ -1,21 +1,29 @@
 /**
  * CI gate for the test run.
  *
- * A green `vitest run` can hide four things this gate closes:
+ * A green `vitest run` can hide five things this gate closes:
  *
- * 1. a suite that silently stopped collecting, so the run shrank;
+ * 1. a test file that was deleted, or silently stopped collecting, so the run
+ *    shrank and a whole suite disappeared;
  * 2. a real-renderer suite that did not run (those are the only tests that can
  *    detect a renderer regression);
- * 3. a silently skipped test on the platform CI runs on; and
- * 4. a `test.todo`, which is collected and green but asserts nothing.
+ * 3. a silently skipped test on the platform CI runs on;
+ * 4. a `test.todo`, which is collected and green but asserts nothing; and
+ * 5. a report whose totals do not account for the whole run.
  *
- * It asserts a minimum, not an exact total, so adding coverage is a one-file
- * change. Raise MIN_TOTAL deliberately when the floor moves; never lower it to
- * make a red run pass. On Windows the repository has intentional symlink
- * skips, so pending tests are tolerated there; CI runs on Linux and requires
- * zero.
+ * The set of test files is enumerated from `tests/**`\/*.test.ts, so adding a
+ * suite needs no edit here; every discovered file must appear in the report and
+ * the report's suite count must cover them. The minimum total stays as a second
+ * floor. Raise MIN_TOTAL deliberately when it moves; never lower it to make a
+ * red run pass. On Windows the repository has intentional symlink skips, so
+ * pending tests are tolerated there; CI runs on Linux and requires zero.
+ *
+ * Usage: node scripts/assert-test-count.mjs [report] [root]
+ * `root` defaults to the current directory; tests pass a fixture root so the
+ * gate itself can be exercised without the real repository.
  */
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
+import { join, relative, sep } from 'node:path';
 
 const MIN_TOTAL = 180;
 
@@ -25,6 +33,26 @@ const REAL_RENDERER_SUITES = [
 ];
 
 const reportPath = process.argv[2] ?? 'vitest-report.json';
+const root = process.argv[3] ?? process.cwd();
+
+function enumerateTests(directory) {
+  const found = [];
+  let entries;
+  try {
+    entries = readdirSync(directory, { withFileTypes: true });
+  } catch {
+    return found;
+  }
+  for (const entry of entries) {
+    const path = join(directory, entry.name);
+    if (entry.isDirectory()) {
+      found.push(...enumerateTests(path));
+    } else if (entry.isFile() && entry.name.endsWith('.test.ts')) {
+      found.push(relative(root, path).split(sep).join('/'));
+    }
+  }
+  return found.sort();
+}
 
 let report;
 try {
@@ -69,6 +97,27 @@ if (todo > 0) {
 }
 
 const testResults = Array.isArray(report.testResults) ? report.testResults : [];
+const ranSuites = new Set(testResults.map((entry) => String(entry.name).replaceAll('\\', '/')));
+
+// Every test FILE on disk must appear in the report. This is what catches a
+// deleted suite: a floor on the total test count cannot see 14 tests leaving
+// one file when other files grew, but a missing file is unambiguous.
+const testFiles = enumerateTests(join(root, 'tests'));
+if (testFiles.length === 0) {
+  failures.push('no tests/**/*.test.ts files were found; the test tree is missing');
+}
+for (const file of testFiles) {
+  const ran = [...ranSuites].some((name) => name.endsWith(file));
+  if (!ran) {
+    failures.push(`test file did not run: ${file}`);
+  }
+}
+if (typeof report.numTotalTestSuites === 'number' && report.numTotalTestSuites < testFiles.length) {
+  failures.push(
+    `the report covers ${report.numTotalTestSuites} suite(s) but ${testFiles.length} test file(s) exist`,
+  );
+}
+
 for (const suite of REAL_RENDERER_SUITES) {
   const result = testResults.find((entry) =>
     // Vitest reports the platform path; a Windows checkout spells it with
@@ -106,5 +155,5 @@ const pending =
     ? ` (${report.numPendingTests} platform skip(s), tolerated on Windows)`
     : '';
 console.log(
-  `test-count: ${report.numPassedTests} of ${report.numTotalTests} tests passed (minimum ${MIN_TOTAL})${pending}; real-renderer suites ran (${REAL_RENDERER_SUITES.map((suite) => `${suite.suffix}:>=${suite.minimum}`).join(', ')})`,
+  `test-count: ${report.numPassedTests} of ${report.numTotalTests} tests passed in ${testFiles.length} file(s) (minimum ${MIN_TOTAL})${pending}; real-renderer suites ran (${REAL_RENDERER_SUITES.map((suite) => `${suite.suffix}:>=${suite.minimum}`).join(', ')})`,
 );

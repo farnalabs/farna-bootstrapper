@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -11,6 +11,7 @@ const SCRIPT = fileURLToPath(new URL('../../scripts/assert-test-count.mjs', impo
 
 type Report = {
   numTotalTests: number;
+  numTotalTestSuites?: number;
   numPassedTests: number;
   numFailedTests: number;
   numPendingTests: number;
@@ -37,13 +38,30 @@ function report(overrides: Partial<Report> = {}): Report {
   return { ...base, ...overrides };
 }
 
-async function runGate(value: Report): Promise<{ code: number; stdout: string; stderr: string }> {
+const DEFAULT_FILES = ['tests/integration/rulesync.test.ts', 'tests/golden/builder-python.test.ts'];
+
+/**
+ * Run the gate against a fixture root. The gate enumerates `tests/**` from that
+ * root, so the test controls exactly which files exist on disk independently of
+ * the report it is handed.
+ */
+async function runGate(
+  value: Report,
+  files: readonly string[] = DEFAULT_FILES,
+): Promise<{ code: number; stdout: string; stderr: string }> {
   const dir = await mkdtemp(join(tmpdir(), 'fbs-gate-'));
   try {
+    for (const file of files) {
+      const absolute = join(dir, file);
+      await mkdir(join(absolute, '..'), { recursive: true });
+      await writeFile(absolute, '', 'utf8');
+    }
     const path = join(dir, 'vitest-report.json');
     await writeFile(path, JSON.stringify(value), 'utf8');
     try {
-      const result = await execFileAsync(process.execPath, [SCRIPT, path], { timeout: 30_000 });
+      const result = await execFileAsync(process.execPath, [SCRIPT, path, dir], {
+        timeout: 30_000,
+      });
       return { code: 0, stdout: result.stdout, stderr: result.stderr };
     } catch (error) {
       const failure = error as { code?: number; stdout?: string; stderr?: string };
@@ -105,5 +123,47 @@ describe('the test-count gate', () => {
     const result = await runGate(report({ numTotalTests: 5, numPassedTests: 5 }));
     expect(result.code).toBe(1);
     expect(result.stderr).toContain('expected at least');
+  });
+
+  it('fails when a test file exists on disk but is absent from the report', async () => {
+    const result = await runGate(report(), [
+      'tests/integration/rulesync.test.ts',
+      'tests/golden/builder-python.test.ts',
+      'tests/unit/deleted-suite.test.ts',
+    ]);
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain('test file did not run: tests/unit/deleted-suite.test.ts');
+  });
+
+  it('passes when a new suite is added without editing the gate', async () => {
+    const result = await runGate(
+      report({
+        testResults: [
+          { name: '/repo/tests/integration/rulesync.test.ts', assertionResults: passed(4) },
+          { name: '/repo/tests/golden/builder-python.test.ts', assertionResults: passed(2) },
+          { name: '/repo/tests/unit/new-suite.test.ts', assertionResults: passed(5) },
+        ],
+      }),
+      [
+        'tests/integration/rulesync.test.ts',
+        'tests/golden/builder-python.test.ts',
+        'tests/unit/new-suite.test.ts',
+      ],
+    );
+    expect(result.code).toBe(0);
+  });
+
+  it('fails when the report suite count does not cover the files on disk', async () => {
+    const result = await runGate(
+      report({
+        numTotalTestSuites: 1,
+        testResults: [
+          { name: '/repo/tests/integration/rulesync.test.ts', assertionResults: passed(4) },
+          { name: '/repo/tests/golden/builder-python.test.ts', assertionResults: passed(2) },
+        ],
+      }),
+    );
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain('test file(s) exist');
   });
 });
