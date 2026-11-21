@@ -13,10 +13,12 @@ import type {
 } from './port.js';
 
 /**
- * The pinned renderer. The version and integrity the lockfile records are read
- * from the installed package; this constant is the pin they are checked
- * against, so a swapped or patched renderer fails loudly instead of silently
- * producing bytes under the pinned name.
+ * The pinned renderer. The version and recorded tarball integrity the lockfile
+ * records are read from the installed package; this constant is the pin they
+ * are checked against. A renderer whose version or npm-recorded tarball
+ * integrity differs fails loudly. File-content tampering inside an installed
+ * package (a `patch-package` entry, an edited `dist`) keeps the same version
+ * and integrity and is NOT detected; see the README's residual list.
  */
 export const RENDERER_PIN: RendererIdentity = {
   name: 'rulesync',

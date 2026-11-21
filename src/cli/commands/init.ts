@@ -97,6 +97,9 @@ export async function runInit(repoRoot: string): Promise<InitResult> {
   const configAbsolute = join(repoRoot, ROOT_DIR, CONFIG_FILE);
   const gitignorePath = join(repoRoot, '.gitignore');
 
+  // Check `.farna` itself before probing anything below it: when it is a
+  // regular file, lstat of `.farna/config.jsonc` raises ENOTDIR.
+  await assertRealDirectory(join(repoRoot, ROOT_DIR), ROOT_DIR);
   const existingConfig = await lstatOrUndefined(configAbsolute);
   if (existingConfig !== undefined) {
     throw invalidConfig('a source root already exists', {
@@ -104,8 +107,8 @@ export async function runInit(repoRoot: string): Promise<InitResult> {
       action: 'edit the existing config, or remove it deliberately before re-initialising',
     });
   }
-  // Preflight every path this invocation will touch before creating anything.
-  await assertRealDirectory(join(repoRoot, ROOT_DIR), ROOT_DIR);
+  // Preflight every remaining path this invocation will touch before creating
+  // anything.
   const gitignoreOriginal = await preflightGitignore(gitignorePath);
   const gitignoreNext =
     gitignoreOriginal === undefined

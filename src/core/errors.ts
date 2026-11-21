@@ -49,10 +49,6 @@ export function conflict(message: string, options: FarnaErrorOptions = {}): Farn
   return new FarnaError('F005_CONFLICT', message, options);
 }
 
-export function drift(message: string, options: FarnaErrorOptions = {}): FarnaError {
-  return new FarnaError('F007_DRIFT', message, options);
-}
-
 export function declaredNotEmitted(message: string, options: FarnaErrorOptions = {}): FarnaError {
   return new FarnaError('F008_DECLARED_NOT_EMITTED', message, options);
 }
