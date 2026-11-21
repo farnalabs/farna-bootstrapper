@@ -465,9 +465,21 @@ async function verifyCommand(
   return new Map([[path, text]]);
 }
 
-/** The renderer writes `\`` for every backtick; compare the command it meant. */
-function unescapeRendererBackticks(value: string): string {
-  return value.replaceAll('\\`', '`');
+/**
+ * Undo rulesync's template-literal escaping, in the exact inverse of the order
+ * it applied (`escapeForTemplateLiteral`: double each backslash, prefix each
+ * backtick, then prefix each `${`):
+ *
+ * 1. `\${` -> `${`
+ * 2. `` \` `` -> `` ` ``
+ * 3. `\\` -> `\`
+ *
+ * The order is load-bearing. Undoing the backslash doubling first would turn a
+ * literal `\${` into `${` and make a command that only *looks* like a
+ * substitution compare equal to one that is.
+ */
+function unescapeTemplateLiteral(value: string): string {
+  return value.replaceAll('\\${', '${').replaceAll('\\`', '`').replaceAll('\\\\', '\\');
 }
 
 const HOOK_EVENT_BY_PHASE: Record<string, string> = {
@@ -487,9 +499,9 @@ const HOOK_EVENT_BY_PHASE: Record<string, string> = {
  * rulesync emits two registration shapes at 43.11.0: a tool hook
  * (`ctx.tool.hook("execute.before"|"execute.after", ...)` with the command as a
  * `command: "<json>"` literal and a `new RegExp("<matcher>")` guard) and an
- * event hook (`label: "<event>", command: "<json>"`). Each command and matcher
- * is bound to the nearest preceding anchor, which is how the generated file is
- * laid out.
+ * event hook (`label: "<event>", command: "<json>"`). A command's event is the
+ * nearest preceding registration anchor; its matcher is the `new RegExp(...)`
+ * between the previous command and this one within that registration.
  */
 function verifyHookPlugin(source: ResolvedSource, text: string, subject: string): void {
   type Anchor = { index: number; event: string };
@@ -515,17 +527,23 @@ function verifyHookPlugin(source: ResolvedSource, text: string, subject: string)
 
   const registrations: Array<{ event: string; command: string; matcher?: string }> = [];
   const commandPattern = /command: ("(?:[^"\\]|\\.)*")/g;
+  // rulesync lays a registration out as `matcher? command matcher? command ...`
+  // inside one callback, so a command's matcher is the `new RegExp(...)` between
+  // the PREVIOUS command and this one. Slicing from the event anchor instead
+  // let a second command inherit an earlier command's matcher (a matcher-less
+  // hook was refused, and a dropped matcher was accepted when both hooks named
+  // the same one).
+  let previousCommandEnd = -1;
   for (const match of text.matchAll(commandPattern)) {
     const index = match.index ?? 0;
     const raw = match[1] ?? '""';
     let command: string;
     try {
-      // rulesync escapes every backtick in the command it writes into the
-      // plugin, so the parsed string carries a `\`` where the source declared
-      // `` ` ``. The escape is the renderer's representation of the same
-      // command, not an added or dropped instruction: without this the gate
-      // refused any hook whose command uses command substitution.
-      command = unescapeRendererBackticks(JSON.parse(raw) as string);
+      // rulesync escapes the command for a template literal before embedding
+      // it, so the parsed string is the escaped form, not the source command.
+      // Undo that escaping before comparing: it is the renderer's
+      // representation of the same command, not an added or dropped instruction.
+      command = unescapeTemplateLiteral(JSON.parse(raw) as string);
     } catch {
       throw declaredNotEmitted('hooks plugin contains an unreadable command', { subject });
     }
@@ -536,14 +554,21 @@ function verifyHookPlugin(source: ResolvedSource, text: string, subject: string)
         { subject },
       );
     }
-    // Look for the matcher only inside this registration, never in an earlier
-    // one: a hook without a matcher must not inherit its neighbour's guard.
-    const block = text.slice(registration.start, index);
+    // The window starts after the previous command, never at the anchor: a hook
+    // without a matcher must not inherit its neighbour's guard, and a dropped
+    // matcher must not be replaced by an earlier identical one.
+    const windowStart = Math.max(registration.start, previousCommandEnd);
+    const block = text.slice(windowStart, index);
+    previousCommandEnd = index + match[0].length;
     const matcherMatch = /new RegExp\("((?:[^"\\]|\\.)*)"\)/g;
     let matcher: string | undefined;
     for (const candidate of block.matchAll(matcherMatch)) {
       try {
-        matcher = unescapeRendererBackticks(JSON.parse(`"${candidate[1] ?? ''}"`) as string);
+        // A matcher is embedded directly in a quoted JS string with backslashes
+        // and quotes escaped, so JSON.parse is its whole inverse: applying the
+        // template-literal unescape here too would strip one level too many
+        // from a matcher that contains a literal backslash.
+        matcher = JSON.parse(`"${candidate[1] ?? ''}"`) as string;
       } catch {
         matcher = undefined;
       }
