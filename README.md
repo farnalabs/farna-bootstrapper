@@ -41,13 +41,17 @@ farna-bootstrapper` all work. `prepare` builds `dist/` for a git install and `pr
 for the published tarball; a source checkout therefore produces a working `bin` without a manual
 build. The renderer's integrity is read from exactly two npm lock records at the **install root**,
 the nearest ancestor of the product package that owns a `node_modules` directory: the hidden
-`<installRoot>/node_modules/.package-lock.json` and `<installRoot>/package-lock.json`. In those
+`<installRoot>/node_modules/.package-lock.json` and `<installRoot>/package-lock.json`. In a hoisted
+npm workspace the renderer sits at `<ws>/node_modules/rulesync`, so that workspace root *is* the
+install root and its record at `<ws>/package-lock.json` (and its hidden record) is read. In those
 records the `packages` map is searched for the renderer's entry under a key ending in
 `node_modules/<renderer>`; a nested install (`npm install --install-strategy=nested`), which
 records `node_modules/farna-bootstrapper/node_modules/rulesync`, is read from those same two
-records. Any other layout — an npm workspace root, a parent monorepo, a sibling package — is not
+records. A workspace root *above* the install root, a parent monorepo and a sibling package are not
 read and may yield `W114`. Those two records are the only supported source of integrity; every
-other npm layout is not promised.
+other npm layout is not promised. When more than one renderer entry matches — for example another
+global package's nested copy in a shared global record — its integrity must still equal the pin: a
+different tarball is refused (F010), so a stranger's entry cannot stand in for the pinned renderer.
 
 The guarantee is exact: **the installed renderer version is enforced; the integrity is best effort
 and is checked only in those two records; if no renderer entry is found there, the tool emits
@@ -340,10 +344,13 @@ identity policy has three parts:
    `node_modules/<renderer>` (a scoped name keeps its scope in the key). A nested install records
    it as `node_modules/farna-bootstrapper/node_modules/rulesync`. When more than one entry matches,
    the one nested under farna-bootstrapper's own package wins, then the shallowest, then the
-   earlier record. The search never leaves the install root: a workspace root, a parent monorepo
-   or a sibling package records a different copy and is never read, so it cannot refuse a healthy
-   install with a foreign integrity or verify one it did not examine. A string integrity that was
-   found is compared exactly with the pin; a different one is `F010`.
+   earlier record. In a hoisted workspace the renderer is at the workspace root, so that root is
+   the install root and its record is read; the search never leaves the install root beyond that,
+   so a workspace root above it, a parent monorepo or a sibling package records a different copy
+   and is never read, and cannot refuse a healthy install with a foreign integrity or verify one
+   it did not examine. A string integrity that was found is compared exactly with the pin; a
+   different one is `F010`, including when a shared record's matching entry belongs to another
+   package: only the pinned tarball passes.
 3. **Unverifiable — named, never silently passed.** A record that exists but cannot be read, is a
    symlink or is not a regular file, or is above the 64 MiB npm-record bound, is refused `F010`
    naming the record, even when the other supported record is usable. Only a genuinely absent

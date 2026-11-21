@@ -836,12 +836,87 @@ describe('a nested install layout', () => {
   });
 });
 
+describe('a hoisted workspace install', () => {
+  // A plain npm workspace hoists the renderer to `<ws>/node_modules/rulesync`,
+  // so the workspace root IS the install root and its two records are read.
+  // Only a workspace root above the install root is skipped (next suite).
+  type HoistedLayout = { ws: string; packageDir: string };
+
+  async function hoistedLayout(): Promise<HoistedLayout> {
+    const ws = await mkdtemp(join(tmpdir(), 'fbs-hoisted-workspace-'));
+    const packageDir = join(ws, 'node_modules', RENDERER_PIN.name);
+    await mkdir(packageDir, { recursive: true });
+    await writeFile(
+      join(ws, 'package.json'),
+      JSON.stringify({ name: 'workspace-root', private: true, workspaces: ['packages/*'] }),
+      'utf8',
+    );
+    return { ws, packageDir };
+  }
+
+  async function writeRecord(path: string, entries: Record<string, unknown>): Promise<void> {
+    await writeFile(path, JSON.stringify({ packages: entries }), 'utf8');
+  }
+
+  function installedFrom(record: ReturnType<typeof readRecordedIntegrity>): RendererIdentity {
+    return { name: RENDERER_PIN.name, version: RENDERER_PIN.version, integrityRecord: record };
+  }
+
+  it('reads a hoisted renderer from the workspace root lockfile and does not warn', async () => {
+    const { ws, packageDir } = await hoistedLayout();
+    try {
+      await writeRecord(join(ws, 'package-lock.json'), {
+        [`node_modules/${RENDERER_PIN.name}`]: { integrity: RENDERER_PIN.integrity },
+      });
+      const record = readRecordedIntegrity(packageDir, RENDERER_PIN.name);
+      expect(record).toEqual({ verified: true, integrity: RENDERER_PIN.integrity });
+      const installed = installedFrom(record);
+      // A matching integrity is a clean pass: no W114, and the pin check holds.
+      expect(rendererIntegrityWarning(installed)).toBeUndefined();
+      expect(() => assertPinned(installed)).not.toThrow();
+    } finally {
+      await rm(ws, { recursive: true, force: true });
+    }
+  });
+
+  it('reads a hoisted renderer from the workspace root hidden record', async () => {
+    const { ws, packageDir } = await hoistedLayout();
+    try {
+      await writeRecord(join(ws, 'node_modules', '.package-lock.json'), {
+        [`node_modules/${RENDERER_PIN.name}`]: { integrity: RENDERER_PIN.integrity },
+      });
+      const record = readRecordedIntegrity(packageDir, RENDERER_PIN.name);
+      expect(record).toEqual({ verified: true, integrity: RENDERER_PIN.integrity });
+      expect(rendererIntegrityWarning(installedFrom(record))).toBeUndefined();
+    } finally {
+      await rm(ws, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses a hoisted workspace record whose integrity differs from the pin', async () => {
+    const { ws, packageDir } = await hoistedLayout();
+    try {
+      await writeRecord(join(ws, 'package-lock.json'), {
+        [`node_modules/${RENDERER_PIN.name}`]: { integrity: 'sha512-DIFFERENT-NOT-THE-PIN' },
+      });
+      const record = readRecordedIntegrity(packageDir, RENDERER_PIN.name);
+      expect(record).toEqual({ verified: true, integrity: 'sha512-DIFFERENT-NOT-THE-PIN' });
+      expect(() => assertPinned(installedFrom(record))).toThrowError(
+        expect.objectContaining({ code: 'F010_RENDERER_MISMATCH', exitCode: 5 }),
+      );
+    } finally {
+      await rm(ws, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('ancestor and workspace layouts that are not read', () => {
-  // The only two supported records sit at the install root. A workspace root,
-  // a parent monorepo and the directory directly above a member's install root
-  // record a different copy of the renderer (or none), so reading them refused
-  // a healthy install with a foreign integrity or claimed a verification that
-  // was never made. Those layouts now yield W114 and are never opened.
+  // The only two supported records sit at the install root. A workspace root
+  // ABOVE the install root (a member with its own copy), a parent monorepo and
+  // the directory directly above a member's install root record a different
+  // copy of the renderer (or none), so reading them refused a healthy install
+  // with a foreign integrity or claimed a verification that was never made.
+  // Those layouts yield W114 and are never opened.
   const MEMBER = 'packages/foo';
   const WORKSPACE_KEY = `${MEMBER}/node_modules/${RENDERER_PIN.name}`;
 
@@ -867,7 +942,7 @@ describe('ancestor and workspace layouts that are not read', () => {
     return { name: RENDERER_PIN.name, version: RENDERER_PIN.version, integrityRecord: record };
   }
 
-  it('yields W114 from a workspace root lockfile and never reads it', async () => {
+  it('yields W114 from a workspace root above the install root', async () => {
     // The differing integrity proves the file was not opened: reading it would
     // have refused (F010) instead of reporting the gap.
     const { root, packageDir } = await workspaceLayout();
@@ -889,7 +964,7 @@ describe('ancestor and workspace layouts that are not read', () => {
     }
   });
 
-  it('yields W114 from a workspace root hidden record and never reads it', async () => {
+  it('yields W114 from an above-install-root hidden record', async () => {
     const { root, packageDir } = await workspaceLayout();
     try {
       await mkdir(join(root, 'node_modules'), { recursive: true });
