@@ -248,7 +248,7 @@ async function writeOpencodeCommands(sourceRoot: string, source: ResolvedSource)
     await mkdir(join(sourceRoot, COMMANDS_DIR), { recursive: true });
     const frontmatter = stringify(
       {
-        ...(command.description === undefined ? {} : { description: command.description }),
+        description: command.description,
         targets: [OPENCODE_TARGET],
       },
       { lineWidth: 0 },

@@ -12,7 +12,6 @@
       "!node_modules",
       "!package-lock.json",
       "!vitest-report.json",
-      "!tests/golden/opencode-workspace.jsonc",
       "!tests/golden/opencode-builder.md"
     ]
   },

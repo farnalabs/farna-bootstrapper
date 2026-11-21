@@ -3,6 +3,7 @@ import {
   CONFIG_PATH,
   DRIFT_CODE,
   EXIT,
+  OPENCODE_SUPPORTED_MAJOR,
   PRODUCT_NAME,
   PRODUCT_VERSION,
   SCHEMA_VERSION,
@@ -110,6 +111,10 @@ export function buildProgram(context: CliContext): Command {
     .name(PRODUCT_NAME)
     .description(
       'Compile named agent personas and resources into harness configuration, and prove the output still matches the source.',
+    )
+    .addHelpText(
+      'after',
+      `\nThe OpenCode target supports OpenCode ${OPENCODE_SUPPORTED_MAJOR}.x only; the 1.x layout is unsupported.`,
     )
     .version(
       // The compiled-in pin, never the installed renderer: `--version` and

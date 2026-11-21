@@ -1,4 +1,4 @@
-import { appendFile, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { appendFile, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { parseDocument } from 'yaml';
@@ -56,7 +56,7 @@ async function expectGate(
 }
 
 describe('opencode target', () => {
-  it('writes exactly the measured OpenCode path set', async () => {
+  it('writes exactly the measured agent-mode path set', async () => {
     const repo = await createTempRepo('opencode');
     try {
       const result = await runGenerate(
@@ -68,14 +68,14 @@ describe('opencode target', () => {
         '.farna/lock.json',
         '.opencode/agents/builder.md',
         '.opencode/agents/reviewer.md',
-        '.opencode/commands/pytest.md',
-        '.opencode/plugins/rulesync-hooks.js',
-        '.opencode/skills/secure-review/SKILL.md',
-        '.opencode/skills/secure-review/scripts/check.sh',
-        'opencode.jsonc',
       ]);
-      expect(await listFiles(repo.root)).not.toContain('AGENTS.md');
-      expect(await listFiles(repo.root)).not.toContain('CLAUDE.md');
+      const files = await listFiles(repo.root);
+      expect(files).not.toContain('opencode.jsonc');
+      expect(files.some((path) => path.startsWith('.opencode/commands/'))).toBe(false);
+      expect(files.some((path) => path.startsWith('.opencode/skills/'))).toBe(false);
+      expect(files.some((path) => path.startsWith('.opencode/plugins/'))).toBe(false);
+      expect(files).not.toContain('AGENTS.md');
+      expect(files).not.toContain('CLAUDE.md');
     } finally {
       await repo.cleanup();
     }
@@ -125,65 +125,45 @@ describe('opencode target', () => {
     }
   });
 
-  it('applies MCP, skill, command and hook once at the workspace level', async () => {
-    const repo = await generated();
-    try {
-      const workspace = JSON.parse(await readText(repo.root, 'opencode.jsonc')) as {
-        mcp: { servers: Record<string, unknown> };
-      };
-      expect(Object.keys(workspace.mcp.servers).sort()).toEqual(['docs', 'scan']);
-      // Environment references, never values.
-      expect(await readText(repo.root, 'opencode.jsonc')).toContain('{env:EXAMPLE_TOKEN}');
-      expect(await readText(repo.root, 'opencode.jsonc')).not.toContain('secret-value');
-      expect(await readText(repo.root, '.opencode/skills/secure-review/SKILL.md')).toContain(
-        'FBS_SKILL_BODY_2b8e',
-      );
-      expect(
-        await readText(repo.root, '.opencode/skills/secure-review/scripts/check.sh'),
-      ).toContain('FBS_SKILL_SCRIPT_6c7d');
-      expect(await readText(repo.root, '.opencode/commands/pytest.md')).toContain(
-        'FBS_COMMAND_BODY_4d6c',
-      );
-      const plugin = await readText(repo.root, '.opencode/plugins/rulesync-hooks.js');
-      expect(plugin).toContain('pnpm exec prettier --write');
-      expect(plugin).not.toContain('FBS_HOOK_SESSION_END_9e1f');
+  for (const [kind, id] of [
+    ['mcp', 'scan'],
+    ['skill', 'secure-review'],
+    ['command', 'pytest'],
+    ['hook', 'format-on-save'],
+  ] as const) {
+    it(`refuses ${kind}/${id} in agent mode instead of emitting it workspace-wide`, async () => {
+      const repo = await createTempRepo('opencode');
+      try {
+        await appendFile(
+          join(repo.root, '.farna/personas/builder.yaml'),
+          `  - ${kind}/${id}\n`,
+          'utf8',
+        );
+        const before = await hashTree(repo.root);
+        let failure: FarnaError | undefined;
+        try {
+          await runGenerate({ cwd: repo.root, dryRun: false }, new UpstreamRenderTarget());
+        } catch (error) {
+          failure = error as FarnaError;
+        }
+        expect(failure?.code).toBe('F001_INVALID_CONFIG');
+        expect(failure?.exitCode).toBe(1);
+        expect(failure?.subject).toBe('.farna/personas/builder.yaml');
+        expect(failure?.message).toContain(`${kind}/${id}`);
+        expect(failure?.message).toContain('builder');
+        expect(failure?.message).toContain('requires profile mode');
+        expect(await hashTree(repo.root)).toBe(before);
+      } finally {
+        await repo.cleanup();
+      }
+    });
+  }
 
-      // The reviewer declares none of the workspace resources, so its own
-      // artefact must carry no MCP, skill, command or hook key.
-      const reviewer = frontmatterOf(await readText(repo.root, '.opencode/agents/reviewer.md'));
-      expect(Object.keys(reviewer).sort()).toEqual(['description', 'mode', 'permissions']);
-    } finally {
-      await repo.cleanup();
-    }
-  });
-
-  it('warns for every workspace resource kind and for the dropped hook', async () => {
+  it('warns W112 and W111, and no workspace W101, for a clean agent-mode run', async () => {
     const repo = await createdWithGenerateWarnings();
     try {
-      const byCapability = new Map<string, Array<{ severity: string; message: string }>>();
-      for (const entry of repo.warnings) {
-        if (entry.code !== 'W101_CAPABILITY_DROPPED') {
-          continue;
-        }
-        const bucket = byCapability.get(entry.capability ?? '') ?? [];
-        bucket.push({ severity: entry.severity, message: entry.message });
-        byCapability.set(entry.capability ?? '', bucket);
-      }
-      expect([...byCapability.keys()].sort()).toEqual(['command', 'hook', 'mcp', 'skill']);
-      expect(byCapability.get('mcp')?.map((entry) => entry.severity)).toEqual(['high', 'high']);
-      expect(byCapability.get('command')?.[0]?.severity).toBe('medium');
-      expect(byCapability.get('skill')?.[0]?.severity).toBe('medium');
-      const hooks = byCapability.get('hook') ?? [];
-      expect(hooks.map((entry) => entry.severity)).toEqual(['high', 'high']);
-      expect(hooks.some((entry) => entry.message.includes('hook/format-on-save'))).toBe(true);
-      const dropped = hooks.find((entry) => entry.message.includes('session-audit'));
-      expect(dropped?.message).toContain('session-end');
-      expect(dropped?.message).toContain('not emitted');
-      for (const messages of byCapability.values()) {
-        for (const entry of messages) {
-          expect(entry.message).toContain('builder');
-        }
-      }
+      const codes = repo.warnings.map((entry) => entry.code);
+      expect(codes).not.toContain('W101_CAPABILITY_DROPPED');
       // W112 is the widening case only: builder's write allow has no edit
       // declaration. The reviewer declares write deny, which narrows, so it
       // must not be presented as a loss.
@@ -209,29 +189,15 @@ describe('opencode target', () => {
       expect(lock.files.map((file) => file.path)).toEqual([
         '.opencode/agents/builder.md',
         '.opencode/agents/reviewer.md',
-        '.opencode/commands/pytest.md',
-        '.opencode/plugins/rulesync-hooks.js',
-        '.opencode/skills/secure-review/SKILL.md',
-        '.opencode/skills/secure-review/scripts/check.sh',
-        'opencode.jsonc',
       ]);
       expect(lock.files.every((file) => /^[0-9a-f]{64}$/.test(file.sha256))).toBe(true);
       expect(
         lock.personas[0]?.resources.map((resource) => `${resource.kind}/${resource.id}`),
-      ).toEqual([
-        'rule/house-style',
-        'permission/builder-default',
-        'mcp/docs',
-        'mcp/scan',
-        'skill/secure-review',
-        'command/pytest',
-        'hook/format-on-save',
-        'hook/session-audit',
-      ]);
+      ).toEqual(['rule/house-style', 'permission/builder-default']);
       const codes = lock.warnings.map((entry) => entry.code);
-      expect(codes).toContain('W101_CAPABILITY_DROPPED');
+      expect(codes).toContain('W112_PERMISSION_LOSSY');
+      expect(codes).not.toContain('W101_CAPABILITY_DROPPED');
       expect(codes).not.toContain('W114_RENDERER_INTEGRITY_UNVERIFIED');
-      expect(lock.warnings.some((entry) => entry.message.includes('session-audit'))).toBe(true);
     } finally {
       await repo.cleanup();
     }
@@ -251,13 +217,54 @@ describe('opencode target', () => {
       const check = await runCheck(repo.root, new UpstreamRenderTarget());
       expect(check.ok).toBe(true);
       expect(check.exitCode).toBe(0);
-      expect(check.warnings.map((entry) => entry.code)).toContain('W101_CAPABILITY_DROPPED');
+      expect(check.warnings.map((entry) => entry.code)).toContain('W112_PERMISSION_LOSSY');
+      expect(check.warnings.map((entry) => entry.code)).not.toContain('W101_CAPABILITY_DROPPED');
     } finally {
       await repo.cleanup();
     }
   });
 
-  it('detects drift in an agent file, the workspace config and a skill file', async () => {
+  it('leaves a pre-existing user opencode.jsonc untouched', async () => {
+    const repo = await createTempRepo('opencode');
+    try {
+      const userConfig = '{ "theme": "user-owned" }\n';
+      await writeFile(join(repo.root, 'opencode.jsonc'), userConfig, 'utf8');
+      await runGenerate({ cwd: repo.root, dryRun: false }, new UpstreamRenderTarget());
+      expect(await readText(repo.root, 'opencode.jsonc')).toBe(userConfig);
+      const files = await readText(repo.root, '.farna/lock.json');
+      expect(files).not.toContain('opencode.jsonc');
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
+  it('refuses to overwrite a pre-existing agent file with no lockfile record', async () => {
+    const repo = await createTempRepo('opencode');
+    try {
+      await mkdir(join(repo.root, '.opencode/agents'), { recursive: true });
+      await writeFile(
+        join(repo.root, '.opencode/agents/builder.md'),
+        '---\nname: user-builder\n---\nhand written\n',
+        'utf8',
+      );
+      const before = await hashTree(repo.root);
+      let failure: FarnaError | undefined;
+      try {
+        await runGenerate({ cwd: repo.root, dryRun: false }, new UpstreamRenderTarget());
+      } catch (error) {
+        failure = error as FarnaError;
+      }
+      expect(failure?.code).toBe('F007_DRIFT');
+      expect(failure?.exitCode).toBe(1);
+      expect(failure?.subject).toBe('.opencode/agents/builder.md');
+      expect(failure?.message).toContain('not recorded in the committed lockfile');
+      expect(await hashTree(repo.root)).toBe(before);
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
+  it('detects drift in an agent file and in the lockfile', async () => {
     const repo = await generated();
     try {
       const agent = await readFile(join(repo.root, '.opencode/agents/builder.md'), 'utf8');
@@ -267,25 +274,9 @@ describe('opencode target', () => {
       expect(check.drift.map((item) => item.path)).toContain('.opencode/agents/builder.md');
       await writeFile(join(repo.root, '.opencode/agents/builder.md'), agent, 'utf8');
 
-      const config = await readFile(join(repo.root, 'opencode.jsonc'), 'utf8');
-      await writeFile(join(repo.root, 'opencode.jsonc'), `${config} `, 'utf8');
+      await appendFile(join(repo.root, '.farna/lock.json'), '\n', 'utf8');
       check = await runCheck(repo.root, new UpstreamRenderTarget());
-      expect(check.drift.map((item) => item.path)).toContain('opencode.jsonc');
-      await writeFile(join(repo.root, 'opencode.jsonc'), config, 'utf8');
-
-      const skill = await readFile(
-        join(repo.root, '.opencode/skills/secure-review/scripts/check.sh'),
-        'utf8',
-      );
-      await writeFile(
-        join(repo.root, '.opencode/skills/secure-review/scripts/check.sh'),
-        `${skill}# manual\n`,
-        'utf8',
-      );
-      check = await runCheck(repo.root, new UpstreamRenderTarget());
-      expect(check.drift.map((item) => item.path)).toContain(
-        '.opencode/skills/secure-review/scripts/check.sh',
-      );
+      expect(check.drift.map((item) => item.path)).toContain('.farna/lock.json');
     } finally {
       await repo.cleanup();
     }
@@ -294,39 +285,79 @@ describe('opencode target', () => {
   it('reports a missing managed file and a stray file at any depth', async () => {
     const repo = await generated();
     try {
-      const command = await readFile(join(repo.root, '.opencode/commands/pytest.md'), 'utf8');
-      await rm(join(repo.root, '.opencode/commands/pytest.md'));
+      const agent = await readFile(join(repo.root, '.opencode/agents/reviewer.md'), 'utf8');
+      await rm(join(repo.root, '.opencode/agents/reviewer.md'));
       let check = await runCheck(repo.root, new UpstreamRenderTarget());
       expect(check.drift.map((item) => [item.path, item.kind])).toEqual([
-        ['.opencode/commands/pytest.md', 'missing'],
+        ['.opencode/agents/reviewer.md', 'missing'],
       ]);
-      await writeFile(join(repo.root, '.opencode/commands/pytest.md'), command, 'utf8');
+      await writeFile(join(repo.root, '.opencode/agents/reviewer.md'), agent, 'utf8');
 
-      await writeFile(
-        join(repo.root, '.opencode/skills/secure-review/extra.md'),
-        'stray\n',
-        'utf8',
-      );
+      await writeFile(join(repo.root, '.opencode/agents/extra.md'), 'stray\n', 'utf8');
       check = await runCheck(repo.root, new UpstreamRenderTarget());
       expect(check.drift.map((item) => [item.path, item.kind])).toEqual([
-        ['.opencode/skills/secure-review/extra.md', 'unexpected'],
+        ['.opencode/agents/extra.md', 'unexpected'],
       ]);
     } finally {
       await repo.cleanup();
     }
   });
 
-  it('binds each hook matcher to its own registration', async () => {
+  it('reports an orphaned root opencode.jsonc as unexpected', async () => {
+    const repo = await generated();
+    try {
+      await writeFile(join(repo.root, 'opencode.jsonc'), '{ "mcp": {} }\n', 'utf8');
+      const check = await runCheck(repo.root, new UpstreamRenderTarget());
+      expect(check.ok).toBe(false);
+      expect(check.drift).toContainEqual({
+        code: 'F007_DRIFT',
+        path: 'opencode.jsonc',
+        kind: 'unexpected',
+        detail: 'path is not recorded as managed output',
+      });
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
+  it('reports a recorded path the source no longer produces', async () => {
+    const repo = await generated();
+    try {
+      const before = await readText(repo.root, '.farna/lock.json');
+      const lock = JSON.parse(before) as {
+        files: Array<{ path: string; sha256: string; size: number }>;
+      };
+      lock.files.push({ path: 'opencode.jsonc', sha256: '0'.repeat(64), size: 0 });
+      await writeFile(
+        join(repo.root, '.farna/lock.json'),
+        `${JSON.stringify(lock, null, 2)}\n`,
+        'utf8',
+      );
+      await writeFile(join(repo.root, 'opencode.jsonc'), '{ "mcp": {} }\n', 'utf8');
+      const check = await runCheck(repo.root, new UpstreamRenderTarget());
+      expect(check.ok).toBe(false);
+      expect(check.drift).toContainEqual({
+        code: 'F007_DRIFT',
+        path: 'opencode.jsonc',
+        kind: 'unexpected',
+        detail: 'path is recorded in the lockfile but no longer produced by this source',
+      });
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
+  it('orders permission patterns by declaration so a later deny wins', async () => {
     const repo = await createTempRepo('opencode');
     try {
       await writeFile(
-        join(repo.root, '.farna/resources/hooks/audit-tool.jsonc'),
+        join(repo.root, '.farna/resources/permissions/ordered.jsonc'),
         JSON.stringify(
           {
-            kind: 'hook',
-            id: 'audit-tool',
-            phase: 'before-tool',
-            command: 'echo FBS_HOOK_AUDIT_1a2b',
+            kind: 'permission',
+            id: 'ordered',
+            tools: { edit: 'allow' },
+            patterns: { edit: { 'a/**': 'allow', '**/secret/**': 'deny' } },
           },
           null,
           2,
@@ -335,18 +366,28 @@ describe('opencode target', () => {
       );
       await appendFile(
         join(repo.root, '.farna/personas/builder.yaml'),
-        '  - hook/audit-tool\n',
+        '  - permission/ordered\n',
         'utf8',
       );
-      // The second before-tool hook carries no matcher. A containment check
-      // that scanned backwards instead of at the registration block would
-      // inherit the first hook's matcher and refuse a valid plugin.
       await runGenerate({ cwd: repo.root, dryRun: false }, new UpstreamRenderTarget());
-      const plugin = await readText(repo.root, '.opencode/plugins/rulesync-hooks.js');
-      expect(plugin).toContain('FBS_HOOK_AUDIT_1a2b');
-      expect(plugin).toContain('new RegExp("Edit|Write")');
-      const check = await runCheck(repo.root, new UpstreamRenderTarget());
-      expect(check.ok).toBe(true);
+      const frontmatter = frontmatterOf(await readText(repo.root, '.opencode/agents/builder.md'));
+      const records = frontmatter['permissions'] as Array<{
+        action: string;
+        resource: string;
+        effect: string;
+      }>;
+      const editResources = records
+        .filter((record) => record.action === 'edit')
+        .map((record) => record.resource);
+      const allowAt = editResources.indexOf('a/**');
+      const denyAt = editResources.indexOf('**/secret/**');
+      expect(allowAt).toBeGreaterThanOrEqual(0);
+      expect(denyAt).toBeGreaterThan(allowAt);
+      expect(records.filter((record) => record.action === 'edit').at(-1)).toEqual({
+        action: 'edit',
+        resource: '**/secret/**',
+        effect: 'deny',
+      });
     } finally {
       await repo.cleanup();
     }
@@ -448,45 +489,6 @@ describe('opencode target', () => {
       await repo.cleanup();
     }
   });
-
-  it('drops a hook whose matcher the target cannot honour', async () => {
-    const repo = await createTempRepo('opencode');
-    try {
-      await writeFile(
-        join(repo.root, '.farna/resources/hooks/start-matched.jsonc'),
-        JSON.stringify(
-          {
-            kind: 'hook',
-            id: 'start-matched',
-            phase: 'session-start',
-            matcher: 'Edit',
-            command: 'echo start',
-          },
-          null,
-          2,
-        ),
-        'utf8',
-      );
-      await appendFile(
-        join(repo.root, '.farna/personas/builder.yaml'),
-        '  - hook/start-matched\n',
-        'utf8',
-      );
-      const result = await runGenerate(
-        { cwd: repo.root, dryRun: false },
-        new UpstreamRenderTarget(),
-      );
-      const dropped = result.warnings.find(
-        (entry) =>
-          entry.code === 'W101_CAPABILITY_DROPPED' && entry.message.includes('start-matched'),
-      );
-      expect(dropped?.message).toContain('matcher on tool events only');
-      const plugin = await readText(repo.root, '.opencode/plugins/rulesync-hooks.js');
-      expect(plugin).not.toContain('echo start');
-    } finally {
-      await repo.cleanup();
-    }
-  });
 });
 
 async function createdWithGenerateWarnings(): Promise<
@@ -560,67 +562,6 @@ describe('opencode containment gates', () => {
       await repo.cleanup();
     }
   });
-
-  it('refuses a dropped MCP server in the workspace config', async () => {
-    const repo = await createTempRepo('opencode');
-    try {
-      await expectGate(
-        repo,
-        async (request, result) => {
-          const config = JSON.parse(await readOutput(request.outputRoot, 'opencode.jsonc')) as {
-            mcp: { servers: Record<string, unknown> };
-          };
-          delete config.mcp.servers['scan'];
-          await writeOutput(request.outputRoot, 'opencode.jsonc', JSON.stringify(config, null, 2));
-          return result;
-        },
-        'mcp servers',
-      );
-    } finally {
-      await repo.cleanup();
-    }
-  });
-
-  it('refuses an injected hook command', async () => {
-    const repo = await createTempRepo('opencode');
-    try {
-      await expectGate(
-        repo,
-        async (request, result) => {
-          const plugin = await readOutput(
-            request.outputRoot,
-            '.opencode/plugins/rulesync-hooks.js',
-          );
-          await writeOutput(
-            request.outputRoot,
-            '.opencode/plugins/rulesync-hooks.js',
-            `${plugin}\n__rulesyncRunHook({ label: "preToolUse", command: "echo INJECTED", input: "", blocking: false, seconds: 600 });\n`,
-          );
-          return result;
-        },
-        'hooks plugin registers',
-      );
-    } finally {
-      await repo.cleanup();
-    }
-  });
-
-  it('refuses a dropped skill file', async () => {
-    const repo = await createTempRepo('opencode');
-    const path = '.opencode/skills/secure-review/scripts/check.sh';
-    try {
-      await expectGate(
-        repo,
-        async (request, result) => {
-          await rm(join(request.outputRoot, path));
-          return { ...result, files: result.files.filter((file) => file !== path) };
-        },
-        'declared resource produced no artefact',
-      );
-    } finally {
-      await repo.cleanup();
-    }
-  });
 });
 
 describe('opencode path guards', () => {
@@ -666,7 +607,7 @@ describe('opencode path guards', () => {
     try {
       const victim = join(outside.root, 'victim.md');
       await writeFile(victim, 'victim\n', 'utf8');
-      const path = join(repo.root, '.opencode/commands/pytest.md');
+      const path = join(repo.root, '.opencode/agents/reviewer.md');
       await rm(path);
       await symlink(victim, path, 'file');
       const check = await runCheck(repo.root, new UpstreamRenderTarget());
@@ -674,7 +615,7 @@ describe('opencode path guards', () => {
       expect(check.drift).toEqual([
         {
           code: 'F007_DRIFT',
-          path: '.opencode/commands/pytest.md',
+          path: '.opencode/agents/reviewer.md',
           kind: 'modified',
           detail: 'managed path is not a regular file',
         },
