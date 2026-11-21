@@ -121,6 +121,26 @@ describe('init', () => {
     },
   );
 
+  it('returns a typed error when .farna is a regular file', async () => {
+    const repo = await createEmptyTempDir();
+    try {
+      await writeFile(join(repo.root, '.farna'), 'not a directory', 'utf8');
+      let failure: FarnaError | undefined;
+      try {
+        await runInit(repo.root);
+      } catch (error) {
+        expect(error).toBeInstanceOf(FarnaError);
+        failure = error as FarnaError;
+      }
+      expect(failure?.code).toBe('F001_INVALID_CONFIG');
+      expect(failure?.subject).toBe('.farna');
+      expect(failure?.message).toContain('not a directory');
+      expect(await readFile(join(repo.root, '.farna'), 'utf8')).toBe('not a directory');
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
   it('refuses to overwrite an existing source root and writes nothing', async () => {
     const repo = await createEmptyTempDir();
     try {
