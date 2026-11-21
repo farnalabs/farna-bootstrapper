@@ -1,5 +1,6 @@
 import { Command } from 'commander';
 import {
+  CONFIG_PATH,
   DRIFT_CODE,
   EXIT,
   PRODUCT_NAME,
@@ -123,7 +124,7 @@ export function buildProgram(context: CliContext): Command {
   program
     .command('init')
     .exitOverride()
-    .description('create .farna/config.jsonc and the empty source directories')
+    .description(`create ${CONFIG_PATH} and the empty source directories`)
     .option('--json', 'print one JSON object')
     .action(async (options: { json?: boolean }) => {
       await emit('init', options.json === true, context, async () => {

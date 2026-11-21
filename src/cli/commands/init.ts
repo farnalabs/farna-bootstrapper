@@ -5,10 +5,14 @@ import {
   CONFIG_FILE,
   DEFAULT_TARGET,
   GITIGNORE_LINES,
+  PERMISSION_FILE_EXT,
   PERMISSIONS_DIR,
+  PERSONA_FILE_EXT,
   PERSONAS_DIR,
+  PRODUCT_NAME,
   RESOURCES_DIR,
   ROOT_DIR,
+  RULE_FILE_EXT,
   RULES_DIR,
   SCHEMA_VERSION,
   STAGING_INFIX,
@@ -243,7 +247,6 @@ export async function runInit(repoRoot: string): Promise<InitResult> {
       `${ROOT_DIR}/${RESOURCES_DIR}/${RULES_DIR}/`,
       `${ROOT_DIR}/${RESOURCES_DIR}/${PERMISSIONS_DIR}/`,
     ],
-    nextStep:
-      'Add personas to .farna/personas/*.yaml, rules to .farna/resources/rules/ and permissions to .farna/resources/permissions/, then run "farna-bootstrapper generate".',
+    nextStep: `Add personas to ${ROOT_DIR}/${PERSONAS_DIR}/*${PERSONA_FILE_EXT}, rules to ${ROOT_DIR}/${RESOURCES_DIR}/${RULES_DIR}/*${RULE_FILE_EXT} and permissions to ${ROOT_DIR}/${RESOURCES_DIR}/${PERMISSIONS_DIR}/*${PERMISSION_FILE_EXT}, then run "${PRODUCT_NAME} generate".`,
   };
 }
