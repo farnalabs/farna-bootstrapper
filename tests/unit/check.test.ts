@@ -68,7 +68,10 @@ describe('check', () => {
     }
   });
 
-  it('fails when an unexpected agent file is present', async () => {
+  it('ignores an unrecorded agent file in a managed directory', async () => {
+    // The tool owns only what the lockfile records. A file the user keeps in
+    // `.claude/agents/` is not this tool's output, so `check` must not report
+    // its own repository as dirty for it.
     const repo = await generatedRepo();
     try {
       await writeFile(
@@ -77,10 +80,8 @@ describe('check', () => {
         'utf8',
       );
       const result = await runCheck(repo.root, new FakeRenderTarget());
-      expect(result.ok).toBe(false);
-      expect(result.drift.map((item) => [item.path, item.kind])).toEqual([
-        ['.claude/agents/extra.md', 'unexpected'],
-      ]);
+      expect(result.ok).toBe(true);
+      expect(result.drift).toEqual([]);
     } finally {
       await repo.cleanup();
     }
@@ -98,28 +99,26 @@ describe('check', () => {
     }
   });
 
-  it.skipIf(skipSymlinks)('reports a stray symlink in .claude/agents as unexpected', async () => {
-    const repo = await generatedRepo();
-    const outside = await createEmptyTempDir();
-    try {
-      const target = join(outside.root, 'passwd');
-      await writeFile(target, 'root:x:0:0\n', 'utf8');
-      await symlink(target, join(repo.root, '.claude/agents/evil.md'), 'file');
-      const result = await runCheck(repo.root, new FakeRenderTarget());
-      expect(result.ok).toBe(false);
-      expect(result.drift).toEqual([
-        {
-          code: 'F007_DRIFT',
-          path: '.claude/agents/evil.md',
-          kind: 'unexpected',
-          detail: 'path is not a regular managed file',
-        },
-      ]);
-    } finally {
-      await repo.cleanup();
-      await outside.cleanup();
-    }
-  });
+  it.skipIf(skipSymlinks)(
+    'ignores an unrecorded symlink in a managed directory without following it',
+    async () => {
+      // An unrecorded path is user-owned. `check` neither reports it nor follows
+      // it; a symlink at a MANAGED path is still refused (see the next test).
+      const repo = await generatedRepo();
+      const outside = await createEmptyTempDir();
+      try {
+        const target = join(outside.root, 'passwd');
+        await writeFile(target, 'root:x:0:0\n', 'utf8');
+        await symlink(target, join(repo.root, '.claude/agents/evil.md'), 'file');
+        const result = await runCheck(repo.root, new FakeRenderTarget());
+        expect(result.ok).toBe(true);
+        expect(result.drift).toEqual([]);
+      } finally {
+        await repo.cleanup();
+        await outside.cleanup();
+      }
+    },
+  );
 
   it.skipIf(skipSymlinks)(
     'treats a managed file replaced by a symlink as drift, not a match',

@@ -443,6 +443,44 @@ describe('permission pattern grammar', () => {
       }
     });
   }
+
+  it('refuses an integer-like pattern key with F001, naming the order hazard and a safe spelling', async () => {
+    // JavaScript enumerates canonical array-index keys before every other key,
+    // so `"10"` would move ahead of the patterns declared before it. OpenCode
+    // is last-match-wins, so that reorder silently changes the permission, and
+    // the digest (which records declaration order) is identical either way.
+    const repo = await createTempRepo('composed');
+    try {
+      await writeFile(
+        join(repo.root, '.farna/resources/permissions/bad.jsonc'),
+        `${JSON.stringify(
+          {
+            kind: 'permission',
+            id: 'bad',
+            tools: { edit: 'allow' },
+            patterns: { edit: { 'a/**': 'allow', '10': 'deny' } },
+          },
+          null,
+          2,
+        )}\n`,
+        'utf8',
+      );
+      let failure: FarnaError | undefined;
+      try {
+        await loadSource(repo.root);
+      } catch (error) {
+        expect(error).toBeInstanceOf(FarnaError);
+        failure = error as FarnaError;
+      }
+      expect(failure?.code).toBe('F001_INVALID_CONFIG');
+      expect(failure?.subject).toBe('.farna/resources/permissions/bad.jsonc');
+      expect(failure?.message).toContain('integer-like pattern key "10"');
+      expect(failure?.message).toContain('cannot preserve declaration order');
+      expect(failure?.message).toContain('**/10/**');
+    } finally {
+      await repo.cleanup();
+    }
+  });
 });
 
 describe('permission source validation', () => {

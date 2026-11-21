@@ -86,14 +86,22 @@ describe('the staging namespace', () => {
     }
   });
 
-  it('still reports an unrelated hidden file in the managed directory', async () => {
+  it('ignores its staging namespace and an unrelated hidden file in a managed directory', async () => {
+    // Only paths the lockfile records or the fresh plan expects can drift. A
+    // hidden file the user added is not this tool's output, and a staging
+    // leftover is this tool's own namespace: neither is reported.
     const repo = await createTempRepo();
     try {
       await runGenerate({ cwd: repo.root, dryRun: false }, new FakeRenderTarget());
       await writeFile(join(repo.root, '.claude/agents/.notes'), 'not ours', 'utf8');
+      await writeFile(
+        stagingFile(join(repo.root, '.claude/agents'), 'builder.md', process.pid),
+        'interrupted run',
+        'utf8',
+      );
       const check = await runCheck(repo.root, new FakeRenderTarget());
-      expect(check.ok).toBe(false);
-      expect(check.drift.map((item) => item.path)).toEqual(['.claude/agents/.notes']);
+      expect(check.ok).toBe(true);
+      expect(check.drift).toEqual([]);
     } finally {
       await repo.cleanup();
     }
