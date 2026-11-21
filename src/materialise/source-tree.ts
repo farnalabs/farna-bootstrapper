@@ -15,6 +15,11 @@ export function personaBody(persona: ResolvedPersona): string {
     const body = rule.body.replace(/^\n+/, '').replace(/\n+$/, '');
     return `## ${rule.displayName}\n\n${body}`;
   });
+  // A persona with no rules has an empty body, not a lone newline: `resources`
+  // may be empty, and the honest renderer emits no body for it.
+  if (sections.length === 0) {
+    return '';
+  }
   return `${sections.join('\n\n')}\n`;
 }
 

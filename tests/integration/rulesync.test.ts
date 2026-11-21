@@ -1,4 +1,4 @@
-import { readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { runCheck } from '../../src/cli/commands/check.js';
@@ -57,6 +57,44 @@ describe('rulesync integration', () => {
         renderer: { name: string; version: string };
       };
       expect(lock.renderer).toMatchObject({ name: 'rulesync', version: RENDERER_PIN.version });
+    } finally {
+      await repo.cleanup();
+    }
+  }, 30_000);
+
+  it('generates and checks a persona that declares no rules', async () => {
+    const repo = await createTempRepo();
+    try {
+      await mkdir(join(repo.root, '.farna/resources/permissions'), { recursive: true });
+      await writeFile(
+        join(repo.root, '.farna/resources/permissions/locked.jsonc'),
+        JSON.stringify({ kind: 'permission', id: 'locked', tools: { read: 'allow' } }, null, 2),
+        'utf8',
+      );
+      await writeFile(
+        join(repo.root, '.farna/personas/empty.yaml'),
+        [
+          'kind: persona',
+          'id: empty',
+          'displayName: Empty',
+          'purpose: A persona with no rules.',
+          'resources:',
+          '  - permission/locked',
+          '',
+        ].join('\n'),
+        'utf8',
+      );
+      await runGenerate({ cwd: repo.root, dryRun: false }, new UpstreamRenderTarget());
+      const text = await readText(repo.root, '.claude/agents/empty.md');
+      expect(text.startsWith('---\n')).toBe(true);
+      expect(text).toContain('name: empty');
+      expect(text).toContain('- Read');
+      // The honest renderer emits no body when there are no rules.
+      expect(text.endsWith('---\n')).toBe(true);
+
+      const check = await runCheck(repo.root, new UpstreamRenderTarget());
+      expect(check.ok).toBe(true);
+      expect(check.exitCode).toBe(0);
     } finally {
       await repo.cleanup();
     }
