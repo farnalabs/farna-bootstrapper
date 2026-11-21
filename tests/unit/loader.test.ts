@@ -1,5 +1,5 @@
-import { mkdir, rm, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { runCheck } from '../../src/cli/commands/check.js';
 import { runGenerate } from '../../src/cli/commands/generate.js';
@@ -10,6 +10,11 @@ import { FarnaError } from '../../src/core/errors.js';
 import { loadSource } from '../../src/source/load.js';
 import { FakeRenderTarget } from '../support/fake-renderer.js';
 import { createEmptyTempDir, createTempRepo } from '../support/temp-repo.js';
+
+async function writeSource(root: string, relative: string, contents: string): Promise<void> {
+  await mkdir(dirname(join(root, relative)), { recursive: true });
+  await writeFile(join(root, relative), contents, 'utf8');
+}
 
 async function expectFarnaError(promise: Promise<unknown>, code: string): Promise<FarnaError> {
   try {
@@ -286,6 +291,201 @@ describe('source loader', () => {
       await repo.cleanup();
     }
   });
+
+  it('reports a stray file under resources/ as not source', async () => {
+    const repo = await createTempRepo();
+    try {
+      await writeFile(join(repo.root, '.farna/resources/stray.txt'), 'stray\n', 'utf8');
+      const error = await expectFarnaError(loadSource(repo.root), 'F001_INVALID_CONFIG');
+      expect(error.subject).toBe('.farna/resources/stray.txt');
+      expect(error.message).toContain('not source');
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
+  it('requires a command description and names the missing field', async () => {
+    const repo = await createTempRepo();
+    try {
+      await writeSource(
+        repo.root,
+        '.farna/resources/commands/nodesc.md',
+        '---\nkind: command\nid: nodesc\n---\n\nRun it.\n',
+      );
+      const error = await expectFarnaError(loadSource(repo.root), 'F001_INVALID_CONFIG');
+      expect(error.subject).toContain('.farna/resources/commands/nodesc.md');
+      expect(error.message).toContain('description');
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
+  it('refuses a hook command containing a newline at the source boundary', async () => {
+    const repo = await createTempRepo();
+    try {
+      const path = '.farna/resources/hooks/bad.jsonc';
+      await writeSource(
+        repo.root,
+        path,
+        `${JSON.stringify(
+          {
+            kind: 'hook',
+            id: 'bad',
+            phase: 'before-tool',
+            command: 'echo safe\nrm -rf /',
+          },
+          null,
+          2,
+        )}\n`,
+      );
+      const error = await expectFarnaError(loadSource(repo.root), 'F001_INVALID_CONFIG');
+      expect(error.subject).toBe(path);
+      expect(error.message).toContain('command cannot contain a newline or NUL');
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
+  it('refuses an MCP program with whitespace and points at args', async () => {
+    const repo = await createTempRepo();
+    try {
+      const path = '.farna/resources/mcp/bad.jsonc';
+      await writeSource(
+        repo.root,
+        path,
+        `${JSON.stringify(
+          {
+            kind: 'mcp',
+            id: 'bad',
+            server: { type: 'stdio', command: 'npx -y example' },
+          },
+          null,
+          2,
+        )}\n`,
+      );
+      const error = await expectFarnaError(loadSource(repo.root), 'F001_INVALID_CONFIG');
+      expect(error.subject).toBe(path);
+      expect(error.message).toContain('arguments in args');
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
+  it('refuses an MCP http URL with userinfo and never echoes it', async () => {
+    const repo = await createTempRepo();
+    try {
+      const path = '.farna/resources/mcp/userinfo.jsonc';
+      await writeSource(
+        repo.root,
+        path,
+        `${JSON.stringify(
+          {
+            kind: 'mcp',
+            id: 'userinfo',
+            server: {
+              type: 'http',
+              url: 'https://user:super-secret-value@example.test/mcp',
+            },
+          },
+          null,
+          2,
+        )}\n`,
+      );
+      const error = await expectFarnaError(loadSource(repo.root), 'F002_SECRET_LITERAL');
+      expect(error.subject).toBe(path);
+      expect(error.message).toContain('userinfo');
+      expect(error.message).not.toContain('super-secret-value');
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
+  it('warns W115 for a credential-shaped MCP query parameter without echoing it', async () => {
+    const repo = await createTempRepo();
+    try {
+      await writeSource(
+        repo.root,
+        '.farna/resources/mcp/query.jsonc',
+        `${JSON.stringify(
+          {
+            kind: 'mcp',
+            id: 'query',
+            server: {
+              type: 'http',
+              url: 'https://example.test/mcp?token=super-secret-value&mode=read',
+            },
+          },
+          null,
+          2,
+        )}\n`,
+      );
+      const source = await loadSource(repo.root);
+      const warning = source.warnings.find((entry) => entry.code === 'W115_CREDENTIAL_IN_URL');
+      expect(warning?.message).toContain('token');
+      expect(warning?.message).not.toContain('super-secret-value');
+
+      const config = await loadConfig(repo.root);
+      const resolved = resolveSource(source, config);
+      const resolvedWarning = resolved.warnings.find(
+        (entry) => entry.code === 'W115_CREDENTIAL_IN_URL',
+      );
+      expect(resolvedWarning?.target).toBe('claudecode');
+      expect(resolvedWarning?.persona).toBe('<source>');
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
+  for (const [label, relative, body] of [
+    [
+      'an MCP env key',
+      '.farna/resources/mcp/proto.jsonc',
+      '{"kind":"mcp","id":"proto","server":{"type":"stdio","command":"npx","env":{"__proto__":{"fromEnv":"X"}}}}',
+    ],
+    [
+      'a permission pattern',
+      '.farna/resources/permissions/proto.jsonc',
+      '{"kind":"permission","id":"proto","tools":{"shell":"allow"},"patterns":{"shell":{"__proto__":"allow"}}}',
+    ],
+  ] as const) {
+    it(`rejects __proto__ in ${label} with F001`, async () => {
+      const repo = await createTempRepo();
+      try {
+        await writeSource(repo.root, relative, `${body}\n`);
+        const error = await expectFarnaError(loadSource(repo.root), 'F001_INVALID_CONFIG');
+        expect(error.subject).toBe(relative);
+        expect(error.message).toContain('__proto__');
+      } finally {
+        await repo.cleanup();
+      }
+    });
+  }
+
+  for (const [label, relative, loader] of [
+    ['a persona', '.farna/personas/builder.yaml', loadSource],
+    ['a rule', '.farna/resources/rules/house-style.md', loadSource],
+    ['a permission', '.farna/resources/permissions/builder-default.jsonc', loadSource],
+    ['an MCP file', '.farna/resources/mcp/docs.jsonc', loadSource],
+    ['a skill', '.farna/resources/skills/secure-review/SKILL.md', loadSource],
+    ['a skill asset', '.farna/resources/skills/secure-review/scripts/check.sh', loadSource],
+    ['a command', '.farna/resources/commands/pytest.md', loadSource],
+    ['a hook', '.farna/resources/hooks/format-on-save.jsonc', loadSource],
+    ['the config', '.farna/config.jsonc', loadConfig],
+  ] as const) {
+    it(`refuses a leading BOM in ${label} with F001`, async () => {
+      const repo = await createTempRepo('opencode');
+      try {
+        const path = join(repo.root, relative);
+        const original = await readFile(path, 'utf8');
+        await writeFile(path, `\uFEFF${original}`, 'utf8');
+        const error = await expectFarnaError(loader(repo.root), 'F001_INVALID_CONFIG');
+        expect(error.subject).toBe(relative);
+        expect(error.message).toContain('BOM');
+      } finally {
+        await repo.cleanup();
+      }
+    });
+  }
 
   it('rejects a YAML anchor or alias in a persona file', async () => {
     const repo = await createTempRepo();

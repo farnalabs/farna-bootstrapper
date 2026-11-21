@@ -1,4 +1,4 @@
-import { type ErrorCode, EXIT_BY_CODE } from './constants.js';
+import { type DiagnosticCode, DRIFT_CODE, EXIT, EXIT_BY_CODE } from './constants.js';
 
 export type FarnaErrorOptions = {
   subject?: string;
@@ -11,16 +11,16 @@ export type FarnaErrorOptions = {
  * from the record, never by concatenation at a call site.
  */
 export class FarnaError extends Error {
-  readonly code: ErrorCode;
+  readonly code: DiagnosticCode;
   readonly exitCode: number;
   readonly subject?: string;
   readonly action?: string;
 
-  constructor(code: ErrorCode, message: string, options: FarnaErrorOptions = {}) {
+  constructor(code: DiagnosticCode, message: string, options: FarnaErrorOptions = {}) {
     super(message, options.cause === undefined ? undefined : { cause: options.cause });
     this.name = 'FarnaError';
     this.code = code;
-    this.exitCode = EXIT_BY_CODE[code];
+    this.exitCode = code === DRIFT_CODE ? EXIT.drift : EXIT_BY_CODE[code];
     if (options.subject !== undefined) {
       this.subject = options.subject;
     }
@@ -39,6 +39,15 @@ export class FarnaError extends Error {
 
 export function invalidConfig(message: string, options: FarnaErrorOptions = {}): FarnaError {
   return new FarnaError('F001_INVALID_CONFIG', message, options);
+}
+
+/**
+ * `generate` refuses to overwrite a managed path it cannot prove it owns. The
+ * code is F007 (drift, exit 1), never F008: the path is not a renderer loss, it
+ * is a file this tool did not write.
+ */
+export function driftRefused(message: string, options: FarnaErrorOptions = {}): FarnaError {
+  return new FarnaError(DRIFT_CODE, message, options);
 }
 
 /** A literal value in a credential position. The message never echoes it. */

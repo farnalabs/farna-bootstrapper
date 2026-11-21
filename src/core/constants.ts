@@ -9,6 +9,14 @@ export const PRODUCT_NAME = 'farna-bootstrapper';
 export const PRODUCT_VERSION = '0.1.0';
 /** The one source/schema version this build understands. */
 export const SCHEMA_VERSION = 1 as const;
+
+/**
+ * The OpenCode major this target is measured against. OpenCode 2.x reads the
+ * V2 per-agent file (`description`, `mode`, `model`, ordered permission
+ * records); the 1.x layout is different and unsupported. This is documentation
+ * for the user, not a runtime probe: the tool never shells out to OpenCode.
+ */
+export const OPENCODE_SUPPORTED_MAJOR = '2';
 /** The one lockfile mode this slice writes. */
 export const MODE = 'agent' as const;
 
@@ -216,6 +224,14 @@ export type ErrorCode =
   | 'F011_PERMISSION_UNMAPPED'
   | 'F012_WRITE_FAILED';
 
+/**
+ * A code the CLI can report. `ErrorCode` is the exception table; `DRIFT_CODE`
+ * is included because `generate` refuses to take over an unrecorded managed
+ * file with F007, the same code `check` reports as a drift result. `check`
+ * never throws it, so the exception table stays free of it.
+ */
+export type DiagnosticCode = ErrorCode | typeof DRIFT_CODE;
+
 /** Exit code per diagnostic code. The table lives here once. F007 is absent: drift is a result. */
 export const EXIT_BY_CODE: Record<ErrorCode, ExitCode> = {
   F001_INVALID_CONFIG: EXIT.invalidConfig,
@@ -238,6 +254,7 @@ export const WARNING_CODES = [
   'W112_PERMISSION_LOSSY',
   'W113_ALLOW_LIST_NARROWS',
   'W114_RENDERER_INTEGRITY_UNVERIFIED',
+  'W115_CREDENTIAL_IN_URL',
 ] as const;
 
 export type WarningCode = (typeof WARNING_CODES)[number];
@@ -267,4 +284,5 @@ export const WARNING_SEVERITY: Record<WarningCode, Severity> = {
   W112_PERMISSION_LOSSY: 'high',
   W113_ALLOW_LIST_NARROWS: 'medium',
   W114_RENDERER_INTEGRITY_UNVERIFIED: 'medium',
+  W115_CREDENTIAL_IN_URL: 'high',
 };
