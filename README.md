@@ -42,8 +42,9 @@ for the published tarball; a source checkout therefore produces a working `bin` 
 build. A global install has no npm lockfile recording the renderer's tarball integrity, so the
 compile-time pin stands in for it; the installed renderer's version is still checked and a
 mismatch is refused (F010). The fallback applies only when no lock record exists: a record that is
-present but cannot be read, or is above the 4 MiB bound, is refused (F010) rather than replaced by
-the pin.
+present but cannot be read, or is above the 64 MiB npm-record bound, is refused (F010) rather than
+replaced by the pin. That bound is separate from the 4 MiB bound on this product's own derived
+`.farna/lock.json`, because npm's record scales with the dependency tree.
 
 ## Develop
 
@@ -303,13 +304,18 @@ exercised without the network or the real renderer.
 and `check` compares it with the installed package before any byte comparison: a different name or
 version fails `F010` with exit `5`, and so does a different npm-recorded integrity. The installed
 integrity is read from npm's `node_modules/.package-lock.json`, with the project
-`package-lock.json` as a fallback. Only a missing record falls back to the compile-time pin: a
-record that exists but cannot be read, or is above the 4 MiB bound, is refused `F010` naming the
-record, so a present-but-unverifiable integrity never becomes a pass. When npm recorded no
-integrity at all — a global install has no lockfile — the compile-time pin stands in for it, so a
-global install works while the installed version is still checked and a mismatch is still `F010`.
-The check never degrades to a version-only comparison against an integrity it did read, and an
-integrity that is present on both sides is compared exactly.
+`package-lock.json` as a fallback. The project-lockfile walk stops at the install root — the
+nearest ancestor that owns a `node_modules` directory — so an unrelated `package-lock.json` above
+the project (a home directory, a parent monorepo) is never read as though it described this
+install. Only a missing record falls back to the compile-time pin: a record that exists but cannot
+be read, or is above the 64 MiB npm-record bound, is refused `F010` naming the record, so a
+present-but-unverifiable integrity never becomes a pass. The 64 MiB npm-record bound is deliberately
+separate from the 4 MiB bound on `.farna/lock.json`: npm's record scales with the dependency tree, so
+a legitimate monorepo lockfile is several megabytes. When npm recorded no integrity at all — a
+global install has no lockfile — the compile-time pin stands in for it, so a global install works
+while the installed version is still checked and a mismatch is still `F010`. The check never
+degrades to a version-only comparison against an integrity it did read, and an integrity that is
+present on both sides is compared exactly.
 
 The renderer is imported **in-process**. The pin is provenance, not a sandbox: it ties the
 committed bytes to a published tarball, but a package patched in place with the same `package.json`
