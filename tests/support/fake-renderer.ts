@@ -21,8 +21,11 @@ export type FakeMode =
   | { kind: 'drop-tools'; persona: string }
   | { kind: 'drop-deny'; persona: string }
   | { kind: 'invent-tools'; persona: string }
+  | { kind: 'invent-frontmatter'; persona: string; key: string; value: unknown }
   | { kind: 'swap-tools'; from: string; into: string }
   | { kind: 'inject-body'; persona: string; text: string }
+  | { kind: 'prepend-body'; persona: string; text: string }
+  | { kind: 'prepend-foreign-body'; from: string; into: string }
   | { kind: 'empty' }
   | { kind: 'list-only' };
 
@@ -42,7 +45,10 @@ async function readSources(sourceRoot: string): Promise<SourceDoc[]> {
     const close = normalised.indexOf('\n---', 4);
     const frontmatter = parse(normalised.slice(4, close)) as Record<string, unknown>;
     const bodyStart = normalised.indexOf('\n', close + 4);
-    const body = bodyStart === -1 ? '' : normalised.slice(bodyStart + 1);
+    // The source file lays the body out after one blank separator line; the
+    // real renderer drops it, so the fake must too or its output would carry a
+    // leading newline the composed body never has.
+    const body = bodyStart === -1 ? '' : normalised.slice(bodyStart + 1).replace(/^\n/, '');
     docs.push({ name: String(frontmatter['name']), frontmatter, body });
   }
   return docs;
@@ -53,13 +59,19 @@ function claudeBlock(doc: SourceDoc): ClaudeBlock {
   return typeof block === 'object' && block !== null ? (block as ClaudeBlock) : {};
 }
 
-function renderAgent(doc: SourceDoc, block: ClaudeBlock, body: string): string {
+function renderAgent(
+  doc: SourceDoc,
+  block: ClaudeBlock,
+  body: string,
+  extraFrontmatter: Record<string, unknown> = {},
+): string {
   const frontmatter: Record<string, unknown> = {
     name: doc.name,
     description: doc.frontmatter['description'],
     ...(block.model === undefined ? {} : { model: block.model }),
     ...(block.tools === undefined ? {} : { tools: block.tools }),
     ...(block.disallowedTools === undefined ? {} : { disallowedTools: block.disallowedTools }),
+    ...extraFrontmatter,
   };
   return `---\n${stringify(frontmatter, { lineWidth: 0 })}---\n${body}`;
 }
@@ -145,8 +157,21 @@ export class FakeRenderTarget implements RenderTarget {
       if (mode.kind === 'inject-body' && mode.persona === doc.name) {
         body = `${body}\n${mode.text}\n`;
       }
+      if (mode.kind === 'prepend-body' && mode.persona === doc.name) {
+        body = `${mode.text}\n\n${body}`;
+      }
+      if (mode.kind === 'prepend-foreign-body' && mode.into === doc.name) {
+        const donorDoc = docs.find((candidate) => candidate.name === mode.from);
+        if (donorDoc !== undefined) {
+          body = `${donorDoc.body}\n\n${body}`;
+        }
+      }
+      const extraFrontmatter =
+        mode.kind === 'invent-frontmatter' && mode.persona === doc.name
+          ? { [mode.key]: mode.value }
+          : {};
       const path = `.claude/agents/${doc.name}.md`;
-      const value = mode.kind === 'empty' ? '' : renderAgent(doc, block, body);
+      const value = mode.kind === 'empty' ? '' : renderAgent(doc, block, body, extraFrontmatter);
       await writeFile(join(request.outputRoot, path), value, 'utf8');
       files.push(path);
     }

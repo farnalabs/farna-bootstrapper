@@ -65,6 +65,46 @@ function describe(value: unknown): string {
   return JSON.stringify(value);
 }
 
+/** The exact set of frontmatter keys this persona is allowed to emit. */
+function expectedFrontmatterKeys(persona: ResolvedPersona): Set<string> {
+  const keys = new Set(['name', 'description']);
+  if (persona.model !== undefined) {
+    keys.add('model');
+  }
+  if (persona.claude.allow.length > 0) {
+    keys.add('tools');
+  }
+  if (persona.claude.deny.length > 0) {
+    keys.add('disallowedTools');
+  }
+  return keys;
+}
+
+/**
+ * Assert the emitted key set is exactly the declared one. A renderer that adds
+ * a harness directive the persona never declared (`permissionMode`, `hooks`,
+ * `maxTurns`, ...) is adding a capability, not just losing one, and must be
+ * refused in the same way.
+ */
+function assertKeySet(
+  persona: ResolvedPersona,
+  emitted: Record<string, unknown>,
+  subject: string,
+): void {
+  const expected = expectedFrontmatterKeys(persona);
+  for (const key of Object.keys(emitted).sort(compareCodepoints)) {
+    if (!expected.has(key)) {
+      throw declaredNotEmitted(
+        `emitted frontmatter carries undeclared key "${key}" for ${persona.id}`,
+        {
+          subject,
+          action: 'the renderer may emit only the keys the persona declares; nothing was written',
+        },
+      );
+    }
+  }
+}
+
 /**
  * Assert one frontmatter field against the resolved persona. An absent field
  * must be absent, and a present field must equal the resolved value exactly.
@@ -119,32 +159,21 @@ function assertField(
   }
 }
 
-function assertFrontmatter(persona: ResolvedPersona, emitted: EmittedAgent, subject: string): void {
-  assertField(emitted.frontmatter, 'name', persona.id, subject, persona);
-  assertField(emitted.frontmatter, 'description', persona.purpose, subject, persona);
-  assertField(emitted.frontmatter, 'model', persona.model, subject, persona);
-  assertField(
-    emitted.frontmatter,
-    'tools',
-    persona.claude.allow.length === 0 ? undefined : persona.claude.allow,
-    subject,
-    persona,
-  );
-  assertField(
-    emitted.frontmatter,
-    'disallowedTools',
-    persona.claude.deny.length === 0 ? undefined : persona.claude.deny,
-    subject,
-    persona,
-  );
+/**
+ * Compare bodies exactly, normalising only one trailing newline. A renderer
+ * that prepends an instruction, appends one, or reorders the body differs from
+ * the composed body and is refused; the presence of the right words somewhere
+ * is not containment.
+ */
+function bodiesMatch(emitted: string, composed: string): boolean {
+  const trimOne = (text: string): string => (text.endsWith('\n') ? text.slice(0, -1) : text);
+  return trimOne(emitted) === trimOne(composed);
 }
 
 /**
- * The containment gate. Containment means equality, not substring presence:
- * every expected artefact is a non-empty file whose frontmatter equals the
- * resolved persona and whose body ends with the persona's whole composed body.
- * File existence alone is not containment, and neither is "the right words
- * appear somewhere".
+ * The containment gate. Every expected artefact is a non-empty file whose
+ * frontmatter key set and values equal the resolved persona, and whose body is
+ * exactly the persona's composed body (one trailing newline normalised).
  */
 export async function verifyRender(
   source: ResolvedSource,
@@ -171,7 +200,6 @@ export async function verifyRender(
     }
   }
 
-  const contents = new Map<string, EmittedAgent>();
   for (const persona of source.personas) {
     const managedPath = expectedAgentPath(persona.id);
     const absolute = join(outputRoot, managedPath);
@@ -194,7 +222,24 @@ export async function verifyRender(
       });
     }
     const parsed = parseEmittedAgent(text, managedPath);
-    assertFrontmatter(persona, parsed, managedPath);
+    assertKeySet(persona, parsed.frontmatter, managedPath);
+    assertField(parsed.frontmatter, 'name', persona.id, managedPath, persona);
+    assertField(parsed.frontmatter, 'description', persona.purpose, managedPath, persona);
+    assertField(parsed.frontmatter, 'model', persona.model, managedPath, persona);
+    assertField(
+      parsed.frontmatter,
+      'tools',
+      persona.claude.allow.length === 0 ? undefined : persona.claude.allow,
+      managedPath,
+      persona,
+    );
+    assertField(
+      parsed.frontmatter,
+      'disallowedTools',
+      persona.claude.deny.length === 0 ? undefined : persona.claude.deny,
+      managedPath,
+      persona,
+    );
     for (const rule of persona.rules) {
       if (!parsed.body.includes(rule.body.trim())) {
         throw declaredNotEmitted(`declared rule "${rule.id}" is absent from the artefact`, {
@@ -203,34 +248,29 @@ export async function verifyRender(
         });
       }
     }
-    contents.set(managedPath, parsed);
-  }
 
-  for (const persona of source.personas) {
-    const managedPath = expectedAgentPath(persona.id);
-    const parsed = contents.get(managedPath);
-    if (parsed === undefined) {
-      throw declaredNotEmitted('missing artefact', { subject: managedPath });
-    }
     const composed = personaBody(persona);
-    if (!parsed.body.endsWith(composed)) {
-      // A whole-body suffix failure is usually a foreign body appended to this
-      // one. Name the owner rather than only saying "the body is wrong". The
-      // check compares composed bodies, never individual rule substrings, so a
-      // legitimate rule that quotes another rule's words is not a leak.
-      for (const other of source.personas) {
-        if (other.id === persona.id) {
-          continue;
-        }
-        const otherBody = personaBody(other);
-        if (otherBody.trim() !== '' && parsed.body.endsWith(otherBody)) {
-          throw declaredNotEmitted(`persona ${other.id}'s content leaked into ${persona.id}`, {
-            subject: managedPath,
-            action: 'the renderer mixed persona content; nothing was written',
-          });
-        }
+    // Run the leak scan on the whole body, not only after a mismatch, and skip
+    // a body this persona legitimately contains through composition: a base
+    // persona's composed body is a prefix of the derived persona's body.
+    for (const other of source.personas) {
+      if (other.id === persona.id) {
+        continue;
       }
-      throw declaredNotEmitted('emitted body does not end with the composed persona body', {
+      const otherBody = personaBody(other);
+      if (otherBody === '' || otherBody === composed || composed.includes(otherBody)) {
+        continue;
+      }
+      if (parsed.body.includes(otherBody)) {
+        throw declaredNotEmitted(`persona ${other.id}'s content leaked into ${persona.id}`, {
+          subject: managedPath,
+          action: 'the renderer mixed persona content; nothing was written',
+        });
+      }
+    }
+
+    if (!bodiesMatch(parsed.body, composed)) {
+      throw declaredNotEmitted('emitted body does not match the composed persona body', {
         subject: managedPath,
         action:
           'the renderer added or changed content the persona does not declare; nothing was written',
