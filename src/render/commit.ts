@@ -22,31 +22,85 @@ export type CommitResult = {
 };
 
 /**
- * The current bytes of a path, or `undefined` when it is absent or is not a
- * regular file. Never follows a symbolic link: a link is "no current bytes",
- * so a plan or a commit treats it as a change to be refused by the preflight.
+ * The filesystem calls a commit makes. The seam exists so the rename-failure
+ * path can be tested deterministically; production always uses the defaults.
  */
-export async function currentBytes(path: string): Promise<string | undefined> {
-  const stats = await lstatOrUndefined(path);
-  if (stats === undefined || !stats.isFile() || stats.isSymbolicLink()) {
-    return undefined;
-  }
-  return readFile(path, 'utf8');
-}
+export type CommitOperations = {
+  mkdir: (path: string) => Promise<void>;
+  writeFile: (path: string, data: string) => Promise<void>;
+  rename: (from: string, to: string) => Promise<void>;
+  remove: (path: string) => Promise<void>;
+  removeDirectory: (path: string) => Promise<void>;
+};
 
-type PlannedFile = {
+const defaultOperations: CommitOperations = {
+  mkdir: async (path) => {
+    await mkdir(path, { recursive: true });
+  },
+  writeFile: async (path, data) => {
+    await writeFile(path, data, 'utf8');
+  },
+  rename: async (from, to) => {
+    await rename(from, to);
+  },
+  remove: async (path) => {
+    await rm(path, { force: true });
+  },
+  removeDirectory: async (path) => {
+    await rmdir(path);
+  },
+};
+
+export type ManagedTarget = {
   path: string;
-  bytes: string;
   target: string;
   existing: string | undefined;
 };
 
+/**
+ * Resolve one managed path and read its current bytes, refusing a symlinked
+ * ancestor, a symlink at the target, a directory in the way, or any other
+ * non-regular file. Shared by the write path and by `--dry-run`, so the plan
+ * cannot report a state the write path would refuse.
+ */
+export async function inspectManagedTarget(repoRoot: string, path: string): Promise<ManagedTarget> {
+  assertSafeRelativePath(path);
+  const target = await containedTarget(repoRoot, path);
+  const stats = await lstatOrUndefined(target);
+  if (stats?.isSymbolicLink()) {
+    throw pathUnsafe(`refusing to write through a symbolic link: ${path}`, {
+      subject: path,
+      action: 'replace the symbolic link with a real file',
+    });
+  }
+  if (stats?.isDirectory()) {
+    throw writeFailed(`cannot write ${path}: a directory is in the way`, {
+      subject: path,
+      action: 'remove the directory and re-run generate',
+    });
+  }
+  if (stats !== undefined && !stats.isFile()) {
+    throw writeFailed(`cannot write ${path}: the path is not a regular file`, {
+      subject: path,
+    });
+  }
+  return {
+    path,
+    target,
+    existing: stats === undefined ? undefined : await readFile(target, 'utf8'),
+  };
+}
+
+type PlannedFile = ManagedTarget & { bytes: string };
 type StagedFile = PlannedFile & { temporary: string };
 
-async function removeTemporaryFiles(staged: readonly StagedFile[]): Promise<void> {
+async function removeTemporaryFiles(
+  staged: readonly StagedFile[],
+  operations: CommitOperations,
+): Promise<void> {
   for (const item of staged) {
     try {
-      await rm(item.temporary, { force: true });
+      await operations.remove(item.temporary);
     } catch {
       // A leftover temp file is harmless and never a managed path.
     }
@@ -59,41 +113,20 @@ async function removeTemporaryFiles(staged: readonly StagedFile[]): Promise<void
  *
  * The whole set is preflighted (no symlinked ancestor, no directory in the way)
  * and staged into sibling temporary files before the first rename. A failure
- * while staging removes the temporaries and leaves the tree untouched; a rename
- * failure restores the files this call already replaced.
+ * while staging removes the temporaries and leaves the tree untouched. A rename
+ * failure restores the files this call already replaced and reports any file it
+ * could not restore by name: the diagnostic never claims a restore it did not
+ * achieve.
  */
 export async function commitFiles(
   repoRoot: string,
   files: Array<{ path: string; bytes: string }>,
+  overrides: Partial<CommitOperations> = {},
 ): Promise<CommitResult> {
+  const operations: CommitOperations = { ...defaultOperations, ...overrides };
   const planned: PlannedFile[] = [];
   for (const file of files) {
-    assertSafeRelativePath(file.path);
-    const target = await containedTarget(repoRoot, file.path);
-    const stats = await lstatOrUndefined(target);
-    if (stats?.isSymbolicLink()) {
-      throw pathUnsafe(`refusing to write through a symbolic link: ${file.path}`, {
-        subject: file.path,
-        action: 'replace the symbolic link with a real file',
-      });
-    }
-    if (stats?.isDirectory()) {
-      throw writeFailed(`cannot write ${file.path}: a directory is in the way`, {
-        subject: file.path,
-        action: 'remove the directory and re-run generate',
-      });
-    }
-    if (stats !== undefined && !stats.isFile()) {
-      throw writeFailed(`cannot write ${file.path}: the path is not a regular file`, {
-        subject: file.path,
-      });
-    }
-    planned.push({
-      path: file.path,
-      bytes: file.bytes,
-      target,
-      existing: stats === undefined ? undefined : await readFile(target, 'utf8'),
-    });
+    planned.push({ ...(await inspectManagedTarget(repoRoot, file.path)), bytes: file.bytes });
   }
 
   const statuses: CommitResult['statuses'] = planned.map((item) => ({
@@ -122,14 +155,14 @@ export async function commitFiles(
     if (missing.length === 0) {
       return;
     }
-    await mkdir(directory, { recursive: true });
+    await operations.mkdir(directory);
     createdDirectories.push(...missing);
   };
 
   const removeCreatedDirectories = async (): Promise<void> => {
     for (const directory of [...createdDirectories].sort((a, b) => b.length - a.length)) {
       try {
-        await rmdir(directory);
+        await operations.removeDirectory(directory);
       } catch {
         // A non-empty directory means something else wrote to it.
       }
@@ -145,11 +178,11 @@ export async function commitFiles(
         dirname(item.target),
         `.${basename(item.target)}.farna-tmp-${process.pid}-${randomUUID()}`,
       );
-      await writeFile(temporary, item.bytes, 'utf8');
+      await operations.writeFile(temporary, item.bytes);
       staged.push({ ...item, temporary });
     }
   } catch (error) {
-    await removeTemporaryFiles(staged);
+    await removeTemporaryFiles(staged, operations);
     await removeCreatedDirectories();
     throw writeFailed(`cannot stage ${stagingPath}; nothing was written`, {
       subject: stagingPath,
@@ -158,31 +191,45 @@ export async function commitFiles(
   }
 
   const replaced: StagedFile[] = [];
+  const restoreFailures: string[] = [];
   let renamePath = staged[0]?.path ?? '';
   try {
     for (const item of staged) {
       renamePath = item.path;
-      await rename(item.temporary, item.target);
+      await operations.rename(item.temporary, item.target);
       replaced.push(item);
     }
   } catch (error) {
-    await removeTemporaryFiles(staged.filter((item) => !replaced.includes(item)));
+    await removeTemporaryFiles(
+      staged.filter((item) => !replaced.includes(item)),
+      operations,
+    );
     for (const item of [...replaced].reverse()) {
       try {
         if (item.existing === undefined) {
-          await rm(item.target, { force: true });
+          await operations.remove(item.target);
         } else {
-          await writeFile(item.target, item.existing, 'utf8');
+          await operations.writeFile(item.target, item.existing);
         }
-      } catch {
-        // Restoring a file is best-effort; the typed error below still names
-        // the path that failed and the tree is left as close to its pre-run
-        // state as the filesystem allows.
+      } catch (restoreError) {
+        const detail = restoreError instanceof Error ? restoreError.message : String(restoreError);
+        restoreFailures.push(`${item.path} (${detail})`);
       }
     }
     await removeCreatedDirectories();
-    throw writeFailed(`cannot write ${renamePath}; earlier files were restored`, {
+
+    const outcome =
+      restoreFailures.length > 0
+        ? `${restoreFailures.length} earlier file(s) could NOT be restored: ${restoreFailures.join(', ')}`
+        : replaced.length > 0
+          ? 'earlier files were restored'
+          : 'no earlier file was replaced';
+    throw writeFailed(`cannot write ${renamePath}; ${outcome}`, {
       subject: renamePath,
+      action:
+        restoreFailures.length > 0
+          ? `inspect and re-run generate; restore failed for ${restoreFailures.join(', ')}`
+          : 're-run generate after fixing the filesystem',
       cause: error,
     });
   }

@@ -1,4 +1,4 @@
-import { mkdir, readdir, rename, symlink } from 'node:fs/promises';
+import { mkdir, readdir, rename, symlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { runGenerate } from '../../src/cli/commands/generate.js';
@@ -70,6 +70,36 @@ describe.skipIf(skipSymlinks)('symlinked output paths (skipped on Windows)', () 
       const error = await expectRefusal(repo);
       expect(error.subject).toBe('.claude/agents');
       expect(await readdir(inside)).toEqual([]);
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
+  it('refuses a symlinked .claude/agents in --dry-run instead of reading outside the repo', async () => {
+    const repo = await createTempRepo();
+    const outside = await createEmptyTempDir();
+    try {
+      await runGenerate({ cwd: repo.root, dryRun: false }, new FakeRenderTarget());
+      const agents = join(repo.root, '.claude', 'agents');
+      const target = join(outside.root, 'agents');
+      await rename(agents, target);
+      await symlink(target, agents, 'dir');
+      await expect(
+        runGenerate({ cwd: repo.root, dryRun: true }, new FakeRenderTarget()),
+      ).rejects.toMatchObject({ code: 'F003_PATH_UNSAFE', subject: '.claude/agents' });
+    } finally {
+      await repo.cleanup();
+      await outside.cleanup();
+    }
+  });
+
+  it('turns a .claude file into a typed F003 in --dry-run', async () => {
+    const repo = await createTempRepo();
+    try {
+      await writeFile(join(repo.root, '.claude'), 'not a directory', 'utf8');
+      await expect(
+        runGenerate({ cwd: repo.root, dryRun: true }, new FakeRenderTarget()),
+      ).rejects.toMatchObject({ code: 'F003_PATH_UNSAFE', subject: '.claude' });
     } finally {
       await repo.cleanup();
     }
