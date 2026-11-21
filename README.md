@@ -19,9 +19,9 @@ one base persona per composed persona (`extends`). Everything else is deliberate
 
 `generate` never writes until every gate has passed. Containment means equality, not substring
 presence: each persona's artefact must be a non-empty markdown file whose emitted frontmatter has
-exactly the keys the persona declares (`name` and `description`, plus `model`, `tools` and
-`disallowedTools` only when declared) with matching values, and whose body is exactly that persona's
-composed body, with one trailing newline normalised. An absent field must be absent, and an extra
+exactly the keys the persona declares (`name` and `description`, plus `model`, `disallowedTools`
+and, only when a permission resource opts in, `tools`) with matching values, and whose body is
+exactly that persona's composed body, with one trailing newline normalised. An absent field must be absent, and an extra
 field is refused: a renderer that adds a harness directive such as `permissionMode` or `hooks` is
 adding a capability the persona never declared. A renderer that drops content, weakens or invents a
 permission, mixes personas, prepends or appends anything of its own is refused before the first byte
@@ -51,8 +51,11 @@ node scripts/assert-pack.mjs     # after a build: the tarball contains dist
 
 The golden test in `tests/golden/` and the integration test in `tests/integration/` drive the
 real, pinned renderer. They always run: a missing or broken `rulesync` fails collection loudly
-rather than skipping, and CI asserts both the exact total test count and that these suites ran.
-CI also type-checks `tests/`, audits dependencies, and checks that `npm pack` contains `dist`.
+rather than skipping. CI asserts a minimum total test count (not an exact one), that no test is
+pending or `todo`, that `numPassedTests` accounts for the whole run, and that both real-renderer
+suites ran. CI also type-checks `tests/`, audits dependencies at `moderate`, and proves that
+`npm pack` from a tree with `dist/` moved aside still contains the entry points, which can only
+happen if `prepack` builds them.
 
 ## Use
 
@@ -61,7 +64,7 @@ mkdir my-agents && cd my-agents
 farna-bootstrapper init
 ```
 
-`init` creates:
+`init` creates (it accepts `--json` like `generate` and `check`, emitting one object on stdout):
 
 ```text
 .farna/
@@ -145,8 +148,12 @@ farna-bootstrapper generate --dry-run # print the plan, write nothing
 farna-bootstrapper check             # prove the tree matches a fresh render
 ```
 
-`generate` and `check` accept `--json` for one machine-readable object on stdout. Every object
-carries `schemaVersion`, `command`, `ok` and `exitCode`; a typed failure also carries `code`,
+Every command accepts `--json`. A success object carries `schemaVersion`, `command`, `ok`,
+`exitCode` and the command's own fields; `init` adds `root`, `configPath`, `created` and
+`nextStep`.
+
+Every command emits one machine-readable object on stdout under `--json`, and every object carries
+`schemaVersion`, `command`, `ok` and `exitCode`; a typed failure also carries `code`,
 `subject` and `message`, and is emitted on stdout with the human line on stderr. `--dry-run`
 compares each managed path with the working tree, so `unchanged` and `would-write` are
 distinguished rather than every path being reported as a write.
@@ -192,6 +199,20 @@ They are validated at plan time and mapped to the target's own form before anyth
 | `mcp` (bare) | none | refused (F011, exit 3): a bare category restricts nothing |
 | `*` | expands to every category | refused (F011), because it covers `network` |
 
+### Allow-list vs deny-list
+
+Claude Code's per-agent `tools` field is an **allow-list**: naming three tools removes every tool
+it does not name, including `Glob`, `Grep`, `WebFetch`, `TodoWrite`, `NotebookEdit` and any tool
+this product does not model. The default is therefore a **deny-list**: `allow` entries emit
+nothing (the tool is available unless denied), while `deny` and an `ask` downgraded to `deny` are
+emitted into `disallowedTools`. A partial allow set can never silently narrow a persona.
+
+A permission resource may opt in with `"allowlist": true`. The resolved persona then emits the
+ordered `tools` allow-list and a `W113_ALLOW_LIST_NARROWS` warning names every unmodelled tool the
+narrowing removes. The mode is persona-scoped: if any contributing resource opts in, the union of
+its resolved `allow` entries becomes the allow-list. `check` applies the same rule, so a renderer
+that invents or drops `tools` is refused either way.
+
 `ask` has no per-agent surface on Claude Code, so it is emitted as `deny` and reported (W111).
 A pattern is resolved against its category before it is emitted: if the category's winning value is
 `deny` (including an `ask` downgraded to `deny`), an `allow` pattern under it is not emitted and the
@@ -217,9 +238,12 @@ src/
   compose/        extends resolution, resource union, deny-wins merge, digests
   permissions/    the canonical vocabulary and the Claude Code mapping
   materialise/    persona -> rulesync source tree
-  render/         port.ts (the seam), upstream.ts (the only rulesync import), stage, commit
+  render/         port.ts (the seam), upstream.ts (the only rulesync import),
+                  identity.ts (installed vs pinned renderer), prepare.ts (the pipeline),
+                  stage.ts (the disposable stage), commit.ts (the write), staging.ts
   verify/         containment and cross-persona isolation gates
-  lock/           lockfile construction
+  lock/           lockfile construction and validated reading
+  core/           constants, typed errors, paths, strict UTF-8 reads, canonical JSON
   report/         text and JSON output, warning records
 tests/
   fixtures/demo/      the M1 fixture: two personas, two rules, no permissions
@@ -231,10 +255,16 @@ tests/
 scripts/              CI gates: the minimum test count, real-renderer suites and tarball contents
 ```
 
-`.farna/lock.json` records the renderer identity, each persona's composition base, its resolved
-resource ids (each with the persona that contributed it), a persona digest, a permission digest,
-and the path, size and SHA-256 of every managed file. It contains no timestamps, hostnames or
-absolute paths.
+`.farna/lock.json` records `schemaVersion`, `product` (name and version), `target`, `mode`
+(`agent`), the `renderer` identity, each persona's composition base and resolved resource ids
+(each with the persona that contributed it), a persona digest, a permission digest, every warning,
+and the path, size and SHA-256 of every managed file. It does **not** list itself: the lockfile is
+built from the managed files before its own record is appended, so its own bytes are deliberately
+absent from `files`. It contains no timestamps, hostnames or absolute paths.
+
+The `renderer` record is the build's **pin** (`RENDERER_PIN`), not the integrity the local package
+manager wrote. That makes the lockfile byte-identical on two machines with the same source and
+toolchain, and it is what `check` compares the installed package against.
 
 ## The renderer boundary
 
@@ -243,14 +273,22 @@ imports `rulesync`, and `src/cli/main.ts` is the only place that binds the real 
 Unit tests use an independent fake renderer, so the failure modes the port exists to catch can be
 exercised without the network or the real renderer.
 
-`rulesync` is pinned to exactly `43.11.0`. The lockfile's `renderer` record is read from the
-installed package, not copied from the source literal, and `check` compares it with the installed
-package before any byte comparison: a different version fails `F010` with exit `5`, and a different
-integrity fails when both sides recorded one. `generate` also refuses an installed renderer that
-does not match the pin. The integrity is read from npm's `node_modules/.package-lock.json` (with the
-project lockfile as a fallback); if no package manager recorded one, the field is omitted and the
-version check still applies. The product never uses rulesync's `--delete`; cleanup is
-ownership-scoped, and this slice never deletes a user file.
+`rulesync` is pinned to exactly `43.11.0` with a tarball integrity. The lockfile records that pin,
+and `check` compares it with the installed package before any byte comparison: a different name or
+version, a different integrity, or a **missing** integrity on either side fails `F010` with exit
+`5`. The check never degrades to a version-only comparison. The installed integrity is read from
+npm's `node_modules/.package-lock.json`, with the project `package-lock.json` as a fallback; an
+install that records none is refused rather than trusted.
+
+The renderer is imported **in-process**. The pin is provenance, not a sandbox: it ties the
+committed bytes to a published tarball, but a package patched in place with the same `package.json`
+and integrity is not detected (see the residual list). The product never uses rulesync's `--delete`;
+cleanup is ownership-scoped, and this slice never deletes a user file.
+
+The renderer call is hermetic: its working directory is the disposable stage and its `configPath`
+is a file inside that stage, so an ambient `rulesync.jsonc` (or `rulesync.local.jsonc`) in the
+caller's directory cannot flip `dryRun`, `delete` or `check`. Those three options are also pinned
+explicitly.
 
 Every source directory and output path used by `generate`, `generate --dry-run` and `check` is
 checked with `lstat` before use. The write and dry-run paths refuse a symbolic link wherever it
@@ -259,13 +297,16 @@ appears: `.farna`, its subdirectories, `config.jsonc`, any ancestor of a managed
 a symlinked managed file as drift instead of following it. The dry-run plan goes through the same
 guard as the write path, so it cannot report a plan the real command would refuse.
 
-`generate` preflights the whole set, stages it in sibling temporary files on the same filesystem,
-and renames only after every write has succeeded. A caught failure before the first rename leaves
-the tree unchanged; a failure between renames restores the files already replaced and names any
+`generate` preflights the whole set, sweeps its own staging namespace, stages each file as a hidden
+`.<target>.farna-tmp-<pid>-<uuid>` sibling on the same filesystem, and renames only after every
+write has succeeded. A caught failure before the first rename removes the staging files and the
+directories this run created; if a directory cannot be removed, the diagnostic names it rather than
+claiming a clean tree. A failure between renames restores the files already replaced and names any
 file it could not restore. A crash or kill between renames can still leave a mixed tree; see
 [Residual risks and known gaps](#residual-risks-and-known-gaps). `init` preflights `.gitignore`
-before creating anything, preserves its line ending, and removes what it created if it subsequently
-fails.
+before creating anything, preserves its line ending, writes the new file with `O_EXCL` under an
+unpredictable name and proves it is a regular file before renaming it over `.gitignore`, and removes
+what it created if it subsequently fails.
 
 ## What this slice does not do
 
@@ -293,12 +334,22 @@ These are deliberate limits of the current controls, stated rather than implied 
   any it could not restore. A process kill or power loss between two renames can leave a mixed tree
   (some new artefact files, a stale lockfile). Re-running `generate` replaces the managed set and
   rewrites the record; `check` reports the drift.
-- **Renderer file-content tampering.** The identity check reads the installed package's version and
-  the npm-recorded tarball integrity. A renderer patched in place with the same `package.json` and
-  the same tarball integrity is not detected.
-- **Stage cleanup.** If the disposable render stage cannot be removed (for example a renderer left
-  an unreadable directory in it), the cleanup failure is a warning naming the leftover path and
-  never replaces the renderer's own error.
+- **Renderer file-content tampering.** The renderer is imported in-process and the identity check
+  reads the installed package's version and the npm-recorded tarball integrity. A renderer patched
+  in place with the same `package.json` and the same tarball integrity is not detected. The pin is
+  provenance, not a sandbox.
+- **Stage cleanup.** The stage lives under the canonical temporary root; the containment check uses
+  `path.relative`, so a Windows checkout recognises its own stage (a hardcoded `/` used to refuse it
+  and leak the directory), and creation failures after `mkdtemp` still reach the cleanup. If the
+  stage cannot be removed (for example a renderer left an unreadable subdirectory in it), the
+  cleanup failure is a warning naming the leftover path and never replaces the renderer's own error.
+- **Lockfile read.** `.farna` must be a real directory and `.farna/lock.json` a real regular file of
+  at most 4 MiB, opened with `O_NOFOLLOW`. A symlink, FIFO or oversized file is a typed refusal
+  rather than a follow or a hang. A malformed document is reported as drift, never consumed
+  partially.
+- **Staging leftovers.** A killed `generate` can leave `.<target>.farna-tmp-*` siblings. They are
+  ignored by `check` and swept at the start of the next `generate`; a leftover that cannot be
+  removed is best-effort and never a managed path.
 - **No coverage gate.** There is no coverage provider or threshold in this slice. CI runs lint,
   type-check, tests (with a minimum count and real-renderer suite assertions), a dependency audit at
   `moderate`, and a published-tarball check.
@@ -306,7 +357,8 @@ These are deliberate limits of the current controls, stated rather than implied 
   creating a symlink needs a privilege the runner does not grant. CI runs them on Linux; the guard
   code itself is platform-independent.
 - **Stray files outside `.claude/agents/`** are not reported by `check`; the unexpected-path scan is
-  scoped to the managed directory.
+  scoped to the managed directory. The only names ignored inside it are this tool's own staging
+  namespace.
 
 ## Deviations from `design/`
 
@@ -338,9 +390,11 @@ them further. The differences, all deliberate:
    `exclude` are also rejected: profile mode and per-target filters are later work, and accepting
    them here would be a silent no-op. For the same reason `ignoredFiles` is not accepted yet: an
    unknown-key error is louder than a setting that quietly does nothing.
-7. **`check` exits `1` on any drift.** `schema.md` §7 assigns `F007` exit `4`. The brief for the
-   M1 slice requires `0` clean / `1` drift, so `check` returns `1` and reports the `F007` code in
-   its payload. `generate` keeps the design's per-code exits (`F008` is `4`, `F011` is `3`).
+7. **`check` exits `1` on any drift, and `F007` is not an exception code.** The brief requires `0`
+   clean / `1` drift, so `check` returns `1` and reports `F007_DRIFT` in its payload. The design's
+   exit table assigned `F007` exit `4`; carrying that entry while returning `1` was two answers for
+   one code, so `F007` is removed from the exception table and `EXIT.drift` is `1`. `generate`
+   keeps the design's per-code exits (`F008` is `4`, `F011` is `3`).
 8. **No matrix snapshot or matrix digest.** The one-target, seven-cell snapshot, `probe`, and the
     `matrixDigest` lockfile field are later work. The lockfile records the renderer identity,
     personas, resources, digests, managed files and warnings only.
@@ -370,9 +424,12 @@ them further. The differences, all deliberate:
     would silently discard every persona after the first `---`.
 16. **`generate` and `init` are atomic for a caught failure.** The managed output is staged in
     sibling temporary files and renamed only after every write has succeeded, and a rename failure
-    restores what it already replaced (reporting any restore it could not complete). A crash
+    restores what it already replaced (reporting any restore it could not complete). Created
+    directories are recorded one level at a time and removed on failure; a directory the rollback
+    could not remove is named in the error instead of the error claiming a clean tree. A crash
     between renames is not atomic; `init` preflights the one path that can fail on an ordinary
-    filesystem state and rolls back what it created.
+    filesystem state, writes it with `O_EXCL` under an unpredictable name, and rolls back what it
+    created.
 
 ## Licence
 
