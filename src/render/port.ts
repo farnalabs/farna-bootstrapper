@@ -31,8 +31,8 @@ export type RenderResult = {
 };
 
 /**
- * The outcome of looking for the installed renderer's integrity in the
- * reachable npm lock records.
+ * The outcome of looking for the installed renderer's integrity in the two
+ * supported npm lock records at the install root.
  *
  * The renderer identity policy is:
  *
@@ -40,15 +40,16 @@ export type RenderResult = {
  *   `F010_RENDERER_MISMATCH` (exit 5);
  * - when a lock record supplies a string integrity, it must equal
  *   `RENDERER_PIN.integrity`; a mismatch is also `F010`;
- * - when no renderer entry exists anywhere (`reason: 'no-record'`) or the
- *   entry has no string integrity (`reason: 'no-integrity'`), the version
- *   check still applies, the run continues, and
- *   `W114_RENDERER_INTEGRITY_UNVERIFIED` names what could not be checked.
+ * - when neither supported record holds a renderer entry
+ *   (`reason: 'no-record'`) or the entry has no string integrity
+ *   (`reason: 'no-integrity'`), the version check still applies, the run
+ *   continues, and `W114_RENDERER_INTEGRITY_UNVERIFIED` names what could not be
+ *   checked. A layout outside those two records is not read and yields `W114`.
  *
  * Only a genuinely absent entry, or an entry without a string integrity, is
- * `W114`. A present-but-unreadable, over-size or non-object lock record remains
- * a refusal (`F010`): an integrity that exists but cannot be read must fail
- * exactly like one that differs.
+ * `W114`. A present-but-unreadable, symlinked, non-regular or over-size lock
+ * record remains a refusal (`F010`): an integrity that exists but cannot be
+ * read must fail exactly like one that differs.
  */
 export type RecordedIntegrity =
   | { verified: true; integrity: string; reason?: undefined }
@@ -59,7 +60,7 @@ export type RendererIdentity = {
   version: string;
   /**
    * The tarball integrity npm recorded for the installed package, when one was
-   * found. `undefined` means no reachable lock record supplied a string
+   * found. `undefined` means no supported lock record supplied a string
    * integrity; the version check still runs and `W114` reports the gap. The
    * version is always read from the installed package, never from a
    * compiled-in literal.

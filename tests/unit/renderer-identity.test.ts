@@ -570,6 +570,54 @@ describe('the bounded npm integrity read', () => {
     }
   });
 
+  it.skipIf(isRoot)(
+    'fails F010 for an unreadable hidden record even when the lockfile is readable',
+    async () => {
+      // Both supported records are read before the search, so a hidden record
+      // that exists but cannot be read is a refusal, never silently skipped in
+      // favour of the readable lockfile beside it.
+      const root = await layout(
+        JSON.stringify({ packages: { 'node_modules/rulesync': { integrity: 'sha512-small' } } }),
+      );
+      const hidden = join(root, 'node_modules', '.package-lock.json');
+      try {
+        await writeFile(hidden, JSON.stringify({ packages: {} }), 'utf8');
+        await chmod(hidden, 0o000);
+        expect(() => readRecordedIntegrity(packageDirOf(root), 'rulesync')).toThrowError(
+          expect.objectContaining({ code: 'F010_RENDERER_MISMATCH', subject: hidden }),
+        );
+      } finally {
+        await chmod(hidden, 0o600);
+        await rm(root, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it.skipIf(isRoot)(
+    'fails F010 for an unreadable lockfile even when the hidden record verified',
+    async () => {
+      // A present record that cannot be read is refused in either supported
+      // path. Returning as soon as the hidden record supplied an integrity
+      // would silently skip the unreadable lockfile beside it.
+      const record = JSON.stringify({
+        packages: { 'node_modules/rulesync': { integrity: 'sha512-small' } },
+      });
+      const root = await layout(record);
+      const lock = join(root, 'package-lock.json');
+      const hidden = join(root, 'node_modules', '.package-lock.json');
+      try {
+        await writeFile(hidden, record, 'utf8');
+        await chmod(lock, 0o000);
+        expect(() => readRecordedIntegrity(packageDirOf(root), 'rulesync')).toThrowError(
+          expect.objectContaining({ code: 'F010_RENDERER_MISMATCH', subject: lock }),
+        );
+      } finally {
+        await chmod(lock, 0o600);
+        await rm(root, { recursive: true, force: true });
+      }
+    },
+  );
+
   it('fails F010 for a lock record that is not valid JSON', async () => {
     const root = await layout('{ this is not json');
     try {
@@ -788,12 +836,12 @@ describe('a nested install layout', () => {
   });
 });
 
-describe('an npm workspace install layout', () => {
-  // A real npm workspace records the member's dependencies under the member's
-  // own path in the workspace root lockfile:
-  // `packages/foo/node_modules/<renderer>`. The project walk stops at the
-  // member's install root (`packages/foo`), so before this lookup the record
-  // was never reached and a readable, differing integrity passed as W114.
+describe('ancestor and workspace layouts that are not read', () => {
+  // The only two supported records sit at the install root. A workspace root,
+  // a parent monorepo and the directory directly above a member's install root
+  // record a different copy of the renderer (or none), so reading them refused
+  // a healthy install with a foreign integrity or claimed a verification that
+  // was never made. Those layouts now yield W114 and are never opened.
   const MEMBER = 'packages/foo';
   const WORKSPACE_KEY = `${MEMBER}/node_modules/${RENDERER_PIN.name}`;
 
@@ -819,74 +867,61 @@ describe('an npm workspace install layout', () => {
     return { name: RENDERER_PIN.name, version: RENDERER_PIN.version, integrityRecord: record };
   }
 
-  it('finds the renderer under the member path in the workspace root lockfile', async () => {
-    const { root, packageDir } = await workspaceLayout();
-    try {
-      await writeRecord(join(root, 'package-lock.json'), {
-        [WORKSPACE_KEY]: { integrity: 'sha512-from-the-workspace-root' },
-      });
-      expect(readRecordedIntegrity(packageDir, RENDERER_PIN.name)).toEqual({
-        verified: true,
-        integrity: 'sha512-from-the-workspace-root',
-      });
-    } finally {
-      await rm(root, { recursive: true, force: true });
-    }
-  });
-
-  it('finds it in the workspace root hidden record too', async () => {
-    const { root, packageDir } = await workspaceLayout();
-    try {
-      await mkdir(join(root, 'node_modules'), { recursive: true });
-      await writeRecord(join(root, 'node_modules', '.package-lock.json'), {
-        [WORKSPACE_KEY]: { integrity: 'sha512-from-the-hidden-workspace-record' },
-      });
-      expect(readRecordedIntegrity(packageDir, RENDERER_PIN.name)).toEqual({
-        verified: true,
-        integrity: 'sha512-from-the-hidden-workspace-record',
-      });
-    } finally {
-      await rm(root, { recursive: true, force: true });
-    }
-  });
-
-  it('fails F010 for a workspace-local integrity that differs from the pin', async () => {
+  it('yields W114 from a workspace root lockfile and never reads it', async () => {
+    // The differing integrity proves the file was not opened: reading it would
+    // have refused (F010) instead of reporting the gap.
     const { root, packageDir } = await workspaceLayout();
     try {
       await writeRecord(join(root, 'package-lock.json'), {
         [WORKSPACE_KEY]: { integrity: 'sha512-DIFFERENT-NOT-THE-PIN' },
       });
       const record = readRecordedIntegrity(packageDir, RENDERER_PIN.name);
-      expect(record).toEqual({ verified: true, integrity: 'sha512-DIFFERENT-NOT-THE-PIN' });
-      if (!record.verified) {
-        throw new Error('expected the workspace record to be read');
-      }
-      expect(() =>
-        assertPinned({
-          name: RENDERER_PIN.name,
-          version: RENDERER_PIN.version,
-          integrity: record.integrity,
-        }),
-      ).toThrowError(expect.objectContaining({ code: 'F010_RENDERER_MISMATCH', exitCode: 5 }));
+      expect(record).toEqual({ verified: false, reason: 'no-record' });
+      const installed = installedFrom(record);
+      // The version is still enforced; only the integrity is unverified.
+      expect(() => assertPinned(installed)).not.toThrow();
+      expect(rendererIntegrityWarning(installed)).toMatchObject({ code: W114 });
+      expect(() => assertPinned({ ...installed, version: '9.9.9' })).toThrowError(
+        expect.objectContaining({ code: 'F010_RENDERER_MISMATCH' }),
+      );
     } finally {
       await rm(root, { recursive: true, force: true });
     }
   });
 
-  it('produces no W114 for a matching workspace-local integrity', async () => {
+  it('yields W114 from a workspace root hidden record and never reads it', async () => {
     const { root, packageDir } = await workspaceLayout();
     try {
-      if (RENDERER_PIN.integrity === undefined) {
-        throw new Error('the renderer pin must carry an integrity');
-      }
-      await writeRecord(join(root, 'package-lock.json'), {
-        [WORKSPACE_KEY]: { integrity: RENDERER_PIN.integrity },
+      await mkdir(join(root, 'node_modules'), { recursive: true });
+      await writeRecord(join(root, 'node_modules', '.package-lock.json'), {
+        [WORKSPACE_KEY]: { integrity: RENDERER_PIN.integrity ?? 'sha512-pin' },
       });
-      const installed = installedFrom(readRecordedIntegrity(packageDir, RENDERER_PIN.name));
-      expect(() => assertPinned(installed)).not.toThrow();
-      expect(rendererIntegrityWarning(installed)).toBeUndefined();
+      const record = readRecordedIntegrity(packageDir, RENDERER_PIN.name);
+      expect(record).toEqual({ verified: false, reason: 'no-record' });
+      expect(rendererIntegrityWarning(installedFrom(record))).toMatchObject({ code: W114 });
     } finally {
       await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('does not verify from the directory directly above the install root', async () => {
+    // The removed direct-parent lookup read `<parent>/package-lock.json` and
+    // accepted an entry keyed by the project's relative path. That record
+    // describes the parent's tree, not this install, so it is not read.
+    const parent = await mkdtemp(join(tmpdir(), 'fbs-parent-record-'));
+    const root = join(parent, 'project');
+    const packageDir = join(root, 'node_modules', RENDERER_PIN.name);
+    try {
+      await mkdir(packageDir, { recursive: true });
+      await writeRecord(join(parent, 'package-lock.json'), {
+        [`project/node_modules/${RENDERER_PIN.name}`]: { integrity: 'sha512-PARENT-DIRECT' },
+      });
+      expect(readRecordedIntegrity(packageDir, RENDERER_PIN.name)).toEqual({
+        verified: false,
+        reason: 'no-record',
+      });
+    } finally {
+      await rm(parent, { recursive: true, force: true });
     }
   });
 
@@ -998,6 +1033,27 @@ describe('install layouts that cannot supply an integrity', () => {
       });
     } finally {
       await rm(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('source-derived warnings in the lockfile', () => {
+  it('keeps the W106 and W113 warnings the source produced in .farna/lock.json', async () => {
+    // The lockfile must describe the source it compiled. A regression that
+    // writes an empty warnings array would leave both checks below empty, so
+    // the assertion names the codes rather than the count.
+    const repo = await createTempRepo('composed');
+    try {
+      await runGenerate(
+        { cwd: repo.root, dryRun: false },
+        new FakeRenderTarget({ kind: 'ok' }, PIN, PIN),
+      );
+      const lock = await readLockfile(repo.root);
+      const codes = lock?.warnings.map((entry) => entry.code) ?? [];
+      expect(codes).toContain('W106_DENY_WINS');
+      expect(codes).toContain('W113_ALLOW_LIST_NARROWS');
+    } finally {
+      await repo.cleanup();
     }
   });
 });
