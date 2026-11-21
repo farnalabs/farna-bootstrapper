@@ -2,22 +2,35 @@
  * CI gate for the published package.
  *
  * `dist/` is gitignored, so a tarball built from a clean clone silently ships
- * four files and no `bin` target unless something builds it. `prepack` is that
- * something; this gate proves the tarball contains the entry points AND that it
- * was `prepack` that produced them.
+ * no `bin` target unless something builds it. `prepack` is that something; this
+ * gate proves the tarball contains the entry points AND the legal files, and
+ * that it was `prepack` that produced the entry points.
  *
  * It does not trust a `dist/` already on disk: the directory is renamed aside
  * before `npm pack`, so a missing `prepack` fails here even when CI ran a build
  * in an earlier step. The original directory is restored afterwards.
+ *
+ * The stash name is unique per run. A fixed name made a crashed earlier run
+ * leave a directory behind, and the next `renameSync` then threw an uncaught
+ * `ENOTEMPTY`; a unique name can never collide, and the restore is idempotent.
  */
 import { execFileSync } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { existsSync, renameSync, rmSync } from 'node:fs';
 
 const NPM = process.platform === 'win32' ? 'npm.cmd' : 'npm';
 
 const DIST = 'dist';
-const STASH = 'dist.farna-pack-gate';
-const REQUIRED = ['dist/cli/main.js', 'dist/index.js', 'dist/index.d.ts', 'package.json'];
+const STASH = `${DIST}.farna-pack-gate-${process.pid}-${randomUUID()}`;
+const REQUIRED = [
+  'dist/cli/main.js',
+  'dist/index.js',
+  'dist/index.d.ts',
+  'package.json',
+  'LICENSE',
+  'NOTICE',
+  'README.md',
+];
 
 // Move any existing build out of the way, so only `prepack` can satisfy the
 // gate. `npm pack` runs `prepack` even with `--dry-run`.
@@ -32,11 +45,15 @@ try {
   raw = execFileSync(NPM, ['pack', '--dry-run', '--json'], {
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'inherit'],
+    // `prepack` builds TypeScript; a hung npm must fail the gate, not wedge CI.
+    timeout: 300_000,
   });
 } catch (error) {
   failure = `npm pack failed: ${error.message}`;
 } finally {
-  // Discard whatever `prepack` produced and put the caller's build back.
+  // Discard whatever `prepack` produced and put the caller's build back. The
+  // stash is this run's own directory, so a stale one from a killed run is
+  // never touched.
   if (existsSync(DIST)) {
     rmSync(DIST, { recursive: true, force: true });
   }
@@ -67,8 +84,10 @@ if (missing.length > 0) {
   for (const path of missing) {
     console.error(`  - missing from the tarball: ${path}`);
   }
-  console.error('  - a tarball with no dist means `prepack` did not run or did not build');
+  console.error(
+    '  - a tarball with no dist means `prepack` did not run or did not build; a missing legal file means `files` is incomplete',
+  );
   process.exit(1);
 }
 
-console.log(`pack: ${files.length} files, entry points present (${REQUIRED.join(', ')})`);
+console.log(`pack: ${files.length} files, entry points and legal files present`);

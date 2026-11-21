@@ -1,5 +1,11 @@
-# `check` compares bytes. A checkout that rewrites these files to CRLF (a
-# Windows machine with core.autocrlf=true) would report drift the source never
-# declared, so the two committed artefacts are pinned to LF.
-/.claude/agents/** text eol=lf
-/.farna/lock.json text eol=lf
+# `tests/golden/builder-python.md` is compared with a fresh render byte for
+# byte. A checkout that rewrites it to CRLF (a Windows machine with
+# core.autocrlf=true) would fail on a clean clone, so it is pinned to LF.
+/tests/golden/** text eol=lf
+
+# Generated files in a CONSUMER repository are pinned by
+# `farna-bootstrapper init`, which merges these two patterns into that
+# repository's own .gitattributes:
+#   /.claude/agents/** text eol=lf
+#   /.farna/lock.json text eol=lf
+# They are comments here because this repository has no generated output.

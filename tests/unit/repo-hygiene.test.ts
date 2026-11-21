@@ -7,6 +7,7 @@ import {
   PRODUCT_VERSION,
   SCHEMA_VERSION,
   SUPPORTED_TARGETS,
+  WARNING_CODES,
 } from '../../src/core/constants.js';
 
 const SOURCE = new URL('../../src/', import.meta.url);
@@ -45,10 +46,18 @@ describe('constants and package metadata', () => {
     expect(load).not.toContain('assertUniqueIds');
   });
 
-  it('pins the committed artefacts to LF for a Windows checkout', async () => {
+  it('pins this repository own golden artefacts to LF', async () => {
     const attributes = await readFile(new URL('../../.gitattributes', import.meta.url), 'utf8');
-    expect(attributes).toContain('/.claude/agents/** text eol=lf');
-    expect(attributes).toContain('/.farna/lock.json text eol=lf');
+    // The golden file is compared byte for byte; a CRLF checkout must not fail
+    // on a clean clone. The consumer patterns are written by `init`, not here.
+    expect(attributes).toContain('/tests/golden/** text eol=lf');
+  });
+
+  it('names every warning code in the README', async () => {
+    const readme = await readFile(new URL('../../README.md', import.meta.url), 'utf8');
+    for (const code of WARNING_CODES) {
+      expect(readme, `README does not document ${code}`).toContain(code);
+    }
   });
 
   it('ships no dangling schema URL in the source', async () => {
