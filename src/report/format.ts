@@ -38,7 +38,7 @@ function warningLines(warnings: readonly Warning[]): string[] {
   const lines = [`  warnings ${warnings.length}`];
   for (const entry of warnings) {
     lines.push(
-      `  ${entry.code} ${entry.severity.padEnd(6)} ${escapeControlCharacters(entry.persona)}: ${entry.message}`,
+      `  ${entry.code} ${entry.severity.padEnd(6)} ${escapeControlCharacters(entry.persona)}: ${escapeControlCharacters(entry.message)}`,
     );
   }
   return lines;

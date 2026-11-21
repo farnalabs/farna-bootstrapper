@@ -4,8 +4,15 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { runCheck } from '../../src/cli/commands/check.js';
 import { runGenerate } from '../../src/cli/commands/generate.js';
+import type { ResolvedSource } from '../../src/compose/resolve.js';
 import { LOCKFILE_MAX_BYTES } from '../../src/core/constants.js';
-import { readLockfile } from '../../src/lock/lockfile.js';
+import { sha256Hex } from '../../src/core/json.js';
+import {
+  buildLockfile,
+  lockfileDocumentSchema,
+  readLockfile,
+  serialiseLockfile,
+} from '../../src/lock/lockfile.js';
 import { FakeRenderTarget } from '../support/fake-renderer.js';
 import { createEmptyTempDir, createTempRepo, type TempRepo } from '../support/temp-repo.js';
 
@@ -127,6 +134,47 @@ describe('lockfile reading', () => {
     } finally {
       await repo.cleanup();
     }
+  });
+
+  it('produces a document its own reader accepts, without an empty structured shape', () => {
+    const source = {
+      target: 'opencode',
+      mode: 'agent',
+      active: null,
+      notLive: [],
+      personas: [],
+      mcp: [],
+      skills: [],
+      commands: [],
+      hooks: [],
+      warnings: [],
+    } as unknown as ResolvedSource;
+    const lock = buildLockfile(
+      source,
+      { name: 'rulesync', version: '43.11.0', integrity: 'sha512-test' },
+      [
+        // A structured shape with no owned key must not be stamped: the reader
+        // refuses a `structured` entry with an empty `ownedKeys`, so stamping
+        // it would produce a document this tool cannot read back.
+        {
+          path: 'opencode.jsonc',
+          bytes: '{}\n',
+          shape: 'structured',
+          ownedKeys: [],
+          ownedSha256: sha256Hex('{}'),
+          ownedSize: 2,
+        },
+        { path: '.opencode/agents/a.md', bytes: 'agent\n' },
+      ],
+      [],
+      { configDigest: 'a'.repeat(64), notLive: [] },
+    );
+    const parsed = lockfileDocumentSchema.safeParse(JSON.parse(serialiseLockfile(lock)));
+    expect(parsed.success).toBe(true);
+    const entry = lock.files.find((file) => file.path === 'opencode.jsonc');
+    expect(entry?.shape).toBeUndefined();
+    expect(entry?.ownedKeys).toBeUndefined();
+    expect(entry?.sha256).toBe(sha256Hex('{}\n'));
   });
 
   it('returns undefined when the lockfile is absent', async () => {

@@ -3,6 +3,7 @@ import { readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { Config } from '../config/schema.js';
 import {
+  CONFIG_PATH,
   isOsMetadataName,
   MANAGED_FILE_MAX_BYTES,
   PERSONAS_DIR,
@@ -55,16 +56,26 @@ async function listSourceFiles(
 }
 
 /**
- * A digest over the resolved config and **every** persona and resource file,
- * including the ones that are not live in the current mode.
+ * A digest over the **raw** config bytes, the parsed config and **every**
+ * persona and resource file, including the ones that are not live in the
+ * current mode.
  *
  * Without it `check` could not see a change to a non-live persona's
  * declaration: profile mode resolves every persona but renders only the active
  * one, so editing the inactive persona's rule changed no managed byte. The
  * digest makes that edit visible as drift, which is what "every declaration is
  * validated" already promised.
+ *
+ * The raw config bytes are hashed as well as the parsed value: a comment or
+ * whitespace edit in `config.jsonc` changes the committed source but not the
+ * parsed object. Hashing the raw bytes makes it drift, exactly like a comment
+ * edit in a persona file (whose whole bytes are hashed below).
  */
 export async function sourceConfigDigest(repoRoot: string, config: Config): Promise<string> {
+  const configBytes = await readBoundedBytes(join(repoRoot, CONFIG_PATH), CONFIG_PATH, {
+    action: 'make the config readable and re-run',
+    maxBytes: MANAGED_FILE_MAX_BYTES,
+  });
   const files: string[] = [];
   for (const directory of SOURCE_DIRECTORIES) {
     await listSourceFiles(repoRoot, directory, files);
@@ -77,5 +88,7 @@ export async function sourceConfigDigest(repoRoot: string, config: Config): Prom
     });
     entries.push({ path, sha256: sha256Hex(bytes) });
   }
-  return sha256Hex(canonicalJson({ config, files: entries }));
+  return sha256Hex(
+    canonicalJson({ configRawSha256: sha256Hex(configBytes), config, files: entries }),
+  );
 }

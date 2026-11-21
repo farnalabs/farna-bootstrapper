@@ -742,11 +742,15 @@ export function resolveSource(
           .map((persona) => persona.id)
           .filter((id) => id !== active)
           .sort(compareCodepoints);
-  // Profile mode is forced only when a persona declares a boundary capability
-  // the target carries at the workspace level and nowhere else. Otherwise the
-  // selection is a choice, and every other persona is silently not live unless
-  // the run says so: that is W109, at info severity.
-  const forced = resolved.some((persona) =>
+  // Profile mode is forced only when the **live** persona declares a boundary
+  // capability the target carries at the workspace level and nowhere else.
+  // An inactive persona's `mcp` or `hook` does not force the mode: it is not
+  // emitted, so warning that the selection was forced would blame a declaration
+  // that is not in the profile. Otherwise the selection is a choice, and every
+  // other persona is silently not live unless the run says so: that is W109, at
+  // info severity.
+  const forcingScope = active === null ? resolved : resolved.filter((p) => p.id === active);
+  const forced = forcingScope.some((persona) =>
     persona.resources.some((resource) =>
       (PROFILE_FORCING_KINDS as readonly string[]).includes(resource.kind),
     ),
@@ -809,9 +813,14 @@ export function resolveSource(
     skills: live.skills,
     commands: live.commands,
     hooks: live.hooks,
+    // Every resolved persona's source-derived warnings, not only the live
+    // persona's: a warning carries its own `persona` and describes a
+    // declaration that was validated, so dropping a non-live persona's W101 or
+    // W112 would hide a real loss from the run that resolved it. The lockfile
+    // records the same set, scoped by persona.
     warnings: sortWarnings([
       ...sourceWarnings,
-      ...personas.flatMap((persona) => persona.warnings),
+      ...resolved.flatMap((persona) => persona.warnings),
       ...profileWarnings,
     ]),
   };

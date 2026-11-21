@@ -6,7 +6,7 @@ import {
   MANAGED_OUTPUT_FILES,
   SUPPORTED_TARGETS,
 } from '../core/constants.js';
-import { driftRefused, pathUnsafe, writeFailed } from '../core/errors.js';
+import { driftRefused, FarnaError, pathUnsafe, writeFailed } from '../core/errors.js';
 import { decodeUtf8, describeFsError, readBoundedBytes } from '../core/fs.js';
 import { compareCodepoints, sha256Hex } from '../core/json.js';
 import { containedTarget, lstatOrUndefined } from '../core/paths.js';
@@ -200,9 +200,33 @@ export async function planOrphans(
 export type RemovedOrphan = { path: string; status: 'removed' | 'missing' };
 
 /**
+ * Re-throw a removal failure with the paths this run already removed named. The
+ * failure is true of one path and false of the run: earlier removals happened,
+ * so the tree is partially updated and the reader must be told which paths are
+ * gone. This is the same honesty the commit failure carries.
+ */
+function removalFailure(error: unknown, removed: readonly RemovedOrphan[]): unknown {
+  const paths = removed.filter((entry) => entry.status === 'removed').map((entry) => entry.path);
+  if (!(error instanceof FarnaError) || paths.length === 0) {
+    return error;
+  }
+  return new FarnaError(
+    error.code,
+    `${error.message}; this run already removed ${paths.length} recorded path(s) (${paths.join(', ')}) before the removal failed, so the tree is partially updated`,
+    {
+      ...(error.subject === undefined ? {} : { subject: error.subject }),
+      action:
+        're-run generate after fixing the filesystem; the lockfile still records the removed paths',
+      cause: error,
+    },
+  );
+}
+
+/**
  * Remove the preflighted orphans, re-checking each one immediately before the
  * `rm`. A path that vanished since the preflight is reported as `missing`; a
- * failure names the path and never pretends otherwise.
+ * failure names the path, and every path already removed this run, rather than
+ * pretending the tree is unchanged.
  */
 export async function removeOrphans(
   repoRoot: string,
@@ -210,25 +234,29 @@ export async function removeOrphans(
 ): Promise<RemovedOrphan[]> {
   const removed: RemovedOrphan[] = [];
   for (const entry of entries) {
-    const inspection = await inspectOrphan(repoRoot, entry);
-    if (inspection.kind !== 'removable') {
-      removed.push({ path: entry.path, status: 'missing' });
-      continue;
-    }
-    const absolute = await containedTarget(repoRoot, entry.path);
     try {
-      await rm(absolute, { force: true });
+      const inspection = await inspectOrphan(repoRoot, entry);
+      if (inspection.kind !== 'removable') {
+        removed.push({ path: entry.path, status: 'missing' });
+        continue;
+      }
+      const absolute = await containedTarget(repoRoot, entry.path);
+      try {
+        await rm(absolute, { force: true });
+      } catch (error) {
+        throw writeFailed(
+          `cannot remove ${entry.path} (${describeFsError(error)}); the tree is partially updated`,
+          {
+            subject: entry.path,
+            action: 'remove the file deliberately, then re-run generate',
+            cause: error,
+          },
+        );
+      }
+      removed.push({ path: entry.path, status: 'removed' });
     } catch (error) {
-      throw writeFailed(
-        `cannot remove ${entry.path} (${describeFsError(error)}); the tree is partially updated`,
-        {
-          subject: entry.path,
-          action: 'remove the file deliberately, then re-run generate',
-          cause: error,
-        },
-      );
+      throw removalFailure(error, removed);
     }
-    removed.push({ path: entry.path, status: 'removed' });
   }
   return removed;
 }

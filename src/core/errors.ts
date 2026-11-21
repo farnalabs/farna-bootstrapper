@@ -31,14 +31,15 @@ export class FarnaError extends Error {
   }
 
   /**
-   * The one-line form the text reporter prints. A subject is escaped: it can
-   * come from a hand-edited lockfile or a renderer, and a raw control character
-   * would rewrite the terminal line the diagnostic appears on.
+   * The one-line form the text reporter prints. The subject, the message and
+   * the action are all escaped: each can embed a source filename, a lockfile
+   * path or a foreign key from a hand-edited document, and a raw control
+   * character would rewrite the terminal lines the diagnostic appears on.
    */
   format(): string {
     const subject = this.subject === undefined ? '' : ` ${escapeControlCharacters(this.subject)}`;
-    const action = this.action === undefined ? '' : `\n  ${this.action}`;
-    return `${this.code}${subject}\n  ${this.message}${action}`;
+    const action = this.action === undefined ? '' : `\n  ${escapeControlCharacters(this.action)}`;
+    return `${this.code}${subject}\n  ${escapeControlCharacters(this.message)}${action}`;
   }
 }
 
