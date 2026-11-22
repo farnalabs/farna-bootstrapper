@@ -66,7 +66,7 @@
     "assert-pack": "node scripts/assert-pack.mjs"
   },
   "dependencies": {
-    "commander": "14.0.1",
+    "commander": "15.1.0",
     "jsonc-parser": "3.3.1",
     "rulesync": "43.11.0",
     "yaml": "2.9.1",
