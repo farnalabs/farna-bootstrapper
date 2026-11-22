@@ -1,4 +1,5 @@
-import { readFile } from 'node:fs/promises';
+import { appendFile, readFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { runCheck } from '../../src/cli/commands/check.js';
 import { runGenerate } from '../../src/cli/commands/generate.js';
@@ -6,6 +7,7 @@ import { UpstreamRenderTarget } from '../../src/render/upstream.js';
 import { createTempRepo, readText } from '../support/temp-repo.js';
 
 const AGENT_GOLDEN = new URL('./opencode-v1-builder.md', import.meta.url);
+const PRIMARY_AGENT_GOLDEN = new URL('./opencode-v1-primary-builder.md', import.meta.url);
 const CONFIG_GOLDEN = new URL('./opencode-v1.jsonc', import.meta.url);
 const HOOKS_GOLDEN = new URL('./opencode-v1-hooks.js', import.meta.url);
 
@@ -34,6 +36,22 @@ describe('opencodev1 golden output', () => {
       // The V1 permission map is a per-tool object, not the V2 ordered array.
       expect(actual).toContain('permission:\n  read:\n');
       expect(actual).not.toContain('permissions:');
+    } finally {
+      await repo.cleanup();
+    }
+  }, 30_000);
+
+  it('renders mode: primary when the persona declares it', async () => {
+    const repo = await createTempRepo('profile-v1');
+    try {
+      await appendFile(join(repo.root, '.farna/personas/builder.yaml'), 'mode: primary\n', 'utf8');
+      await runGenerate({ cwd: repo.root, dryRun: false }, new UpstreamRenderTarget());
+      const actual = await readText(repo.root, '.opencode/agents/builder.md');
+      const expected = await readFile(PRIMARY_AGENT_GOLDEN, 'utf8');
+
+      expect(actual).toBe(expected);
+      expect(actual).toContain('\nmode: primary\n');
+      expect(actual).toContain('name: builder');
     } finally {
       await repo.cleanup();
     }

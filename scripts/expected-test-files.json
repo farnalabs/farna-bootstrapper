@@ -29,6 +29,7 @@
     "tests/unit/opencode-v1-target.test.ts",
     "tests/unit/path-safety.test.ts",
     "tests/unit/permissions.test.ts",
+    "tests/unit/persona-mode.test.ts",
     "tests/unit/profile-mode.test.ts",
     "tests/unit/profile-ownership.test.ts",
     "tests/unit/redact.test.ts",

@@ -3,6 +3,7 @@ id: builder
 displayName: Builder
 purpose: Writes the change, runs the tests, and follows the house conventions.
 model: standard
+mode: primary
 resources:
   - rule/house-style
   - permission/builder-default

@@ -6,7 +6,7 @@
  */
 
 export const PRODUCT_NAME = 'farna-bootstrapper';
-export const PRODUCT_VERSION = '0.1.0';
+export const PRODUCT_VERSION = '0.1.1';
 /** The one source/schema version this build understands. */
 export const SCHEMA_VERSION = 1 as const;
 
@@ -33,6 +33,18 @@ export const RENDER_MODES = ['agent', 'profile'] as const;
 export type RenderMode = (typeof RENDER_MODES)[number];
 export const MODE_AGENT: RenderMode = 'agent';
 export const MODE_PROFILE: RenderMode = 'profile';
+
+/**
+ * The OpenCode per-agent `mode` values a persona may declare. `primary` makes
+ * the agent selectable as the main agent, `subagent` makes it callable only by
+ * another agent, and `all` makes it both. The value is OpenCode-facing: Claude
+ * Code has no such concept, so a declared mode there is reported (W117) and not
+ * emitted. `subagent` is the default when a persona declares no mode, which is
+ * the same default this tool emitted before the field existed.
+ */
+export const PERSONA_MODES = ['primary', 'subagent', 'all'] as const;
+export type PersonaMode = (typeof PERSONA_MODES)[number];
+export const DEFAULT_PERSONA_MODE: PersonaMode = 'subagent';
 
 /** The source root, relative to the repository root. */
 export const ROOT_DIR = '.farna';
@@ -373,6 +385,7 @@ export const WARNING_CODES = [
   'W114_RENDERER_INTEGRITY_UNVERIFIED',
   'W115_CREDENTIAL_IN_URL',
   'W116_SECRET_IN_ARGS',
+  'W117_PERSONA_MODE_IGNORED',
 ] as const;
 
 export type WarningCode = (typeof WARNING_CODES)[number];
@@ -406,4 +419,8 @@ export const WARNING_SEVERITY: Record<WarningCode, Severity> = {
   W114_RENDERER_INTEGRITY_UNVERIFIED: 'medium',
   W115_CREDENTIAL_IN_URL: 'high',
   W116_SECRET_IN_ARGS: 'high',
+  // W117 is info: the declaration is not carried, but nothing the target
+  // supports is lost. Claude Code has no primary/subagent mode, and the agent
+  // file is still emitted with every capability it can carry.
+  W117_PERSONA_MODE_IGNORED: 'info',
 };

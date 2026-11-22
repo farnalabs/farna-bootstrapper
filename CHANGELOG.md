@@ -6,6 +6,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before 1.0.0, a minor
 release may contain a breaking change; every change of that kind is listed under **Changed**.
 
+## [0.1.1] - 2026-11-22
+
+### Added
+
+- **Persona `mode`.** A persona may declare `mode: primary`, `subagent` or `all`, which both
+  OpenCode targets emit as the per-agent `mode`. The default when the key is absent is `subagent`,
+  so an existing source renders byte for byte as before. The value composes with `extends`: a
+  derived persona inherits its base's mode and may override it.
+- **`W117_PERSONA_MODE_IGNORED`.** Claude Code has no primary/subagent mode, so a persona that
+  declares `mode` on the `claudecode` target is reported at info severity, naming the persona and
+  the target, and the emitted Claude Code file carries no `mode` key.
+
+Both OpenCode examples now declare `mode: primary` on their live persona, and the README documents
+the field, its composition and the Claude Code warning.
+
 ## [0.1.0] - 2026-11-22
 
 The first public release. `farna-bootstrapper` compiles named agent personas and their resources
@@ -88,4 +103,5 @@ output still matches the source.
   runner does not grant), the POSIX mode assertions, the FIFO cases and the install-layout suite are
   skipped on Windows; CI runs them on Linux.
 
+[0.1.1]: https://github.com/farnalabs/farna-bootstrapper/releases/tag/v0.1.1
 [0.1.0]: https://github.com/farnalabs/farna-bootstrapper/releases/tag/v0.1.0

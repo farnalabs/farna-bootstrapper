@@ -4,9 +4,11 @@ import { stringify } from 'yaml';
 import type { ResolvedPersona, ResolvedSource } from '../compose/resolve.js';
 import {
   COMMANDS_DIR,
+  DEFAULT_PERSONA_MODE,
   isOpencodeTarget,
   OPENCODE_V1_TARGET,
   type OpencodeTarget,
+  type PersonaMode,
   RULESYNC_HOOKS_FILE,
   RULESYNC_MCP_FILE,
   SKILL_FILE_NAME,
@@ -64,7 +66,7 @@ export type ClaudeBlock = {
 };
 
 export type OpencodePersonaSection = {
-  mode: 'subagent';
+  mode: PersonaMode;
   model?: string;
   permission?: Record<string, Record<string, 'allow' | 'deny'>>;
 };
@@ -129,7 +131,10 @@ export function opencodePersonaFrontmatter(
   persona: ResolvedPersona,
   target: OpencodeTarget,
 ): PersonaFrontmatter {
-  const section: OpencodePersonaSection = { mode: 'subagent' };
+  // The persona's own OpenCode mode, or the measured default. This is the one
+  // place the value is chosen, so the emitted file and the containment gate
+  // cannot drift.
+  const section: OpencodePersonaSection = { mode: persona.mode ?? DEFAULT_PERSONA_MODE };
   if (persona.model !== undefined) {
     section.model = persona.model;
   }

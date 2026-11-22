@@ -242,6 +242,26 @@ resources:
   - permission/python-tools
 ```
 
+A persona may also declare **`mode`**, which selects its OpenCode agent mode: `primary` makes the
+agent selectable as the main agent, `subagent` makes it callable only by another agent, and `all`
+makes it both. `subagent` is the default when the key is absent. The value is source-derived and
+composes with `extends`: a derived persona inherits its base's `mode`, and a child declaration
+overrides it. Both OpenCode targets emit it; Claude Code has no primary/subagent distinction, so a
+declared `mode` there is reported as `W117_PERSONA_MODE_IGNORED` (info) and no `mode` key is
+written.
+
+```yaml
+# .farna/personas/builder.yaml — a primary agent on an OpenCode target
+kind: persona
+id: builder
+displayName: Builder
+purpose: Writes code, runs the tests, and follows the house conventions.
+mode: primary
+resources:
+  - rule/house-style
+  - permission/builder-default
+```
+
 ```markdown
 ---
 kind: rule
@@ -367,6 +387,7 @@ tick).
 |---|---|---|---|---|---|---|
 | `rule` | native | — | native | — | native | — |
 | `model` | native | — | native | — | native | — |
+| `mode` (`primary`/`subagent`/`all`) | not carried (`W117`) | — | native | — | native | — |
 | `permission` | native (allow-list via opt-in) | — | native (deny-list; `write` folds into `edit`, W112) | — | native (per-tool map; `write` folds into `edit`, W112) | — |
 | `mcp` | not carried | — | not carried in agent mode | profile only (`mcp.servers`) | not carried in agent mode | profile only (flat `mcp.<name>`) |
 | `skill` | not carried | — | not carried in agent mode | profile only | not carried in agent mode | profile only |
@@ -696,6 +717,7 @@ is part of the code's definition, never set by a flag.
 | `W114_RENDERER_INTEGRITY_UNVERIFIED` | medium | No npm lock record at the install root supplied the renderer's tarball integrity. The pinned version is still enforced; this is a provenance gap, never a clean pass. |
 | `W115_CREDENTIAL_IN_URL` | high | An MCP `http` URL carries a credential-shaped query parameter (`token`, `api_key`, `apikey`, `access_token`, `secret`, `password`). The value is never echoed. |
 | `W116_SECRET_IN_ARGS` | high | An MCP `args` literal looks like a credential (`sk-`, `ghp_`, `glpat-`, `npm_`, `AKIA`, a JWT, or a long token-shaped string). The value is never echoed; put the credential in `env` or `headers` instead. |
+| `W117_PERSONA_MODE_IGNORED` | info | A persona declares `mode`, which Claude Code cannot carry: it has no primary/subagent mode. The persona and target are named and no `mode` key is written; the agent file is otherwise emitted in full. |
 
 ### Exit codes
 
@@ -970,9 +992,10 @@ These are deliberate limits of the current controls, stated rather than implied 
 - **An empty directory is left after a skill's last file is removed.** Only recorded regular files
   are removed; the now-empty `<skill>/` (or `scripts/`) directory is harmless and carries no
   declaration.
-- **The profile-mode per-agent frontmatter keeps `mode: subagent`.** The persona's own harness file
-  is unchanged by profile mode; promoting the live persona to OpenCode's primary `mode` is a
-  separate product decision, not a rendering detail, and is not claimed here.
+- **The per-agent `mode` is source-derived, not implied by the render mode.** A persona's declared
+  `mode` (default `subagent`) is emitted on both OpenCode targets; profile mode does not promote the
+  live persona implicitly. Claude Code has no primary/subagent mode, so a declaration there is
+  reported (`W117`) and no `mode` key is written.
 - **No coverage gate.** There is no coverage provider or threshold in this slice. CI runs lint,
   type-check, tests (with a minimum count and real-renderer suite assertions), a dependency audit at
   `moderate`, and a published-tarball check.

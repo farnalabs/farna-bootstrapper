@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { ID_MAX_LENGTH, ID_RE } from '../core/constants.js';
+import { ID_MAX_LENGTH, ID_RE, PERSONA_MODES } from '../core/constants.js';
 import { PERMISSION_CATEGORIES, PERMISSION_KEYS } from '../permissions/permissions.js';
 
 export const idSchema = z.string().regex(ID_RE, 'must be lower-case kebab-case').max(ID_MAX_LENGTH);
@@ -12,6 +12,15 @@ export const personaSchema = z
     purpose: z.string().min(1).max(120),
     resources: z.array(z.string().min(1)).max(200),
     model: idSchema.optional(),
+    /**
+     * The OpenCode agent mode this persona is emitted with. It is
+     * OpenCode-facing: `primary` is selectable as the main agent, `subagent`
+     * is callable by another agent, and `all` is both. Absent means the
+     * emitted default, `subagent`. A composed persona inherits the base's mode
+     * and may override it, so a chain declares at most one effective value.
+     * Claude Code has no such concept and reports W117 instead of carrying it.
+     */
+    mode: z.enum(PERSONA_MODES).optional(),
     extends: idSchema.optional(),
   })
   .superRefine((persona, ctx) => {

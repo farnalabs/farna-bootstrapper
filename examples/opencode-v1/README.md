@@ -27,7 +27,10 @@ examples/opencode-v1/
 
 `builder` declares `mcp`, `skill`, `command` and `hook`. The MCP server and the hook are boundary
 capabilities OpenCode carries only at the workspace level, so profile mode is **required**, not a
-choice. `reviewer` is still resolved and validated, but it is not live, and every run reports that
+choice. `builder` also declares `mode: primary`, so the emitted agent is selectable as a main agent
+rather than only as a subagent.
+
+`reviewer` is still resolved and validated, but it is not live, and every run reports that
 (`notLive`) rather than leaving it silent.
 
 ## Run it

@@ -5,6 +5,7 @@ import type { ResolvedPersona, ResolvedSource } from '../compose/resolve.js';
 import {
   AGENT_FILE_EXT,
   CLAUDE_AGENTS_DIR,
+  DEFAULT_PERSONA_MODE,
   isOpencodeTarget,
   OPENCODE_AGENTS_DIR,
   OPENCODE_COMMANDS_DIR,
@@ -310,7 +311,13 @@ function verifyOpencodeV2Agent(
   }
   assertKeySet(keys, parsed.frontmatter, persona, managedPath);
   assertField(parsed.frontmatter, 'description', persona.purpose, managedPath, persona);
-  assertField(parsed.frontmatter, 'mode', 'subagent', managedPath, persona);
+  assertField(
+    parsed.frontmatter,
+    'mode',
+    persona.mode ?? DEFAULT_PERSONA_MODE,
+    managedPath,
+    persona,
+  );
   assertField(parsed.frontmatter, 'model', persona.model, managedPath, persona);
 
   const expectedPermissions = persona.opencode.records;
@@ -358,7 +365,13 @@ function verifyOpencodeV1Agent(
   assertKeySet(keys, parsed.frontmatter, persona, managedPath);
   assertField(parsed.frontmatter, 'name', persona.id, managedPath, persona);
   assertField(parsed.frontmatter, 'description', persona.purpose, managedPath, persona);
-  assertField(parsed.frontmatter, 'mode', 'subagent', managedPath, persona);
+  assertField(
+    parsed.frontmatter,
+    'mode',
+    persona.mode ?? DEFAULT_PERSONA_MODE,
+    managedPath,
+    persona,
+  );
   assertField(parsed.frontmatter, 'model', persona.model, managedPath, persona);
 
   const expected: Record<string, Record<string, string>> = {};

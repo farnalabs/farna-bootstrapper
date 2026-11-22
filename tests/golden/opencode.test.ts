@@ -1,4 +1,5 @@
-import { readFile } from 'node:fs/promises';
+import { appendFile, readFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { runCheck } from '../../src/cli/commands/check.js';
 import { runGenerate } from '../../src/cli/commands/generate.js';
@@ -6,6 +7,7 @@ import { UpstreamRenderTarget } from '../../src/render/upstream.js';
 import { createTempRepo, listFiles, readText } from '../support/temp-repo.js';
 
 const AGENT_GOLDEN = new URL('./opencode-builder.md', import.meta.url);
+const PRIMARY_AGENT_GOLDEN = new URL('./opencode-primary-builder.md', import.meta.url);
 
 /**
  * The OpenCode artefacts, pinned through the real renderer. The agent file pins
@@ -27,6 +29,25 @@ describe('opencode golden output', () => {
       expect(actual).not.toContain('FBS_RULE_REVIEWER_8d2f');
       expect(actual).not.toContain('name: builder');
       expect(actual).toContain("  - action: subagent\n    resource: '*'\n    effect: deny\n");
+    } finally {
+      await repo.cleanup();
+    }
+  }, 30_000);
+
+  it('renders mode: primary when the persona declares it', async () => {
+    const repo = await createTempRepo('opencode');
+    try {
+      await appendFile(join(repo.root, '.farna/personas/builder.yaml'), 'mode: primary\n', 'utf8');
+      await runGenerate({ cwd: repo.root, dryRun: false }, new UpstreamRenderTarget());
+      const actual = await readText(repo.root, '.opencode/agents/builder.md');
+      const expected = await readFile(PRIMARY_AGENT_GOLDEN, 'utf8');
+
+      expect(actual).toBe(expected);
+      expect(actual).toContain('\nmode: primary\n');
+      // The other persona keeps the default.
+      expect(await readText(repo.root, '.opencode/agents/reviewer.md')).toContain(
+        '\nmode: subagent\n',
+      );
     } finally {
       await repo.cleanup();
     }

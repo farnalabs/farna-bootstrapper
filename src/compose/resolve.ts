@@ -6,6 +6,7 @@ import {
   MODE_AGENT,
   MODE_PROFILE,
   OPENCODE_WORKSPACE_KINDS,
+  type PersonaMode,
   PROFILE_FORCING_KINDS,
   PROFILE_TARGETS,
   type RenderMode,
@@ -130,6 +131,13 @@ export type ResolvedPersona = {
   extends?: string;
   /** The full composition chain, base first, this persona last. */
   chain: string[];
+  /**
+   * The effective OpenCode agent mode this persona declares, with a composed
+   * base's value overridden by its children. Absent means no persona in the
+   * chain declared one, so the target emits its default (`subagent`). The
+   * field is not emitted on Claude Code, which has no such concept.
+   */
+  mode?: PersonaMode;
   rules: ResolvedRule[];
   mcp: ResolvedMcp[];
   skills: ResolvedSkill[];
@@ -303,6 +311,23 @@ function resolveModel(
   return distinct[0];
 }
 
+/**
+ * The mode a composed persona declares. A mode is inherited from the base and
+ * overridden by the most derived persona that declares one; a chain with no
+ * declaration returns `undefined`, which is the target's default. Unlike the
+ * model there is no conflict: the child is the more specific declaration, so
+ * overriding is the intended composition.
+ */
+function resolveMode(chain: LoadedPersona[]): PersonaMode | undefined {
+  for (let index = chain.length - 1; index >= 0; index -= 1) {
+    const declared = chain[index]?.mode;
+    if (declared !== undefined) {
+      return declared;
+    }
+  }
+  return undefined;
+}
+
 function assertSupportedRef(
   persona: LoadedPersona,
   ref: string,
@@ -403,10 +428,27 @@ function resolveOne(
   mode: RenderMode,
 ): ResolvedPersona {
   const model = resolveModel(chain, config, target);
+  const personaMode = resolveMode(chain);
   const resources = new Map<string, ResolvedResource>();
   const permissions = emptyResolvedPermissions();
   const warnings: Warning[] = [];
   const seenRefs = new Set<string>();
+
+  // Claude Code models one agent per file and has no primary/subagent axis, so
+  // a declared mode has no representation there. The declaration is still
+  // valid; dropping it silently would hide that the source asked for something
+  // the target cannot do. The warning names both the persona and the target,
+  // and the emitted file carries no `mode` key at all.
+  if (target === 'claudecode' && personaMode !== undefined) {
+    warnings.push(
+      warning({
+        code: 'W117_PERSONA_MODE_IGNORED',
+        persona: persona.id,
+        target,
+        message: `persona "${persona.id}" declares mode "${personaMode}", which claudecode cannot carry: Claude Code has no primary/subagent mode, so no mode key is written`,
+      }),
+    );
+  }
 
   const missing = (kind: string, id: string, contributor: LoadedPersona): never => {
     const dirs: Record<string, string> = {
@@ -605,6 +647,7 @@ function resolveOne(
     purpose: persona.purpose,
     ...(persona.extends === undefined ? {} : { extends: persona.extends }),
     chain: chain.map((entry) => entry.id),
+    ...(personaMode === undefined ? {} : { mode: personaMode }),
     rules: resolvedRules,
     mcp: resolvedMcp,
     skills: resolvedSkills,
