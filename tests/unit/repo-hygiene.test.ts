@@ -63,6 +63,24 @@ describe('constants and package metadata', () => {
     // The golden file is compared byte for byte; a CRLF checkout must not fail
     // on a clean clone. The consumer patterns are written by `init`, not here.
     expect(attributes).toContain('/tests/golden/** text eol=lf');
+    // A CRLF checkout of the source root would change `configDigest`, so the
+    // whole `.farna/` tree is pinned here as well as in a consumer repository.
+    expect(attributes).toContain('/.farna/** text eol=lf');
+  });
+
+  it('publishes no source maps and ships SECURITY.md', async () => {
+    const build = JSON.parse(
+      await readFile(new URL('../../tsconfig.build.json', import.meta.url), 'utf8'),
+    ) as { compilerOptions?: { declarationMap?: boolean; sourceMap?: boolean } };
+    // The published build emits no maps: a map without `sourcesContent` is a
+    // dangling reference to files the tarball does not ship.
+    expect(build.compilerOptions?.sourceMap).not.toBe(true);
+    expect(build.compilerOptions?.declarationMap).not.toBe(true);
+
+    const manifest = JSON.parse(
+      await readFile(new URL('../../package.json', import.meta.url), 'utf8'),
+    ) as { files?: string[] };
+    expect(manifest.files).toContain('SECURITY.md');
   });
 
   it('names every warning code in the README', async () => {

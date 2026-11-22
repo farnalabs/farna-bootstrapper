@@ -43,6 +43,7 @@ describe('init', () => {
       // `check` compares bytes, so a CRLF checkout must not look like drift.
       const attributes = await readText(repo.root, '.gitattributes');
       expect(attributes).toContain('/.claude/agents/** text eol=lf');
+      expect(attributes).toContain('/.farna/** text eol=lf');
       expect(attributes).toContain('/.farna/lock.json text eol=lf');
       // The rename moved a file this run created, never a link it followed.
       expect((await lstat(join(repo.root, '.gitignore'))).isSymbolicLink()).toBe(false);
@@ -60,6 +61,27 @@ describe('init', () => {
         expect(result.nextStep).toContain(fragment);
       }
       expect(result.nextStep).toContain('OpenCode 2.x');
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
+  it('reports only the directories it actually created', async () => {
+    const repo = await createEmptyTempDir();
+    try {
+      // Pre-create the source root and one resource directory as a user might.
+      await mkdir(join(repo.root, '.farna/personas'), { recursive: true });
+      const result = await runInit(repo.root);
+
+      // A pre-existing directory is not a created one, and the root itself is
+      // created when it was absent.
+      expect(result.created).not.toContain('.farna/');
+      expect(result.created).not.toContain('.farna/personas/');
+      expect(result.created).toContain('.farna/resources/');
+      expect(result.created).toContain('.farna/resources/rules/');
+      // A second run still refuses, so `created` cannot be read as an install
+      // marker for a source root this invocation did not create.
+      await expect(runInit(repo.root)).rejects.toBeInstanceOf(FarnaError);
     } finally {
       await repo.cleanup();
     }

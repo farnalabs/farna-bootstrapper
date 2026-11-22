@@ -233,6 +233,7 @@ export async function runInit(repoRoot: string): Promise<InitResult> {
       : appendMissingLines(gitattributesOriginal, GITATTRIBUTES_LINES);
 
   const createdDirectories: string[] = [];
+  const createdDirectorySubjects: string[] = [];
   const createdFiles: string[] = [];
   const created = new Set<string>();
   const updated = new Set<string>();
@@ -257,6 +258,7 @@ export async function runInit(repoRoot: string): Promise<InitResult> {
         return;
       }
       createdDirectories.push(path);
+      createdDirectorySubjects.push(subject);
     }
   };
 
@@ -360,17 +362,9 @@ export async function runInit(repoRoot: string): Promise<InitResult> {
     ok: true,
     root: rootRelative,
     configPath: configRelative,
-    created: [
-      ...created,
-      `${ROOT_DIR}/${PERSONAS_DIR}/`,
-      `${ROOT_DIR}/${RESOURCES_DIR}/`,
-      `${ROOT_DIR}/${RESOURCES_DIR}/${RULES_DIR}/`,
-      `${ROOT_DIR}/${RESOURCES_DIR}/${PERMISSIONS_DIR}/`,
-      `${ROOT_DIR}/${RESOURCES_DIR}/${MCP_DIR}/`,
-      `${ROOT_DIR}/${RESOURCES_DIR}/${SKILLS_DIR}/`,
-      `${ROOT_DIR}/${RESOURCES_DIR}/${COMMANDS_DIR}/`,
-      `${ROOT_DIR}/${RESOURCES_DIR}/${HOOKS_DIR}/`,
-    ],
+    // Only directories this invocation actually created. A source root that
+    // already has `resources/` must not be reported as though `init` made it.
+    created: [...created, ...createdDirectorySubjects.map((directory) => `${directory}/`)],
     updated: [...updated],
     nextStep: `Add personas to ${ROOT_DIR}/${PERSONAS_DIR}/*${PERSONA_FILE_EXT}, rules to ${ROOT_DIR}/${RESOURCES_DIR}/${RULES_DIR}/*${RULE_FILE_EXT}, permissions to ${ROOT_DIR}/${RESOURCES_DIR}/${PERMISSIONS_DIR}/*${PERMISSION_FILE_EXT}, MCP servers to ${ROOT_DIR}/${RESOURCES_DIR}/${MCP_DIR}/*${STRUCTURED_RESOURCE_FILE_EXT}, skills to ${ROOT_DIR}/${RESOURCES_DIR}/${SKILLS_DIR}/<id>/${SKILL_FILE_NAME}, commands to ${ROOT_DIR}/${RESOURCES_DIR}/${COMMANDS_DIR}/*${COMMAND_FILE_EXT} and hooks to ${ROOT_DIR}/${RESOURCES_DIR}/${HOOKS_DIR}/*${STRUCTURED_RESOURCE_FILE_EXT}, then run "${PRODUCT_NAME} generate". Two OpenCode targets are supported: "opencode" for OpenCode ${OPENCODE_SUPPORTED_MAJOR}.x (@opencode/cli) and "opencodev1" for OpenCode ${OPENCODE_V1_SUPPORTED_MAJOR}.x (opencode-ai). For OpenCode profile mode, replace the "targets" block in ${CONFIG_PATH} with { "opencode": { "active": "<persona-id>" } } (or the same for "opencodev1"; exactly one target is configured per run, so this replaces the claudecode target rather than adding to it), or pass --persona <id> to generate and check. The active persona then owns the workspace: opencode.jsonc is written at the repository root, and its skills, commands and hooks under .opencode/. Agent mode is the default when no active persona is set.`,
   };

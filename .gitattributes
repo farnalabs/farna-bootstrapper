@@ -3,9 +3,13 @@
 # core.autocrlf=true) would fail on a clean clone, so it is pinned to LF.
 /tests/golden/** text eol=lf
 
-# Generated files in a CONSUMER repository are pinned by
-# `farna-bootstrapper init`, which merges these two patterns into that
-# repository's own .gitattributes:
+# The source tree and every generated file are compared byte for byte, so a
+# checkout that rewrites them to CRLF would report drift the source never
+# declared. `farna-bootstrapper init` merges the same class of patterns into a
+# CONSUMER repository's own .gitattributes:
+#   /.farna/** text eol=lf
 #   /.claude/agents/** text eol=lf
-#   /.farna/lock.json text eol=lf
+#   /.opencode/** text eol=lf
+#   /opencode.jsonc text eol=lf
 # They are comments here because this repository has no generated output.
+/.farna/** text eol=lf

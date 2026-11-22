@@ -139,7 +139,7 @@ export const CLAUDE_AGENTS_DIR = `${CLAUDE_DIR}/agents`;
 /**
  * The OpenCode paths this slice writes, relative to the repository root.
  * `commands` is plural and the workspace config is `opencode.jsonc`, both
- * measured at rulesync 43.11.0; the measured record is `m0-measurements.md`.
+ * measured at rulesync 43.11.0.
  */
 export const OPENCODE_DIR = '.opencode';
 export const OPENCODE_AGENTS_DIR = `${OPENCODE_DIR}/agents`;
@@ -223,6 +223,9 @@ export const GITIGNORE_LINES: readonly string[] = [
  * config does not leave the new outputs unpinned.
  */
 export const GITATTRIBUTES_LINES: readonly string[] = [
+  // The whole source root, so a CRLF checkout cannot change `configDigest` or
+  // any persona and resource byte between two machines.
+  `/${ROOT_DIR}/** text eol=lf`,
   `/${CLAUDE_AGENTS_DIR}/** text eol=lf`,
   `/${OPENCODE_AGENTS_DIR}/** text eol=lf`,
   `/${OPENCODE_COMMANDS_DIR}/** text eol=lf`,
@@ -291,7 +294,7 @@ export const SUPPORTED_RESOURCE_KINDS: readonly Capability[] = [
 ];
 
 /**
- * The capability class of each resource kind (schema.md section 1.2). A dropped
+ * The capability class of each resource kind. A dropped
  * boundary capability is HIGH and can refuse; a dropped content capability is
  * MEDIUM and can only produce a loss.
  */
@@ -375,7 +378,7 @@ export const WARNING_CODES = [
 export type WarningCode = (typeof WARNING_CODES)[number];
 
 /**
- * A warning's default severity is a property of its code (schema.md section 7.2).
+ * A warning's default severity is a property of its code.
  * W106 is the only code whose severity depends on what it removes: a deny that
  * takes away an allow is medium, every other stricter-wins report is info.
  *

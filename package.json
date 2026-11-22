@@ -22,7 +22,8 @@
     "CHANGELOG.md",
     "LICENSE",
     "NOTICE",
-    "README.md"
+    "README.md",
+    "SECURITY.md"
   ],
   "engines": {
     "node": ">=22.22.0"
@@ -51,7 +52,8 @@
   ],
   "scripts": {
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "build": "tsc -p tsconfig.build.json",
+    "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
+    "build": "npm run clean && tsc -p tsconfig.build.json",
     "prepare": "npm run build",
     "prepack": "npm run build",
     "lint": "biome check .",

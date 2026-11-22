@@ -10,11 +10,12 @@ import { describe, expect, it } from 'vitest';
 const execFileAsync = promisify(execFile);
 const SCRIPT = fileURLToPath(new URL('../../scripts/assert-pack.mjs', import.meta.url));
 
-const BUILD_SCRIPT = `import { mkdirSync, writeFileSync } from 'node:fs';
+const BUILD_SCRIPT = `import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 mkdirSync('dist/cli', { recursive: true });
 writeFileSync('dist/cli/main.js', '#!/usr/bin/env node\\n');
 writeFileSync('dist/index.js', 'export {};\\n');
 writeFileSync('dist/index.d.ts', 'export {};\\n');
+if (existsSync('emit-map')) writeFileSync('dist/index.js.map', '{}');
 `;
 
 type Fixture = {
@@ -27,12 +28,17 @@ async function fixture(options: {
   staleDist: boolean;
   legal?: boolean;
   leak?: boolean;
+  strayRoot?: boolean;
+  sourceMap?: boolean;
 }): Promise<Fixture> {
   const root = await mkdtemp(join(tmpdir(), 'fbs-pack-'));
   const legal = options.legal !== false;
   const files = legal
-    ? ['dist', 'package.json', 'LICENSE', 'NOTICE', 'README.md', 'CHANGELOG.md']
+    ? ['dist', 'package.json', 'LICENSE', 'NOTICE', 'README.md', 'CHANGELOG.md', 'SECURITY.md']
     : ['dist', 'package.json'];
+  if (options.strayRoot === true) {
+    files.push('notes.txt');
+  }
   await writeFile(
     join(root, 'package.json'),
     `${JSON.stringify(
@@ -53,6 +59,16 @@ async function fixture(options: {
     await writeFile(join(root, 'NOTICE'), 'Notice\n', 'utf8');
     await writeFile(join(root, 'README.md'), '# pack-fixture\n', 'utf8');
     await writeFile(join(root, 'CHANGELOG.md'), '# Changelog\n', 'utf8');
+    await writeFile(join(root, 'SECURITY.md'), '# Security\n', 'utf8');
+  }
+  if (options.strayRoot === true) {
+    // A file under `files` that the allowlist does not name. It is not in any
+    // forbidden directory, so only an allowlist can catch it.
+    await writeFile(join(root, 'notes.txt'), 'internal notes\n', 'utf8');
+  }
+  if (options.sourceMap === true) {
+    // The build script emits `dist/index.js.map` when this marker is present.
+    await writeFile(join(root, 'emit-map'), '', 'utf8');
   }
   if (options.leak === true) {
     await mkdir(join(root, 'src'), { recursive: true });
@@ -92,6 +108,8 @@ describe('the published-tarball gate', () => {
       expect(existsSync(join(project.root, 'dist'))).toBe(false);
       const result = await runGate(project.root);
       expect(result.code).toBe(0);
+      // The concurrency lock is released on the normal path.
+      expect(existsSync(join(project.root, 'dist.farna-pack-gate.lock'))).toBe(false);
     } finally {
       await project.cleanup();
     }
@@ -141,6 +159,37 @@ describe('the published-tarball gate', () => {
       expect(result.code).toBe(1);
       expect(result.stderr).toContain('repository-only path');
       expect(result.stderr).toContain('src/leak.ts');
+    } finally {
+      await project.cleanup();
+    }
+  });
+
+  it('fails when a root file outside the allowlist reaches the tarball', async () => {
+    // Not in a forbidden directory: only the allowlist can refuse it.
+    const project = await fixture({ prepack: true, staleDist: false, strayRoot: true });
+    try {
+      const result = await runGate(project.root);
+      expect(result.code).toBe(1);
+      expect(result.stderr).toContain('repository-only path');
+      expect(result.stderr).toContain('notes.txt');
+      expect(result.stderr).toContain('allowlist');
+    } finally {
+      await project.cleanup();
+    }
+  });
+
+  it('fails when the tarball carries a source map', async () => {
+    const project = await fixture({
+      prepack: true,
+      staleDist: false,
+      sourceMap: true,
+    });
+    try {
+      const result = await runGate(project.root);
+      expect(result.code).toBe(1);
+      expect(result.stderr).toContain('source map');
+      expect(result.stderr).toContain('dist/index.js.map');
+      expect(result.stderr).toContain('declarationMap');
     } finally {
       await project.cleanup();
     }
