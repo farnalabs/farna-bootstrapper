@@ -8,7 +8,15 @@ release may contain a breaking change; every change of that kind is listed under
 
 ## [Unreleased]
 
-Nothing yet.
+### Added
+
+- **OpenCode 1.x support (`opencodev1`).** A second OpenCode target, alongside `opencode` (2.x),
+  which writes the same paths in OpenCode 1.x shapes: V1 agent frontmatter with `name` and the
+  per-tool `permission` map, the flat `mcp.<name>` map with `enabled: true`, V1 command frontmatter
+  and the `RulesyncHooksPlugin` module. Profile mode works for both OpenCode targets, and a target
+  switch rewrites the recorded paths in place rather than orphaning them. Configuring both OpenCode
+  targets in one run is `F001`. `examples/opencode-v1/` is the new profile-mode example;
+  `examples/opencode-profile/` is renamed `examples/opencode-v2/` and uses `@opencode/cli`.
 
 ## [0.1.0] - 2026-11-22
 
@@ -22,8 +30,9 @@ output still matches the source.
   the `.gitignore` and `.gitattributes` lines the generated files need. `generate` renders,
   verifies and commits the managed files plus `.farna/lock.json`; `--dry-run`, `--adopt` and
   `--json` are supported. `check` re-renders into a temporary directory and exits `1` on any drift.
-- **Two targets.** `claudecode` writes `.claude/agents/<id>.md`; `opencode` (2.x only) writes
-  `.opencode/agents/<id>.md`. Exactly one target is configured per run.
+- **Two targets.** `claudecode` writes `.claude/agents/<id>.md`; `opencode` (2.x) writes
+  `.opencode/agents/<id>.md`. Exactly one target is configured per run. (An unreleased follow-up
+  adds `opencodev1` for OpenCode 1.x.)
 - **Agent and profile modes.** Agent mode is the default and carries every persona per agent.
   Profile mode, supported for `opencode`, makes exactly one persona live so it can own the
   workspace: `opencode.jsonc` at the repository root, plus its skills, commands and hooks under

@@ -86,8 +86,8 @@ describe('the shipped examples', () => {
     }
   });
 
-  it('renders the OpenCode profile example with one live persona and passes check', async () => {
-    const example = await copyExample('opencode-profile');
+  it('renders the OpenCode 2.x profile example with one live persona and passes check', async () => {
+    const example = await copyExample('opencode-v2');
     try {
       const generate = await run(example.root, ['generate']);
       expect(generate.code, generate.stderr).toBe(0);
@@ -103,6 +103,41 @@ describe('the shipped examples', () => {
 
       const workspace = await readFile(join(example.root, 'opencode.jsonc'), 'utf8');
       expect(workspace).toContain('DOCS_TOKEN');
+
+      const check = await run(example.root, ['check']);
+      expect(check.code, check.stderr).toBe(0);
+      expect(check.stdout).toContain('check: clean');
+    } finally {
+      await example.cleanup();
+    }
+  });
+
+  it('renders the OpenCode 1.x profile example with the V1 shapes and passes check', async () => {
+    const example = await copyExample('opencode-v1');
+    try {
+      const generate = await run(example.root, ['generate']);
+      expect(generate.code, generate.stderr).toBe(0);
+      expect(generate.stdout).toContain('target opencodev1 (profile mode, active builder)');
+      expect(generate.stdout).toContain('not live reviewer');
+      expect(existsSync(join(example.root, 'opencode.jsonc'))).toBe(true);
+      expect(existsSync(join(example.root, '.opencode/agents/builder.md'))).toBe(true);
+      expect(existsSync(join(example.root, '.opencode/skills/release-check/SKILL.md'))).toBe(true);
+      expect(existsSync(join(example.root, '.opencode/commands/run-tests.md'))).toBe(true);
+      expect(existsSync(join(example.root, '.opencode/plugins/rulesync-hooks.js'))).toBe(true);
+      expect(existsSync(join(example.root, '.opencode/agents/reviewer.md'))).toBe(false);
+
+      const agent = await readFile(join(example.root, '.opencode/agents/builder.md'), 'utf8');
+      expect(agent).toContain('name: builder');
+      expect(agent).toContain('permission:');
+      const workspace = (await readFile(join(example.root, 'opencode.jsonc'), 'utf8')).trim();
+      const mcp = JSON.parse(workspace) as { mcp: Record<string, unknown> };
+      expect(Object.keys(mcp.mcp)).toEqual(['docs']);
+      expect(mcp.mcp).not.toHaveProperty('servers');
+      const plugin = await readFile(
+        join(example.root, '.opencode/plugins/rulesync-hooks.js'),
+        'utf8',
+      );
+      expect(plugin).toContain('export const RulesyncHooksPlugin');
 
       const check = await run(example.root, ['check']);
       expect(check.code, check.stderr).toBe(0);

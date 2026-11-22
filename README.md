@@ -45,10 +45,11 @@ It is a compiler in the useful sense, not a loader:
 ## Status
 
 Version `0.1.0`, the first public release. It implements three commands (`init`, `generate` and
-`check`), two targets (`claudecode` and `opencode` 2.x), agent mode plus OpenCode profile mode,
-six resource kinds (`rule`, `permission`, `mcp`, `skill`, `command` and `hook`) with a model class,
-and composition with one base persona per composed persona. Exactly one configured target is
-rendered per run. Everything else is deliberately deferred; see
+`check`), three targets (`claudecode`, `opencode` for OpenCode 2.x and `opencodev1` for OpenCode
+1.x), agent mode plus OpenCode profile mode, six resource kinds (`rule`, `permission`, `mcp`,
+`skill`, `command` and `hook`) with a model class, and composition with one base persona per
+composed persona. Exactly one configured target is rendered per run. Everything else is
+deliberately deferred; see
 [What this slice does not do](#what-this-slice-does-not-do) and
 [Residual risks and known gaps](#residual-risks-and-known-gaps).
 
@@ -88,7 +89,9 @@ stale render, or a source change that was never regenerated exits `1` and names 
 `generate` never writes until every gate has passed. Containment means equality, not substring
 presence: each persona's artefact must be a non-empty markdown file whose emitted frontmatter has
 exactly the keys the persona declares (`name` and `description`, plus `model`, `disallowedTools`
-and, only when a permission resource opts in, `tools`) with matching values, and whose body is
+and, only when a permission resource opts in, `tools`; on OpenCode 2.x `description`, `mode`,
+`model` and `permissions`; on OpenCode 1.x `name`, `description`, `mode`, `model` and the
+`permission` map) with matching values, and whose body is
 exactly that persona's composed body, with one trailing newline normalised. An absent field must be absent, and an extra
 field is refused: a renderer that adds a harness directive such as `permissionMode` or `hooks` is
 adding a capability the persona never declared. A renderer that drops content, weakens or invents a
@@ -101,10 +104,17 @@ string.
 
 - Node.js **22.22.0 or newer**
 - npm
-- For the `opencode` target, OpenCode **2.x**. The emitted per-agent file is the V2 shape
-  (`description`, `mode`, `model`, ordered permission records, no `name`); the 1.x layout is
-  unsupported. The tool does not shell out to OpenCode, so this is documented rather than probed.
-- Profile mode is supported for the `opencode` target only. Agent mode works on both targets.
+- For the `opencode` target, OpenCode **2.x** (package `@opencode/cli`, current 2.3.2, installed
+  from <https://opencode.ai/v2/install>). Its emitted per-agent file is the V2 shape (`description`,
+  `mode`, `model`, ordered `permissions` records, no `name`), its config nests servers under
+  `mcp.servers`, and its plugin is the `{ id, setup }` module.
+- For the `opencodev1` target, OpenCode **1.x** (package `opencode-ai`, current 1.19.6). Its
+  emitted per-agent file is the V1 shape (`name`, `description`, `mode`, `model`, the per-tool
+  `permission` map), its config is the flat `mcp.<name>` map, its command frontmatter spells
+  `subtask`/`variant` (this product authors only `description`, which both majors share) and its
+  plugin is the `RulesyncHooksPlugin` module.
+- The tool does not shell out to OpenCode, so a version is documented rather than probed.
+- Profile mode is supported for both OpenCode targets. Agent mode works on all three targets.
 
 ## Install
 
@@ -151,15 +161,17 @@ derived `.farna/lock.json`, because npm's record scales with the dependency tree
 
 ### Supported targets
 
-| Target id | Harness | Version | Agent mode | Profile mode |
-|---|---|---|---|---|
-| `claudecode` | Claude Code | not version-probed | yes | not in this release |
-| `opencode` | OpenCode | 2.x only | yes | yes |
+| Target id | Harness | Version | Package | Agent mode | Profile mode |
+|---|---|---|---|---|---|
+| `claudecode` | Claude Code | not version-probed | — | yes | not in this release |
+| `opencode` | OpenCode | 2.x | `@opencode/cli` | yes | yes |
+| `opencodev1` | OpenCode | 1.x | `opencode-ai` | yes | yes |
 
-Exactly one target is configured per run. The two targets write different shapes for the same
-source; switching target is one config edit (see [Targets](#targets)). The tool never shells out to
-a harness, so a version is documented rather than detected: the `opencode` 1.x layout is a different
-shape and is unsupported.
+Exactly one target is configured per run; configuring `opencode` and `opencodev1` together is
+`F001`. All three targets write different shapes for the same source; switching target is one
+config edit (see [Targets](#targets)). The two OpenCode targets write the **same paths** in each
+major's own shapes, so a switch rewrites the recorded output in place rather than orphaning it. The
+tool never shells out to a harness, so a version is documented rather than detected.
 
 ### The library entry
 
@@ -188,7 +200,7 @@ farna-bootstrapper init
     commands/
     hooks/
 .gitignore        # .farna/local.jsonc, the journal, the generate lock, the staging namespace and OS metadata
-.gitattributes    # every generated path, for both targets, pinned to LF
+.gitattributes    # every generated path, for every target, pinned to LF
 ```
 
 The `--json` object is `schemaVersion`, `command` (`init`), `ok`, `exitCode`, `root`,
@@ -309,7 +321,7 @@ reach another persona's artefact.
 Exactly one target is configured per run. Switching target is one config edit:
 
 ```jsonc
-// .farna/config.jsonc — the OpenCode target
+// .farna/config.jsonc — the OpenCode 2.x target
 {
   "schemaVersion": 1,
   "targets": { "opencode": {} },
@@ -319,7 +331,22 @@ Exactly one target is configured per run. Switching target is one config edit:
 }
 ```
 
-Both targets are rendered by the pinned rulesync renderer; the product derives the feature set from
+```jsonc
+// .farna/config.jsonc — the OpenCode 1.x target
+{
+  "schemaVersion": 1,
+  "targets": { "opencodev1": { "active": "builder" } },
+  "models": {
+    "standard": { "opencodev1": "anthropic/claude-sonnet-4-5" }
+  }
+}
+```
+
+A model class maps per target, so a class used on `opencodev1` needs an `opencodev1` mapping (and
+one used on `opencode` needs an `opencode` mapping). Configuring both OpenCode targets at once is
+`F001`: the two write the same paths and one run has one lockfile and one mode plan.
+
+All targets are rendered by the pinned rulesync renderer; the product derives the feature set from
 the materialised source instead of passing `*`, and verifies the bytes the renderer produced before
 writing any of them.
 
@@ -327,18 +354,41 @@ writing any of them.
 
 What this release actually carries. A cell is either **native** (written into the emitted
 artefact), **profile only** (written at the workspace level, so it requires profile mode and exactly
-one live persona), or **not carried** (refused with `F001`, naming the reference; nothing is
-written).
+one live persona), **not carried** (refused with `F001`, naming the reference; nothing is written),
+or **unknown** (the harness behaviour is not verified by this release, so it is never claimed as a
+tick).
 
-| Capability | Claude Code, per agent | Claude Code, workspace | OpenCode, per agent | OpenCode, workspace |
-|---|---|---|---|---|
-| `rule` | native | — | native | — |
-| `model` | native | — | native | — |
-| `permission` | native (allow-list via opt-in) | — | native (deny-list; `write` folds into `edit`, W112) | — |
-| `mcp` | not carried | — | not carried in agent mode | profile only |
-| `skill` | not carried | — | not carried in agent mode | profile only |
-| `command` | not carried | — | not carried in agent mode | profile only |
-| `hook` | not carried | — | not carried in agent mode | profile only; representable events only (W101) |
+| Capability | Claude Code, per agent | Claude Code, workspace | OpenCode 2.x, per agent | OpenCode 2.x, workspace | OpenCode 1.x, per agent | OpenCode 1.x, workspace |
+|---|---|---|---|---|---|---|
+| `rule` | native | — | native | — | native | — |
+| `model` | native | — | native | — | native | — |
+| `permission` | native (allow-list via opt-in) | — | native (deny-list; `write` folds into `edit`, W112) | — | native (per-tool map; `write` folds into `edit`, W112) | — |
+| `mcp` | not carried | — | not carried in agent mode | profile only (`mcp.servers`) | not carried in agent mode | profile only (flat `mcp.<name>`) |
+| `skill` | not carried | — | not carried in agent mode | profile only | not carried in agent mode | profile only |
+| `command` | not carried | — | not carried in agent mode | profile only | not carried in agent mode | profile only |
+| `hook` | not carried | — | not carried in agent mode | profile only; `{ id, setup }` plugin, representable events only (W101) | not carried in agent mode | profile only; `RulesyncHooksPlugin`, representable events only (W101) |
+| `temperature` | not carried (not authored) | — | not carried (not authored) | — | not carried (not authored) | — |
+| `tools` (per-agent) | native (allow-list via opt-in) | — | not carried (an OpenCode allow-list cannot be expressed) | — | not carried (an OpenCode allow-list cannot be expressed) | — |
+
+The OpenCode V1 columns record these differences from V2, each verified against rulesync 43.11.0
+output in this repository's golden tests:
+
+- **Agent frontmatter** — V1 keeps `name` and writes the per-tool `permission` map; V2 drops `name`
+  and writes the ordered `permissions` array. A file carrying a V2 field is read as V2 by OpenCode
+  2.x, which is why a V2 agent must not carry `name`.
+- **MCP config** — V1 writes the flat `mcp.<name>` map with an explicit `enabled: true`; V2 nests
+  servers under `mcp.servers` and omits an enabled server's toggle.
+- **Commands** — V1's command frontmatter spells `subtask` and a separate `variant`; V2 spells
+  `subagent` and joins the variant onto `model`. This product authors only `description`, so the
+  emitted command frontmatter is the same on both; a `subtask`/`variant` field is refused at the
+  source boundary rather than being silently written in the wrong spelling.
+- **Hooks plugin** — V1 writes the `RulesyncHooksPlugin` module, which OpenCode 2.x does not run;
+  V2 writes the `{ id, setup }` plugin, which OpenCode 1.x does not run.
+
+Cells that are not verified by a test in this release are **unknown**, never a tick. In particular,
+this release verifies the emitted bytes and their containment; it does not verify that a particular
+OpenCode build honours `temperature` or per-agent `tools`, and it does not author either field, so
+they are not claimed.
 
 Two details matter more than the table:
 
@@ -360,10 +410,10 @@ generated capability page are not in this release. See
 claudecode, agent mode:
   .claude/agents/<id>.md            one whole file per persona
 
-opencode, agent mode:
+opencode or opencodev1, agent mode:
   .opencode/agents/<id>.md          one whole file per persona
 
-opencode, profile mode (active: <id>):
+opencode or opencodev1, profile mode (active: <id>):
   opencode.jsonc                    the active persona's MCP servers, merged into the user's own keys
   .opencode/agents/<id>.md          only the active persona
   .opencode/skills/<skill-id>/**    the active persona's skills and their extra files
@@ -371,7 +421,7 @@ opencode, profile mode (active: <id>):
   .opencode/plugins/rulesync-hooks.js   the active persona's carried hooks
                                       (skills, commands and hooks are under .opencode/, not the root)
 
-both:
+all targets:
   .farna/lock.json                  the manifest and the source-derived warnings
 ```
 
@@ -429,10 +479,10 @@ content the target could in principle drop, so it does not force the mode.
 **The profile is the repository root.** It is never a cache directory and never a subdirectory
 below another config. The exact paths are in [Output layout](#output-layout).
 
-Profile mode is supported for `opencode` only. `claudecode` refuses an `active` value or
-`--persona` with `F001_INVALID_CONFIG`: its only workspace-only capability is `command`, a content
-capability that does not force a profile, so profile mode there is later work. Accepting the
-setting and ignoring it would be a silent no-op.
+Profile mode is supported for both OpenCode targets (`opencode` and `opencodev1`). `claudecode`
+refuses an `active` value or `--persona` with `F001_INVALID_CONFIG`: its only workspace-only
+capability is `command`, a content capability that does not force a profile, so profile mode there
+is later work. Accepting the setting and ignoring it would be a silent no-op.
 
 A hook OpenCode cannot represent (`session-end`, or a matcher on a non-tool event) is reported as
 `W101_CAPABILITY_DROPPED` at `high` severity and is not emitted; it is never silently omitted.
@@ -547,27 +597,31 @@ in the source.
 The canonical categories are `read`, `write`, `edit`, `shell`, `network`, `mcp`, `task` and `*`.
 They are validated at plan time and mapped to the target's own form before anything is written:
 
-| Category | Claude Code entry | OpenCode record | Note |
+| Category | Claude Code entry | OpenCode 2.x record | OpenCode 1.x map |
 |---|---|---|---|
-| `read` | `Read` / `Read(P)` | `{action: read}` | native on both |
-| `write` | `Write` / `Write(P)` | `{action: edit}` | native on Claude Code; on OpenCode it folds into `edit` (W112) |
-| `edit` | `Edit` / `Edit(P)` | `{action: edit}` | native on both |
-| `shell` | `Bash` / `Bash(P)` | `{action: shell}` | native on both |
-| `task` | `Agent` / `Agent(P)` | `{action: subagent}` | native on both |
-| `network` | none | none | refused (F011, exit 3): neither target has a mapping |
-| `mcp` (bare) | none | none | refused (F011, exit 3): a bare category restricts nothing |
-| `*` | expands to every category | same | refused (F011), because it covers `network` |
+| `read` | `Read` / `Read(P)` | `{action: read}` | `read` |
+| `write` | `Write` / `Write(P)` | `{action: edit}` (folds into `edit`, W112) | `edit` (folds into `edit`, W112) |
+| `edit` | `Edit` / `Edit(P)` | `{action: edit}` | `edit` |
+| `shell` | `Bash` / `Bash(P)` | `{action: shell}` | `bash` |
+| `task` | `Agent` / `Agent(P)` | `{action: subagent}` | `task` |
+| `network` | none | none | none — refused (F011, exit 3) |
+| `mcp` (bare) | none | none | none — refused (F011, exit 3) |
+| `*` | expands to every category | same | same — refused (F011), because it covers `network` |
 
-On OpenCode the records are an ordered array of `{ action, resource, effect }`. `bash` is emitted
-as `shell` and `task` as `subagent`. OpenCode documents last-match-wins, so order is semantic: the
-catch-all is emitted first, and pattern resources keep their source declaration order. Sorting by
-codepoint could put an earlier allow after a later deny and silently turn a deny into an allow.
-The permission digest is order-sensitive for the same reason. `write` has no OpenCode category: it
-is folded into `edit`, and every write-derived `allow` that no edit declaration covers is reported
-as `W112_PERMISSION_LOSSY` (HIGH), including when an unrelated edit allow exists. A record whose
-emitted effect is deny is never reported: it narrows, and a stricter rule must never be presented
-as a loss. `ask` is emitted as `deny` on both targets and reported as `W111_ASK_DOWNGRADED`,
-because neither has a measured ask surface.
+On OpenCode 2.x the records are an ordered array of `{ action, resource, effect }`. `bash` is
+emitted as `shell` and `task` as `subagent`. OpenCode documents last-match-wins, so order is
+semantic: the catch-all is emitted first, and pattern resources keep their source declaration
+order. Sorting by codepoint could put an earlier allow after a later deny and silently turn a deny
+into an allow. The permission digest is order-sensitive for the same reason.
+
+On OpenCode 1.x the same resolved map is written as the per-tool `permission` object, with
+`shell` under OpenCode's own key `bash` and `task` under `task`; both OpenCode targets fold `write` into
+`edit` and refuse `network` and a bare `mcp` before anything is materialised. `write` has no
+OpenCode category on either target: every write-derived `allow` that no edit declaration covers is
+reported as `W112_PERMISSION_LOSSY` (HIGH), including when an unrelated edit allow exists. A record
+whose emitted effect is deny is never reported: it narrows, and a stricter rule must never be
+presented as a loss. `ask` is emitted as `deny` on all targets and reported as
+`W111_ASK_DOWNGRADED`, because none of them has a measured ask surface.
 
 ### Allow-list vs deny-list
 
@@ -631,7 +685,7 @@ is part of the code's definition, never set by a flag.
 | `W106_DENY_WINS` | medium when a deny removes an allow, otherwise info | Two permission resources disagreed on a category; the stricter value won, and the disagreement (and what it removed) is named. |
 | `W107_OUTSIDE_OWNERSHIP` | low | An unrecorded file is inside a skill directory this tool owns. `check` reports it as drift; `generate` never deletes it. |
 | `W109_PROFILE_BY_CHOICE` | info | Profile mode was selected although the live persona declares no capability that requires it (an MCP server or a hook). Agent mode is the default. |
-| `W111_ASK_DOWNGRADED` | medium | An `ask` permission was emitted as `deny`, because neither target has a measured ask surface. |
+| `W111_ASK_DOWNGRADED` | medium | An `ask` permission was emitted as `deny`, because no target has a measured ask surface. |
 | `W112_PERMISSION_LOSSY` | high | On OpenCode, `write` folds into `edit`; a write-derived `allow` that no edit declaration covers is lost. A deny is never reported, because a stricter rule is not a loss. |
 | `W113_ALLOW_LIST_NARROWS` | medium | A permission resource opted into the Claude Code `tools` allow-list, which removes every tool the product does not model. The removed tools are named; an opt-in that resolves to nothing is reported as having no effect. |
 | `W114_RENDERER_INTEGRITY_UNVERIFIED` | medium | No npm lock record at the install root supplied the renderer's tarball integrity. The pinned version is still enforced; this is a provenance gap, never a clean pass. |
@@ -678,9 +732,11 @@ src/
 tests/
   fixtures/demo/      the M1 fixture: two personas, two rules, no permissions
   fixtures/composed/  builder, builder-python (extends builder) and reviewer, with permissions
-  fixtures/opencode/  the OpenCode fixture: rules, permissions and the files for the refused kinds
-  fixtures/profile/   OpenCode profile mode: two personas with distinct MCP, skill, command and hook
-  golden/             both targets' pinned emitted bytes
+  fixtures/opencode/     the OpenCode 2.x fixture: rules, permissions and the files for the refused kinds
+  fixtures/opencode-v1/  the OpenCode 1.x fixture, same shape on the V1 target
+  fixtures/profile/      OpenCode 2.x profile mode: two personas with distinct MCP, skill, command and hook
+  fixtures/profile-v1/   OpenCode 1.x profile mode, same source on the V1 target
+  golden/                every target's pinned emitted bytes, both OpenCode majors included
   unit/               composition, permissions, fake and mutating renderer gates, loader, init,
                       check, paths, profile mode and orphan removal
   integration/        the real pinned renderer
@@ -688,8 +744,8 @@ tests/
 scripts/              CI gates: the minimum test count, real-renderer suites and tarball contents
 ```
 
-`.farna/lock.json` records `schemaVersion`, `product` (name and version), `target` (`claudecode` or
-`opencode`), `mode` (`agent` or `profile`), `activePersona` (the persona id in profile mode, `null`
+`.farna/lock.json` records `schemaVersion`, `product` (name and version), `target` (`claudecode`,
+`opencode` or `opencodev1`), `mode` (`agent` or `profile`), `activePersona` (the persona id in profile mode, `null`
 in agent mode), the `renderer` identity, each **live** persona's composition base and resolved
 resource ids (each with the persona that contributed it, across every loaded kind), a persona
 digest, an order-sensitive permission digest, every source-derived warning, and the path, size and
@@ -807,18 +863,21 @@ what it created if it subsequently fails.
 
 ## Examples
 
-Two complete source trees live in [`examples/`](examples/). Both are exercised by the test suite:
+Three complete source trees live in [`examples/`](examples/). All are exercised by the test suite:
 the built CLI generates each one in a temporary copy and `check` must exit `0`.
 
 - [`examples/claude-code/`](examples/claude-code/) - two personas (`builder`, `reviewer`) in agent
   mode on the `claudecode` target, with two rules and a real read-only reviewer restriction. Run it
   with `node ../../dist/cli/main.js generate` then `check` from that directory.
-- [`examples/opencode-profile/`](examples/opencode-profile/) - profile mode on the `opencode`
-  target: one live persona (`builder`) that owns the workspace, with a rule, a permission set, one
-  MCP server, one skill, one command and one hook, plus a second persona that is resolved but not
-  live. The MCP credential is an environment reference, not a literal.
+- [`examples/opencode-v2/`](examples/opencode-v2/) - profile mode on the `opencode` target (OpenCode
+  2.x, `@opencode/cli`): one live persona (`builder`) that owns the workspace, with a rule, a
+  permission set, one MCP server, one skill, one command and one hook, plus a second persona that is
+  resolved but not live. The MCP credential is an environment reference, not a literal.
+- [`examples/opencode-v1/`](examples/opencode-v1/) - the same source tree on the `opencodev1` target
+  (OpenCode 1.x, `opencode-ai`): the V1 agent frontmatter, the flat `mcp` map, the V1 command
+  frontmatter and the `RulesyncHooksPlugin`. It writes the same paths as the V2 example.
 
-Each example has its own README with the exact commands and the files it writes. Neither commits
+Each example has its own README with the exact commands and the files it writes. None commits
 generated output; the example is the source tree.
 
 ## Design documents
@@ -840,10 +899,10 @@ See also [CONTRIBUTING.md](CONTRIBUTING.md) for where a change belongs and which
 Deliberately out of scope, by milestone:
 
 - `doctor`; `agent with loss` and `refuse` as plan outcomes; profile mode on `claudecode`;
-  rendering more than one configured target per run; every target other than `claudecode` and
-  `opencode`; the full 71-target capability matrix and the capability report page
+  rendering more than one configured target per run; every target other than `claudecode`,
+  `opencode` and `opencodev1`; the full 71-target capability matrix and the capability report page
 - model resources (a model is the persona's `model` class in this slice)
-- carrying `mcp`, `skill`, `command` or `hook` on either target in **agent** mode; profile mode is
+- carrying `mcp`, `skill`, `command` or `hook` on any target in **agent** mode; profile mode is
   where those workspace capabilities belong, and agent mode still refuses them
 - `patch` and `replaceWith` on a persona resource reference; `targets` filters on personas and
   resources; `--strict`; `--accept-config` gating; `.farna/local.jsonc`

@@ -1,0 +1,19 @@
+// OpenCode permission records are a deny-list. `write` folds into `edit` on
+// this target, so a write-derived allow that no edit declaration covers is
+// reported as W112_PERMISSION_LOSSY; here `edit: allow` covers it.
+{
+  "kind": "permission",
+  "id": "builder-default",
+  "tools": {
+    "read": "allow",
+    "write": "allow",
+    "edit": "allow",
+    "shell": "allow",
+    "task": "deny"
+  },
+  "patterns": {
+    "shell": {
+      "git push --force*": "deny"
+    }
+  }
+}

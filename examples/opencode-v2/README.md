@@ -1,11 +1,12 @@
-# OpenCode profile example
+# OpenCode 2.x profile example
 
-One live persona in **profile mode** on the `opencode` target. OpenCode carries MCP servers,
-skills, commands and hooks at the workspace level, so a persona that declares one needs the whole
-workspace. That is what profile mode is: exactly one persona is live and owns it.
+One live persona in **profile mode** on the `opencode` target, which writes for **OpenCode 2.x**
+(installed from <https://opencode.ai/v2/install>, package `@opencode/cli`). OpenCode carries MCP
+servers, skills, commands and hooks at the workspace level, so a persona that declares one needs
+the whole workspace. That is what profile mode is: exactly one persona is live and owns it.
 
 ```
-examples/opencode-profile/
+examples/opencode-v2/
   .farna/
     config.jsonc                       opencode, active: builder
     personas/
@@ -37,7 +38,7 @@ From the repository root:
 npm ci
 npm run build
 
-cd examples/opencode-profile
+cd examples/opencode-v2
 node ../../dist/cli/main.js generate
 node ../../dist/cli/main.js check
 ```
@@ -45,19 +46,21 @@ node ../../dist/cli/main.js check
 Or with the published CLI:
 
 ```sh
-cd examples/opencode-profile
+cd examples/opencode-v2
 npx farna-bootstrapper generate
 npx farna-bootstrapper check
 ```
 
-`generate` writes:
+`generate` writes OpenCode 2.x shapes:
 
 ```
 opencode.jsonc                            the owned `mcp` key, merged in place
-.opencode/agents/builder.md               the live persona only
+                                          (servers under `mcp.servers`)
+.opencode/agents/builder.md               the live persona only, with the V2
+                                          `description`/`mode`/`model`/`permissions` frontmatter
 .opencode/skills/release-check/SKILL.md
 .opencode/commands/run-tests.md
-.opencode/plugins/rulesync-hooks.js
+.opencode/plugins/rulesync-hooks.js       the V2 `{ id, setup }` plugin
 .farna/lock.json
 ```
 
@@ -103,3 +106,7 @@ If you want agent mode instead, remove `mcp/docs`, `skill/release-check`, `comma
 workspace-only on OpenCode, so agent mode refuses a reference to any of them (F001) rather than
 dropping it; with only rules and permissions left, both personas become live and no workspace file
 is written.
+
+For OpenCode 1.x (`opencode-ai`), see [`examples/opencode-v1/`](../opencode-v1/). The two targets
+write the same paths in each major's own shapes, so switching is one config edit and does not
+orphan the recorded output.
