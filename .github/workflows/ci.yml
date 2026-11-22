@@ -50,13 +50,12 @@ jobs:
       # The gate moves any existing `dist/` aside before `npm pack`, so it can
       # only pass when `prepack` builds the entry points. It runs before the
       # explicit build for the same reason: a stale earlier build must not be
-      # able to satisfy it. It also refuses a repository-only path in the
-      # tarball (src/, tests/, scripts/, examples/, docs/, .github/), so a
-      # widened `files` allowlist fails here rather than at the registry.
+      # able to satisfy it. It checks the tarball against an allowlist (dist/
+      # plus the legal files) and refuses a source map, so a widened `files`
+      # field fails here rather than at the registry. It packs itself, so a
+      # separate `npm pack --dry-run` would only run the same pack twice.
       - name: Assert the published tarball contents
-        run: |
-          node scripts/assert-pack.mjs
-          npm pack --dry-run
+        run: node scripts/assert-pack.mjs
 
       - name: Build
         run: npm run build
