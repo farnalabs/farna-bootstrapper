@@ -14,7 +14,7 @@ not maintain security backports for earlier releases.
 
 Do **not** open a public issue, pull request or discussion for a security problem.
 
-Report it privately by email to **duncan@farnalabs.com** with:
+Report it privately by email to **security@farnalabs.com** with:
 
 - the affected version (`farna-bootstrapper --version`);
 - the operating system and Node.js version;
