@@ -1,0 +1,7 @@
+# Generated output is not committed in the example: the example is the source tree.
+.claude/
+.farna/lock.json
+.farna/local.jsonc
+.farna/.generate.lock/
+**/.*.farna-tmp-*
+.DS_Store

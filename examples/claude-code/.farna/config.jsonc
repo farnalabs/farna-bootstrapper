@@ -1,0 +1,13 @@
+{
+  // The Claude Code target, agent mode: every persona is live and gets its own
+  // file under .claude/agents/.
+  "schemaVersion": 1,
+  "targets": {
+    "claudecode": {}
+  },
+  "models": {
+    "standard": {
+      "claudecode": "claude-sonnet-4-5"
+    }
+  }
+}

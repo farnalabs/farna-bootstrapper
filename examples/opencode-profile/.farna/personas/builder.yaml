@@ -1,0 +1,12 @@
+kind: persona
+id: builder
+displayName: Builder
+purpose: Writes the change, runs the tests, and follows the house conventions.
+model: standard
+resources:
+  - rule/house-style
+  - permission/builder-default
+  - mcp/docs
+  - skill/release-check
+  - command/run-tests
+  - hook/format-on-save

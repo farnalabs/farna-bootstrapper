@@ -1,0 +1,10 @@
+// A hook is data: the tool writes it into the generated OpenCode plugin and
+// never executes it. A matcher is honoured only on a tool event, so this one
+// uses `before-tool`.
+{
+  "kind": "hook",
+  "id": "format-on-save",
+  "phase": "before-tool",
+  "matcher": "Edit|Write",
+  "command": "npx prettier --write \"$FILE\""
+}

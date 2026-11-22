@@ -1,0 +1,13 @@
+// An HTTP MCP server. The credential is an environment reference, never a
+// literal: a literal in `headers` is refused (F002) and never echoed.
+{
+  "kind": "mcp",
+  "id": "docs",
+  "server": {
+    "type": "http",
+    "url": "https://docs.example.test/mcp",
+    "headers": {
+      "Authorization": { "fromEnv": "DOCS_TOKEN" }
+    }
+  }
+}

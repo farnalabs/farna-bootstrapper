@@ -1,0 +1,8 @@
+kind: persona
+id: reviewer
+displayName: Reviewer
+purpose: Reviews a change and cannot modify it.
+model: standard
+resources:
+  - rule/review-checklist
+  - permission/review-only

@@ -5,6 +5,7 @@
     "tests/cli/opencode-cli.test.ts",
     "tests/golden/builder-python.test.ts",
     "tests/golden/opencode.test.ts",
+    "tests/integration/examples.test.ts",
     "tests/integration/install.test.ts",
     "tests/integration/rulesync.test.ts",
     "tests/unit/assert-pack.test.ts",

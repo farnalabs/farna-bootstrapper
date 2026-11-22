@@ -1,0 +1,17 @@
+{
+  // The OpenCode target in profile mode: `builder` is the one live persona and
+  // owns the workspace. It declares an MCP server and a hook, which OpenCode
+  // carries only at the workspace level, so profile mode is required rather
+  // than chosen. `reviewer` is resolved but not live, and the run says so.
+  "schemaVersion": 1,
+  "targets": {
+    "opencode": {
+      "active": "builder"
+    }
+  },
+  "models": {
+    "standard": {
+      "opencode": "anthropic/claude-sonnet-4-5"
+    }
+  }
+}

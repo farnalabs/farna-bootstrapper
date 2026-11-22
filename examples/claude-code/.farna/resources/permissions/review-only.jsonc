@@ -1,0 +1,14 @@
+// A reviewer reads and reports. Every mutating category is denied, so the
+// restriction is real in the emitted `disallowedTools` list rather than a
+// sentence in the prompt.
+{
+  "kind": "permission",
+  "id": "review-only",
+  "tools": {
+    "read": "allow",
+    "write": "deny",
+    "edit": "deny",
+    "shell": "deny",
+    "task": "deny"
+  }
+}
