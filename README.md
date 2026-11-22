@@ -1,21 +1,78 @@
 # farna-bootstrapper
 
+[![CI](https://github.com/farnalabs/farna-bootstrapper/actions/workflows/ci.yml/badge.svg)](https://github.com/farnalabs/farna-bootstrapper/actions/workflows/ci.yml)
+
 Compile named agent personas and their resources into the configuration a coding harness
 actually reads, and prove that the committed output still matches the source.
 
-This repository is at **M3: OpenCode profile mode**. It implements two targets
-(`claudecode` and `opencode`), three commands of the compiler loop (`generate`, `check`) plus
-`init`, the two plan outcomes this build produces (`agent` and `profile`) plus the refusal path,
-six resource kinds (`rule`, `permission`, `mcp`, `skill`, `command`, `hook`) plus a model class, and
-one base persona per composed persona (`extends`). Exactly one configured target is rendered per run.
+## What it is
 
-Profile mode makes exactly one persona live and lets it own the workspace: `opencode.jsonc` is
-written at the repository root, and its skills, commands and hooks under `.opencode/`. OpenCode's
-workspace resource kinds (`mcp`, `skill`, `command`, `hook`) are carried for that persona. Every
-other persona is resolved and validated but not live, and the run says so (`notLive` in the
-payload, the lockfile and the human report). Agent mode remains the default and still refuses one
-of those kinds (F001) rather than emitting it workspace-wide. Everything else is deliberately
-deferred; see [What this slice does not do](#what-this-slice-does-not-do).
+`farna-bootstrapper` is a build-time compiler for coding-agent configuration. You declare personas
+and their resources once, under `.farna/`, and it renders the files a harness reads:
+
+- **`generate`** renders every live persona for exactly one configured target, verifies the bytes
+  the renderer produced, and only then writes them. It also writes `.farna/lock.json`, which records
+  what it owns.
+- **`check`** renders the same source into a temporary directory and compares it with the
+  repository. Exit `0` when identical, `1` when anything drifted. It never writes.
+- **`init`** creates the source root and the ignore/attribute lines generated output needs.
+
+It is a compiler in the useful sense, not a loader:
+
+- the output is **verified, not trusted**. Containment means equality: a renderer that drops a field,
+  weakens a permission, mixes two personas or invents a directive is refused before the first byte is
+  written. File existence is never accepted as proof.
+- a capability a target cannot carry is **reported, never dropped silently**. Every permission
+  category is validated before anything is materialised; one the target cannot map refuses the run.
+- the output is **reproducible**: no timestamps, hostnames or absolute paths in the lockfile, and the
+  same source produces the same bytes and the same lockfile on every machine.
+- it works **offline**. Generation and checking make no network request of their own.
+
+## What it is not
+
+- **Not an agent runtime, launcher or framework.** It writes configuration; it does not run an agent,
+  proxy a model, or manage a session. A hook, MCP server or command it writes is data that the
+  harness may execute later; this tool never executes it.
+- **Not a model gateway or a hosted service.** There is no server, no account and no phone-home.
+- **Not a telemetry collector.** There is no analytics package, no usage ping and no crash reporter,
+  and no dependency on Farna Control at build time or run time.
+- **Not a multi-target orchestrator in this release.** Exactly one configured target is rendered per
+  run; a second is refused.
+- **Not a replacement for the harness.** It does not claim runtime behaviour. The README's
+  capability matrix states what each target carries; the harness remains the authority on what it
+  does with it.
+
+## Status
+
+Version `0.1.0`, the first public release. It implements three commands (`init`, `generate` and
+`check`), two targets (`claudecode` and `opencode` 2.x), agent mode plus OpenCode profile mode,
+six resource kinds (`rule`, `permission`, `mcp`, `skill`, `command` and `hook`) with a model class,
+and composition with one base persona per composed persona. Exactly one configured target is
+rendered per run. Everything else is deliberately deferred; see
+[What this slice does not do](#what-this-slice-does-not-do) and
+[Residual risks and known gaps](#residual-risks-and-known-gaps).
+
+## Quickstart
+
+Requires **Node.js 22.22.0 or newer** and npm. Nothing needs to be installed globally.
+
+```sh
+mkdir my-agents && cd my-agents
+git init
+npx farna-bootstrapper init
+```
+
+`init` creates `.farna/config.jsonc`, the empty persona and resource directories, and the
+`.gitignore` and `.gitattributes` lines generated output needs. Add one YAML file per persona and
+one file per resource; [Use](#use) has a complete pair. Then:
+
+```sh
+npx farna-bootstrapper generate   # render the target and write .farna/lock.json
+npx farna-bootstrapper check      # exit 0 when the tree matches a fresh render
+```
+
+Commit `.farna/` and the generated files. Running `check` in CI is the drift gate: a hand edit, a
+stale render, or a source change that was never regenerated exits `1` and names the path.
 
 ## The loop
 
@@ -51,10 +108,17 @@ string.
 
 ## Install
 
-`npm install farna-bootstrapper` (registry), `npm install <git-url>` and `npm install -g
-farna-bootstrapper` all work. `prepare` builds `dist/` for a git install and `prepack` builds it
-for the published tarball; a source checkout therefore produces a working `bin` without a manual
-build. The renderer's integrity is read from exactly two npm lock records at the **install root**,
+```sh
+npx farna-bootstrapper --version        # run it once, without installing
+npm install --save-dev farna-bootstrapper
+npm install -g farna-bootstrapper
+```
+
+The package has no `postinstall` script and makes no network request after install. `prepare` builds
+`dist/` for a git install and `prepack` builds it for the published tarball; a source checkout
+therefore produces a working `bin` without a manual build.
+
+The renderer's integrity is read from exactly two npm lock records at the **install root**,
 the nearest ancestor of the product package that owns a `node_modules` directory: the hidden
 `<installRoot>/node_modules/.package-lock.json` and `<installRoot>/package-lock.json`. In a hoisted
 npm workspace the renderer sits at `<ws>/node_modules/rulesync`, so that workspace root *is* the
@@ -85,31 +149,23 @@ fail exactly like one that differs. The pin is provenance, not a sandbox — it 
 unverifiable install verified. That bound is separate from the 4 MiB bound on this product's own
 derived `.farna/lock.json`, because npm's record scales with the dependency tree.
 
-## Develop
+### Supported targets
 
-```sh
-npm ci
-npm run lint
-npm run typecheck
-npm test
-npm run build
-npm audit --audit-level=moderate
-node scripts/assert-pack.mjs     # after a build: the tarball contains dist
-```
+| Target id | Harness | Version | Agent mode | Profile mode |
+|---|---|---|---|---|
+| `claudecode` | Claude Code | not version-probed | yes | not in this release |
+| `opencode` | OpenCode | 2.x only | yes | yes |
 
-`npm run build` compiles `src/` to `dist/`. After a build, run the CLI with
-`node dist/cli/main.js`, or link it with `npm link` to get the `farna-bootstrapper` binary.
+Exactly one target is configured per run. The two targets write different shapes for the same
+source; switching target is one config edit (see [Targets](#targets)). The tool never shells out to
+a harness, so a version is documented rather than detected: the `opencode` 1.x layout is a different
+shape and is unsupported.
 
-The golden test in `tests/golden/` and the integration test in `tests/integration/` drive the
-real, pinned renderer. They always run: a missing or broken `rulesync` fails collection loudly
-rather than skipping. CI compares the test files on disk with the committed
-`scripts/expected-test-files.json` manifest, requires every manifest file to have run, and fails
-on either difference — so a deleted suite cannot hide behind the total, and a new suite is a
-deliberate, visible manifest edit. It also enforces a minimum total test count (not an exact one),
-that no test is pending or `todo`, that `numPassedTests` accounts for the whole run, and that both
-real-renderer suites ran. CI also type-checks `tests/`, audits dependencies at `moderate`, and proves that
-`npm pack` from a tree with `dist/` moved aside still contains the entry points, which can only
-happen if `prepack` builds them.
+### The library entry
+
+The package also exports its TypeScript types (`.`, `types: ./dist/index.d.ts`). In `0.1.0` that
+entry is types-only: the CLI is the product surface, and there is no runtime library API to depend
+on. The `./package.json` subpath is exported for tooling.
 
 ## Use
 
@@ -219,19 +275,28 @@ farna-bootstrapper generate --persona <id>  # OpenCode profile mode, overriding 
 farna-bootstrapper check --persona <id>      # check the same selection
 ```
 
+The complete flag surface:
+
+| Command | Flag | Behaviour |
+|---|---|---|
+| all | `--json` | emit one JSON object on stdout; the human line still goes to stderr |
+| all | `-v, --version`, `-h, --help` | print the compiled-in version or usage; neither needs the renderer |
+| `init` | `--json` | the created/updated paths and the next step |
+| `generate` | `--dry-run` | print the plan and write nothing; `would-write` and `unchanged` are counted separately |
+| `generate` | `--adopt` | take ownership of every existing planned managed output; required when the lockfile is missing |
+| `generate` | `--persona <id>` | run profile mode as that persona; wins over `targets.<target>.active` and is not written back |
+| `check` | `--persona <id>` | check the same selection |
+
 `--persona` is the one CLI selection override. It selects profile mode and wins over
 `targets.<target>.active`; see [Profile mode](#profile-mode).
 
-Every command accepts `--json`. A success object carries `schemaVersion`, `command`, `ok`,
-`exitCode` and the command's own fields; `init` adds `root`, `configPath`, `created`, `updated` and
-`nextStep`.
-
 Every command emits one machine-readable object on stdout under `--json`, and every object carries
-`schemaVersion`, `command`, `ok` and `exitCode`; a typed failure also carries `code`,
-`subject` and `message`, and is emitted on stdout with the human line on stderr. `--dry-run`
-compares each managed path with the working tree, so `unchanged` and `would-write` are
-distinguished rather than every path being reported as a write. Its summary counts the
-`would-write` files, not the size of the plan: a tree that already matches reports
+`schemaVersion`, `command`, `ok` and `exitCode`; a success object also carries the command's own
+fields (`init` adds `root`, `configPath`, `created`, `updated` and `nextStep`), and a typed failure
+also carries `code`, `subject` and `message`, and is emitted on stdout with the human line on
+stderr. `--dry-run` compares each managed path with the working tree, so `unchanged` and
+`would-write` are distinguished rather than every path being reported as a write. Its summary
+counts the `would-write` files, not the size of the plan: a tree that already matches reports
 `would write 0 file(s), N unchanged`.
 
 A persona's rule text is joined into the body of its subagent, in canonical rule-id order, under a
@@ -257,6 +322,37 @@ Exactly one target is configured per run. Switching target is one config edit:
 Both targets are rendered by the pinned rulesync renderer; the product derives the feature set from
 the materialised source instead of passing `*`, and verifies the bytes the renderer produced before
 writing any of them.
+
+### Capability matrix
+
+What this release actually carries. A cell is either **native** (written into the emitted
+artefact), **profile only** (written at the workspace level, so it requires profile mode and exactly
+one live persona), or **not carried** (refused with `F001`, naming the reference; nothing is
+written).
+
+| Capability | Claude Code, per agent | Claude Code, workspace | OpenCode, per agent | OpenCode, workspace |
+|---|---|---|---|---|
+| `rule` | native | — | native | — |
+| `model` | native | — | native | — |
+| `permission` | native (allow-list via opt-in) | — | native (deny-list; `write` folds into `edit`, W112) | — |
+| `mcp` | not carried | — | not carried in agent mode | profile only |
+| `skill` | not carried | — | not carried in agent mode | profile only |
+| `command` | not carried | — | not carried in agent mode | profile only |
+| `hook` | not carried | — | not carried in agent mode | profile only; representable events only (W101) |
+
+Two details matter more than the table:
+
+- **OpenCode's workspace kinds are not an agent-mode loss warning.** A workspace emission would give
+  every persona the declaring persona's MCP server, skill, command or hook, with no per-recipient
+  record and no opt-out. That is not a capability the author declared for those personas, so agent
+  mode refuses the reference and points at profile mode instead of emitting it.
+- **Claude Code's workspace kinds are absent from this release.** `claudecode` does not carry
+  `mcp`, `skill`, `command` or `hook` at all yet; a reference is refused rather than silently
+  losing it. Profile mode on `claudecode` is later work.
+
+The design's full 71-target matrix, the `agent with loss` and `refuse` plan outcomes, and the
+generated capability page are not in this release. See
+[What this slice does not do](#what-this-slice-does-not-do).
 
 ### Output layout
 
@@ -513,11 +609,50 @@ target rather than silently ignored.
 Only harness-specific category names reach the renderer source tree; a product category name is
 never written there, and a test asserts it.
 
-Warnings are printed by `generate` and `check`, and recorded in `.farna/lock.json`. The warning set
-covers every resolved persona, not only the live one: each warning names its persona, so a
-declaration an inactive persona makes is still visible in profile mode. `W107_OUTSIDE_OWNERSHIP` is
-reported by `check` as a drift item rather than a source warning: it describes the working tree (an
-extra skill file), not the source.
+Warnings are printed by `generate` and `check`. The warning set covers every resolved persona, not
+only the live one: each warning names its persona, so a declaration an inactive persona makes is
+still visible in profile mode. Source-derived warnings are recorded in `.farna/lock.json`.
+`W107_OUTSIDE_OWNERSHIP` is reported by `check` as a drift item rather than a source warning: it
+describes the working tree (an extra skill file), not the source. `W114_RENDERER_INTEGRITY_UNVERIFIED`
+is a runtime verification result about the machine, so it is printed but deliberately not recorded;
+recording it would make two machines with identical sources produce different lockfile bytes.
+
+## Warnings and exit codes
+
+### Warnings
+
+A warning is a report, not a failure: it never changes what is rendered. A run that emits one still
+exits `0` unless the warning records a refusal (which is a typed error, not a warning). The severity
+is part of the code's definition, never set by a flag.
+
+| Code | Default severity | What it reports |
+|---|---|---|
+| `W101_CAPABILITY_DROPPED` | high for a boundary capability, medium for content | A resolved capability the target cannot carry was not emitted. In profile mode this is a hook OpenCode cannot represent (`session-end`, or a matcher on a non-tool event). Never a silent omission. |
+| `W106_DENY_WINS` | medium when a deny removes an allow, otherwise info | Two permission resources disagreed on a category; the stricter value won, and the disagreement (and what it removed) is named. |
+| `W107_OUTSIDE_OWNERSHIP` | low | An unrecorded file is inside a skill directory this tool owns. `check` reports it as drift; `generate` never deletes it. |
+| `W109_PROFILE_BY_CHOICE` | info | Profile mode was selected although the live persona declares no capability that requires it (an MCP server or a hook). Agent mode is the default. |
+| `W111_ASK_DOWNGRADED` | medium | An `ask` permission was emitted as `deny`, because neither target has a measured ask surface. |
+| `W112_PERMISSION_LOSSY` | high | On OpenCode, `write` folds into `edit`; a write-derived `allow` that no edit declaration covers is lost. A deny is never reported, because a stricter rule is not a loss. |
+| `W113_ALLOW_LIST_NARROWS` | medium | A permission resource opted into the Claude Code `tools` allow-list, which removes every tool the product does not model. The removed tools are named; an opt-in that resolves to nothing is reported as having no effect. |
+| `W114_RENDERER_INTEGRITY_UNVERIFIED` | medium | No npm lock record at the install root supplied the renderer's tarball integrity. The pinned version is still enforced; this is a provenance gap, never a clean pass. |
+| `W115_CREDENTIAL_IN_URL` | high | An MCP `http` URL carries a credential-shaped query parameter (`token`, `api_key`, `apikey`, `access_token`, `secret`, `password`). The value is never echoed. |
+| `W116_SECRET_IN_ARGS` | high | An MCP `args` literal looks like a credential (`sk-`, `ghp_`, `glpat-`, `npm_`, `AKIA`, a JWT, or a long token-shaped string). The value is never echoed; put the credential in `env` or `headers` instead. |
+
+### Exit codes
+
+| Exit | Meaning | Codes |
+|---|---|---|
+| `0` | success; warnings are allowed | — |
+| `1` | invalid input, an unsafe path, or drift | `F001_INVALID_CONFIG`, `F002_SECRET_LITERAL`, `F003_PATH_UNSAFE`, `F007_DRIFT` |
+| `2` | a conflict between declarations | `F005_CONFLICT` |
+| `3` | a requested capability is refused | `F011_PERMISSION_UNMAPPED` |
+| `4` | the renderer lost or invented declared content | `F008_DECLARED_NOT_EMITTED` |
+| `5` | the render or the write failed | `F009_RENDER_FAILED`, `F010_RENDERER_MISMATCH`, `F012_WRITE_FAILED` |
+
+`check` uses exit `1` for drift and carries `F007_DRIFT` in its payload with the first drifted path
+as `subject`; drift is a result, not an exception, so it is absent from the exception table. A
+usage error (an unknown command or option) exits `1`. Under `--json` every result and every typed
+failure is one object on stdout; the human line goes to stderr.
 
 ## Layout
 
@@ -572,6 +707,31 @@ byte-identical lockfiles for the same source: `W114_RENDERER_INTEGRITY_UNVERIFIE
 the command output, never recorded in this artefact. A lockfile that recorded it made a runtime
 verification result part of the byte comparison, so `check` reported `F007_DRIFT` on
 `.farna/lock.json` between a verified and an unverified machine even though no source had changed.
+
+## Determinism
+
+The generated bytes are the product, so they must not depend on where or when the command ran.
+
+- **The lockfile is source-derived.** It records the product version, the target and mode, the live
+  persona (and the not-live set), each persona's composition and digests, the source warnings, and
+  each managed file's path, size and SHA-256. It records no timestamp, hostname, absolute path, user
+  name or process id.
+- **Ordering is canonical.** Personas and resources are sorted by kind and codepoint id before
+  hashing or writing. Permission records are the one deliberate exception: they keep source order
+  because OpenCode is last-match-wins, so the digest is order-sensitive there too.
+- **The renderer is pinned.** `rulesync` is pinned to exactly `43.11.0` with a tarball integrity (see
+  [The renderer boundary](#the-renderer-boundary)). The lockfile records the pin, not the integrity
+  the local package manager happened to write, so two machines that both verified their install -
+  and one that could not verify its own - produce the same lockfile bytes for the same source.
+- **Line endings are pinned.** `init` adds the generated paths to `.gitattributes` with `text eol=lf`,
+  so a Windows checkout does not make `check` report drift the source never declared.
+- **`check` is a byte comparison.** It re-renders into a temporary directory and compares the exact
+  bytes (or, for `opencode.jsonc`, the owned key's value). A file that exists is not a file that
+  matches.
+
+The repository's own suites include golden byte comparisons and a two-root determinism test. Two
+clean runs of the same source on one machine produce identical bytes and an identical lockfile;
+cross-machine determinism follows from the same rules, and CI runs on Linux.
 
 ## The renderer boundary
 
@@ -644,6 +804,36 @@ file it could not restore. A crash or kill between renames can still leave a mix
 before creating anything, preserves its line ending, writes the new file with `O_EXCL` under an
 unpredictable name and proves it is a regular file before renaming it over `.gitignore`, and removes
 what it created if it subsequently fails.
+
+## Examples
+
+Two complete source trees live in [`examples/`](examples/). Both are exercised by the test suite:
+the built CLI generates each one in a temporary copy and `check` must exit `0`.
+
+- [`examples/claude-code/`](examples/claude-code/) - two personas (`builder`, `reviewer`) in agent
+  mode on the `claudecode` target, with two rules and a real read-only reviewer restriction. Run it
+  with `node ../../dist/cli/main.js generate` then `check` from that directory.
+- [`examples/opencode-profile/`](examples/opencode-profile/) - profile mode on the `opencode`
+  target: one live persona (`builder`) that owns the workspace, with a rule, a permission set, one
+  MCP server, one skill, one command and one hook, plus a second persona that is resolved but not
+  live. The MCP credential is an environment reference, not a literal.
+
+Each example has its own README with the exact commands and the files it writes. Neither commits
+generated output; the example is the source tree.
+
+## Design documents
+
+The product design record is maintained with the product rather than in this repository. When a
+design decision is not covered by this README, ask the maintainers rather than inferring behaviour
+from a generated file; the README is the user-facing contract and the design record for everything
+it covers. The documents are:
+
+- `prd.md` - the problem, users, principles, v1 scope, acceptance criteria and definition of done;
+- `implementation-plan.md` - architecture, module boundaries, determinism, security and milestones;
+- `design/` - the concrete schema, CLI, capability matrix, ownership model, vertical slice and the
+  worked example.
+
+See also [CONTRIBUTING.md](CONTRIBUTING.md) for where a change belongs and which gates it must pass.
 
 ## What this slice does not do
 
@@ -931,8 +1121,41 @@ extend them further. The differences, all deliberate:
     which personas are emitted, not the shape of the per-agent file. Promoting the live persona to
     a primary mode is a product decision about how the session starts, and is not made here.
 
+## Develop
+
+```sh
+npm ci
+npm run lint
+npm run typecheck
+npm test
+npm run build
+npm audit --audit-level=moderate
+node scripts/assert-pack.mjs     # the tarball carries the entry points and no repository-only path
+npm pack --dry-run               # the exact package npm would publish
+npm publish --dry-run            # the publish path, without publishing
+```
+
+`npm run build` compiles `src/` to `dist/`. After a build, run the CLI with
+`node dist/cli/main.js`, or link it with `npm link` to get the `farna-bootstrapper` binary.
+
+The golden tests in `tests/golden/`, the real-renderer tests in `tests/integration/` and the
+example tests in `tests/integration/examples.test.ts` drive the real, pinned renderer. They always
+run: a missing or broken `rulesync` fails collection loudly rather than skipping. CI compares the
+test files on disk with the committed `scripts/expected-test-files.json` manifest, requires every
+manifest file to have run, and fails on either difference — so a deleted suite cannot hide behind
+the total, and a new suite is a deliberate, visible manifest edit. It also enforces a minimum total
+test count (not an exact one), that no test is pending or `todo`, that `numPassedTests` accounts for
+the whole run, and that the real-renderer suites ran. CI also type-checks `tests/`, audits
+dependencies at `moderate`, and proves that `npm pack` from a tree with `dist/` moved aside still
+contains the entry points, which can only happen if `prepack` builds them.
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the full gate list and the pull-request expectations.
+Maintainers publish a release by pushing a `v*` tag; `.github/workflows/release.yml` runs the gates,
+publishes to npm with provenance and creates the GitHub Release, using the repository's
+`NPM_TOKEN` secret. See [Releasing](CONTRIBUTING.md#releasing).
+
 ## Licence
 
-MIT, copyright Farnalabs Ltd. See `LICENSE` and `NOTICE`. This project depends on
-[rulesync](https://github.com/dyoshikawa/rulesync) (MIT, dyoshikawa and contributors), used
-unmodified as a library.
+MIT, Copyright (c) 2026 Farnalabs Ltd. See `LICENSE` and `NOTICE`. This project depends on
+[rulesync](https://github.com/dyoshikawa/rulesync) (MIT, Copyright (c) 2024 dyoshikawa), used
+unmodified as a library; the third-party licence text is reproduced in `NOTICE`.
