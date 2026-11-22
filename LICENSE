@@ -24,6 +24,7 @@ Third-party software
 --------------------
 
 This project depends on rulesync (https://github.com/dyoshikawa/rulesync),
-which is licensed under the MIT License and is copyright its authors,
-dyoshikawa and contributors. rulesync is used unmodified as a library; the
-renderer is pinned exactly and is imported by exactly one module.
+which is licensed under the MIT License, Copyright (c) 2024 dyoshikawa.
+rulesync is used unmodified as a library; the renderer is pinned exactly and is
+imported by exactly one module. The third-party licence text is reproduced in
+NOTICE.
