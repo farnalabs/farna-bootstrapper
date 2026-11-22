@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "description": "Compile named agent personas and resources into the configuration each coding harness reads, and prove that the output still matches the source.",
   "license": "MIT",
+  "author": "Farnalabs Ltd",
   "type": "module",
   "bin": {
     "farna-bootstrapper": "./dist/cli/main.js"
@@ -18,6 +19,7 @@
   },
   "files": [
     "dist",
+    "CHANGELOG.md",
     "LICENSE",
     "NOTICE",
     "README.md"
@@ -41,9 +43,11 @@
   "keywords": [
     "agents",
     "agent-configuration",
+    "agent-personas",
     "claude-code",
     "opencode",
-    "codegen"
+    "codegen",
+    "configuration"
   ],
   "scripts": {
     "typecheck": "tsc -p tsconfig.json --noEmit",
@@ -54,7 +58,10 @@
     "lint:fix": "biome check --write .",
     "format": "biome format --write .",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "pack": "npm pack --dry-run",
+    "publish-check": "npm publish --dry-run",
+    "assert-pack": "node scripts/assert-pack.mjs"
   },
   "dependencies": {
     "commander": "14.0.1",

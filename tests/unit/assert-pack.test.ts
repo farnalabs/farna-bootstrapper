@@ -26,18 +26,20 @@ async function fixture(options: {
   prepack: boolean;
   staleDist: boolean;
   legal?: boolean;
+  leak?: boolean;
 }): Promise<Fixture> {
   const root = await mkdtemp(join(tmpdir(), 'fbs-pack-'));
   const legal = options.legal !== false;
+  const files = legal
+    ? ['dist', 'package.json', 'LICENSE', 'NOTICE', 'README.md', 'CHANGELOG.md']
+    : ['dist', 'package.json'];
   await writeFile(
     join(root, 'package.json'),
     `${JSON.stringify(
       {
         name: 'pack-fixture',
         version: '0.0.0',
-        files: legal
-          ? ['dist', 'package.json', 'LICENSE', 'NOTICE', 'README.md']
-          : ['dist', 'package.json'],
+        files: options.leak === true ? [...files, 'src'] : files,
         ...(options.prepack ? { scripts: { prepack: 'node build.mjs' } } : {}),
       },
       null,
@@ -50,6 +52,11 @@ async function fixture(options: {
     await writeFile(join(root, 'LICENSE'), 'MIT\n', 'utf8');
     await writeFile(join(root, 'NOTICE'), 'Notice\n', 'utf8');
     await writeFile(join(root, 'README.md'), '# pack-fixture\n', 'utf8');
+    await writeFile(join(root, 'CHANGELOG.md'), '# Changelog\n', 'utf8');
+  }
+  if (options.leak === true) {
+    await mkdir(join(root, 'src'), { recursive: true });
+    await writeFile(join(root, 'src/leak.ts'), 'export const leaked = true;\n', 'utf8');
   }
   if (options.staleDist) {
     await mkdir(join(root, 'dist/cli'), { recursive: true });
@@ -122,6 +129,18 @@ describe('the published-tarball gate', () => {
       expect(result.stderr).toContain('LICENSE');
       expect(result.stderr).toContain('NOTICE');
       expect(result.stderr).toContain('README.md');
+    } finally {
+      await project.cleanup();
+    }
+  });
+
+  it('fails when a repository-only path is in the tarball', async () => {
+    const project = await fixture({ prepack: true, staleDist: false, leak: true });
+    try {
+      const result = await runGate(project.root);
+      expect(result.code).toBe(1);
+      expect(result.stderr).toContain('repository-only path');
+      expect(result.stderr).toContain('src/leak.ts');
     } finally {
       await project.cleanup();
     }

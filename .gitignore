@@ -10,3 +10,6 @@ coverage/
 
 # CI test report
 vitest-report.json
+
+# `npm pack` output, never committed
+*.tgz

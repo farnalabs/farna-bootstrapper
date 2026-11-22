@@ -13,6 +13,11 @@
  * The stash name is unique per run. A fixed name made a crashed earlier run
  * leave a directory behind, and the next `renameSync` then threw an uncaught
  * `ENOTEMPTY`; a unique name can never collide, and the restore is idempotent.
+ *
+ * The gate also refuses a tarball that carries repository-only paths. `files`
+ * is an allowlist, so a source, test, workflow or tooling file reaching the
+ * package means the allowlist was widened (or replaced with a denylist) and the
+ * published package now ships the repository rather than the product.
  */
 import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
@@ -27,9 +32,21 @@ const REQUIRED = [
   'dist/index.js',
   'dist/index.d.ts',
   'package.json',
+  'CHANGELOG.md',
   'LICENSE',
   'NOTICE',
   'README.md',
+];
+/** Repository-only trees. A published package must not contain any of them. */
+const FORBIDDEN_DIRECTORIES = ['src/', 'tests/', 'scripts/', 'examples/', 'docs/', '.github/'];
+/** Repository-only files. The tarball is the product, not the checkout. */
+const FORBIDDEN_FILES = [
+  'biome.json',
+  'package-lock.json',
+  'tsconfig.build.json',
+  'tsconfig.json',
+  'vitest-report.json',
+  'vitest.config.ts',
 ];
 
 // Move any existing build out of the way, so only `prepack` can satisfy the
@@ -86,6 +103,22 @@ if (missing.length > 0) {
   }
   console.error(
     '  - a tarball with no dist means `prepack` did not run or did not build; a missing legal file means `files` is incomplete',
+  );
+  process.exit(1);
+}
+
+const leaked = files.filter(
+  (path) =>
+    FORBIDDEN_DIRECTORIES.some((directory) => path.startsWith(directory)) ||
+    FORBIDDEN_FILES.includes(path),
+);
+if (leaked.length > 0) {
+  console.error('pack: FAILED');
+  for (const path of leaked) {
+    console.error(`  - repository-only path in the tarball: ${path}`);
+  }
+  console.error(
+    '  - `files` must stay an allowlist: the published package is dist plus the legal files',
   );
   process.exit(1);
 }
