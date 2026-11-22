@@ -11,12 +11,17 @@ export const PRODUCT_VERSION = '0.1.0';
 export const SCHEMA_VERSION = 1 as const;
 
 /**
- * The OpenCode major this target is measured against. OpenCode 2.x reads the
- * V2 per-agent file (`description`, `mode`, `model`, ordered permission
- * records); the 1.x layout is different and unsupported. This is documentation
- * for the user, not a runtime probe: the tool never shells out to OpenCode.
+ * The OpenCode major each OpenCode target is measured against. `opencode` is
+ * OpenCode 2.x (`@opencode/cli`): the V2 per-agent file (`description`, `mode`,
+ * `model`, ordered permission records, no `name`), the `mcp.servers` envelope
+ * and the `{ id, setup }` plugin. `opencodev1` is OpenCode 1.x (`opencode-ai`):
+ * V1 agent frontmatter with `name`, the per-tool `permission` map, the flat
+ * `mcp.<name>` map and the `RulesyncHooksPlugin` module. Both write the same
+ * paths. This is documentation for the user, not a runtime probe: the tool
+ * never shells out to OpenCode.
  */
 export const OPENCODE_SUPPORTED_MAJOR = '2';
+export const OPENCODE_V1_SUPPORTED_MAJOR = '1';
 
 /**
  * The render modes this build can write. `agent` is the default: every persona
@@ -80,18 +85,39 @@ export const MAX_EXTENDS_DEPTH = 32;
  */
 export const DEFAULT_TARGET = 'claudecode' as const;
 export const OPENCODE_TARGET = 'opencode' as const;
-export type SupportedTarget = typeof DEFAULT_TARGET | typeof OPENCODE_TARGET;
-export const SUPPORTED_TARGETS: readonly SupportedTarget[] = [DEFAULT_TARGET, OPENCODE_TARGET];
+export const OPENCODE_V1_TARGET = 'opencodev1' as const;
+export type SupportedTarget =
+  | typeof DEFAULT_TARGET
+  | typeof OPENCODE_TARGET
+  | typeof OPENCODE_V1_TARGET;
+/** The supported targets as a tuple, so a schema can validate against exactly them. */
+export const TARGET_ENUM = [DEFAULT_TARGET, OPENCODE_TARGET, OPENCODE_V1_TARGET] as const;
+export const SUPPORTED_TARGETS: readonly SupportedTarget[] = TARGET_ENUM;
+
+/**
+ * Both OpenCode targets write the same paths and the same workspace kinds; only
+ * the emitted shapes differ. Every branch that means "the OpenCode family"
+ * consults this list rather than repeating the two ids, so a third major is one
+ * edit.
+ */
+export const OPENCODE_TARGETS: readonly SupportedTarget[] = [OPENCODE_TARGET, OPENCODE_V1_TARGET];
+
+/** A target in the OpenCode family, so a member type cannot drift from the list. */
+export type OpencodeTarget = (typeof OPENCODE_TARGETS)[number];
+
+export function isOpencodeTarget(target: SupportedTarget): target is OpencodeTarget {
+  return (OPENCODE_TARGETS as readonly SupportedTarget[]).includes(target);
+}
 
 /**
  * The targets that support profile mode in this build. Profile mode needs a
- * workspace a single persona can own end to end; OpenCode's workspace resource
- * kinds (`mcp`, `skill`, `command`, `hook`) make it the first target. Claude
- * Code's only workspace-only capability is `command`, a content capability that
- * does not force a profile, so profile mode there is later work and `active` is
- * refused rather than silently ignored.
+ * workspace a single persona can own end to end; the OpenCode targets'
+ * workspace resource kinds (`mcp`, `skill`, `command`, `hook`) make them the
+ * first targets. Claude Code's only workspace-only capability is `command`, a
+ * content capability that does not force a profile, so profile mode there is
+ * later work and `active` is refused rather than silently ignored.
  */
-export const PROFILE_TARGETS: readonly SupportedTarget[] = [OPENCODE_TARGET];
+export const PROFILE_TARGETS: readonly SupportedTarget[] = [OPENCODE_TARGET, OPENCODE_V1_TARGET];
 
 export function targetSupportsProfile(target: SupportedTarget): boolean {
   return PROFILE_TARGETS.includes(target);
@@ -132,15 +158,26 @@ export const RULESYNC_HOOKS_FILE = 'hooks.jsonc';
  * and its bytes still equal the recorded digest. Everything outside them is
  * user content, never swept.
  */
+const OPENCODE_OUTPUT_DIRS: readonly string[] = [
+  OPENCODE_AGENTS_DIR,
+  OPENCODE_COMMANDS_DIR,
+  OPENCODE_SKILLS_DIR,
+  OPENCODE_PLUGINS_DIR,
+];
+
 export const MANAGED_OUTPUT_DIRS: Readonly<Record<SupportedTarget, readonly string[]>> = {
   claudecode: [CLAUDE_AGENTS_DIR],
-  opencode: [OPENCODE_AGENTS_DIR, OPENCODE_COMMANDS_DIR, OPENCODE_SKILLS_DIR, OPENCODE_PLUGINS_DIR],
+  opencode: OPENCODE_OUTPUT_DIRS,
+  // Both OpenCode targets write the same locations, so a target switch rewrites
+  // the recorded paths in place rather than orphaning one target's output.
+  opencodev1: OPENCODE_OUTPUT_DIRS,
 };
 
 /** Whole files at the repository root that a target can own. */
 export const MANAGED_OUTPUT_FILES: Readonly<Record<SupportedTarget, readonly string[]>> = {
   claudecode: [],
   opencode: [OPENCODE_CONFIG_FILE],
+  opencodev1: [OPENCODE_CONFIG_FILE],
 };
 
 /**
@@ -260,7 +297,7 @@ export const SUPPORTED_RESOURCE_KINDS: readonly Capability[] = [
  */
 export const BOUNDARY_CAPABILITIES: readonly Capability[] = ['permission', 'hook', 'mcp'];
 
-/** The resource kinds OpenCode carries only at the workspace level. */
+/** The resource kinds the OpenCode targets carry only at the workspace level. */
 export const OPENCODE_WORKSPACE_KINDS: readonly Capability[] = ['mcp', 'skill', 'command', 'hook'];
 
 export type ExitCode = 0 | 1 | 2 | 3 | 4 | 5;

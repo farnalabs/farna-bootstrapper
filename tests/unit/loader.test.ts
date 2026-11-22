@@ -511,7 +511,7 @@ describe('source loader', () => {
         'utf8',
       );
       const error = await expectFarnaError(loadConfig(repo.root), 'F001_INVALID_CONFIG');
-      expect(error.message).toContain('this slice supports only: claudecode, opencode');
+      expect(error.message).toContain('this slice supports only: claudecode, opencode, opencodev1');
     } finally {
       await repo.cleanup();
     }

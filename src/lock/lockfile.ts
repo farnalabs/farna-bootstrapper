@@ -17,6 +17,7 @@ import {
   ROOT_DIR,
   SCHEMA_VERSION,
   type Severity,
+  TARGET_ENUM,
   WARNING_CODES,
   type WarningCode,
 } from '../core/constants.js';
@@ -196,7 +197,13 @@ const lockFileEntrySchema = z
 export const lockfileDocumentSchema = z.strictObject({
   schemaVersion: z.literal(SCHEMA_VERSION),
   product: z.strictObject({ name: z.string().min(1), version: z.string().min(1) }),
-  target: z.string().min(1),
+  /**
+   * The target that produced the committed bytes. It is the closed set this
+   * build renders: a lockfile naming anything else is not one this build can
+   * re-render, and treating it as merely stale would let `check` compare a tree
+   * against a target the config cannot select.
+   */
+  target: z.enum(TARGET_ENUM),
   mode: z.enum(RENDER_MODES).optional(),
   /** The persona selected by `targets.<t>.active` or `--persona`; null in agent mode. */
   activePersona: z.string().min(1).nullable().optional(),

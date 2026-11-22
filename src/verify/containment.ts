@@ -5,12 +5,15 @@ import type { ResolvedPersona, ResolvedSource } from '../compose/resolve.js';
 import {
   AGENT_FILE_EXT,
   CLAUDE_AGENTS_DIR,
+  isOpencodeTarget,
   OPENCODE_AGENTS_DIR,
   OPENCODE_COMMANDS_DIR,
   OPENCODE_CONFIG_FILE,
   OPENCODE_HOOKS_PLUGIN,
   OPENCODE_SKILLS_DIR,
+  type OpencodeTarget,
   SKILL_FILE_NAME,
+  type SupportedTarget,
 } from '../core/constants.js';
 import { declaredNotEmitted } from '../core/errors.js';
 import { readUtf8File } from '../core/fs.js';
@@ -19,8 +22,8 @@ import { lstatOrUndefined } from '../core/paths.js';
 import { emitsTools, personaBody, resourceBody } from '../materialise/source-tree.js';
 import type { RenderResult } from '../render/port.js';
 
-export function expectedAgentPath(target: string, personaId: string): string {
-  const directory = target === 'opencode' ? OPENCODE_AGENTS_DIR : CLAUDE_AGENTS_DIR;
+export function expectedAgentPath(target: SupportedTarget, personaId: string): string {
+  const directory = isOpencodeTarget(target) ? OPENCODE_AGENTS_DIR : CLAUDE_AGENTS_DIR;
   return `${directory}/${personaId}${AGENT_FILE_EXT}`;
 }
 
@@ -286,12 +289,13 @@ function permissionRecords(value: unknown): Array<Record<string, string>> | unde
 }
 
 /**
- * The OpenCode per-agent file. Measured at rulesync 43.11.0: the frontmatter is
- * `description`, `mode`, `model` (when declared) and `permissions` (when the
- * persona declares one), with no `name` key — OpenCode names the agent from the
- * file. Every field is compared by value and the body byte for byte.
+ * The V2 (`opencode`) per-agent file. Measured at rulesync 43.11.0: the
+ * frontmatter is `description`, `mode`, `model` (when declared) and
+ * `permissions` (when the persona declares one), with no `name` key — OpenCode
+ * 2.x names the agent from the file, and a stray V1 field would make the file
+ * be read as a V1 agent.
  */
-function verifyOpencodeAgent(
+function verifyOpencodeV2Agent(
   persona: ResolvedPersona,
   source: ResolvedSource,
   parsed: EmittedAgent,
@@ -328,6 +332,73 @@ function verifyOpencodeAgent(
   verifyBody(persona, source, parsed.body, managedPath);
 }
 
+/**
+ * The V1 (`opencodev1`) per-agent file. Measured at rulesync 43.11.0: the
+ * frontmatter is `name`, `description`, `mode`, `model` (when declared) and the
+ * per-tool `permission` map (when the persona declares one). `temperature` and
+ * `tools` are V1 keys this product does not author, so they must never appear;
+ * a renderer that invents one is adding a capability the persona did not
+ * declare. The V1 map is compared value for value, key order included by
+ * `isDeepStrictEqual` (order is not semantic in V1, but a reordered pattern set
+ * is still a different map and is refused rather than nodded through).
+ */
+function verifyOpencodeV1Agent(
+  persona: ResolvedPersona,
+  source: ResolvedSource,
+  parsed: EmittedAgent,
+  managedPath: string,
+): void {
+  const keys = new Set(['name', 'description', 'mode']);
+  if (persona.model !== undefined) {
+    keys.add('model');
+  }
+  if (persona.opencode.permission.length > 0) {
+    keys.add('permission');
+  }
+  assertKeySet(keys, parsed.frontmatter, persona, managedPath);
+  assertField(parsed.frontmatter, 'name', persona.id, managedPath, persona);
+  assertField(parsed.frontmatter, 'description', persona.purpose, managedPath, persona);
+  assertField(parsed.frontmatter, 'mode', 'subagent', managedPath, persona);
+  assertField(parsed.frontmatter, 'model', persona.model, managedPath, persona);
+
+  const expected: Record<string, Record<string, string>> = {};
+  for (const category of persona.opencode.permission) {
+    const patterns: Record<string, string> = {};
+    for (const [resource, effect] of category.patterns) {
+      patterns[resource] = effect;
+    }
+    expected[category.key] = patterns;
+  }
+  if (persona.opencode.permission.length === 0) {
+    assertField(parsed.frontmatter, 'permission', undefined, managedPath, persona);
+  } else if (!isDeepStrictEqual(parsed.frontmatter['permission'], expected)) {
+    throw declaredNotEmitted(
+      `emitted permission map is ${describe(parsed.frontmatter['permission'])} but the persona resolves to ${describe(expected)}`,
+      {
+        subject: managedPath,
+        action:
+          'the renderer dropped, invented or rewrote a permission category; nothing was written',
+      },
+    );
+  }
+  verifyBody(persona, source, parsed.body, managedPath);
+}
+
+/** Dispatch the per-agent gate to the shape the configured target emits. */
+function verifyOpencodeAgent(
+  target: OpencodeTarget,
+  persona: ResolvedPersona,
+  source: ResolvedSource,
+  parsed: EmittedAgent,
+  managedPath: string,
+): void {
+  if (target === 'opencodev1') {
+    verifyOpencodeV1Agent(persona, source, parsed, managedPath);
+    return;
+  }
+  verifyOpencodeV2Agent(persona, source, parsed, managedPath);
+}
+
 type ExpectedMcpServer = Record<string, unknown>;
 
 function expectedEnvReference(
@@ -345,8 +416,19 @@ function expectedEnvReference(
   return converted;
 }
 
-/** The OpenCode V2 `mcp.servers` value rulesync emits from the materialised source. */
-function expectedMcpServers(source: ResolvedSource): Record<string, ExpectedMcpServer> {
+/**
+ * The MCP server map rulesync emits from the materialised source. Both OpenCode
+ * targets use `type: local|remote`, a `command` array and the same
+ * `environment` / `headers` maps; OpenCode 1.x additionally writes an explicit
+ * `enabled: true` on every server, where 2.x omits an enabled server's toggle
+ * and writes only `disabled: true`. V2 nests the map under `mcp.servers`; V1
+ * keys it directly under `mcp`, so the same expected map is wrapped differently
+ * by the caller.
+ */
+function expectedMcpServers(
+  source: ResolvedSource,
+  target: OpencodeTarget,
+): Record<string, ExpectedMcpServer> {
   const servers: Record<string, ExpectedMcpServer> = {};
   for (const resource of source.mcp) {
     if (resource.server.type === 'stdio') {
@@ -355,6 +437,7 @@ function expectedMcpServers(source: ResolvedSource): Record<string, ExpectedMcpS
       servers[resource.id] = {
         type: 'local',
         command: [resource.server.command, ...(resource.server.args ?? [])],
+        ...(target === 'opencodev1' ? { enabled: true } : {}),
         ...(env === undefined ? {} : { environment: env }),
       };
       continue;
@@ -366,6 +449,7 @@ function expectedMcpServers(source: ResolvedSource): Record<string, ExpectedMcpS
     servers[resource.id] = {
       type: 'remote',
       url: resource.server.url,
+      ...(target === 'opencodev1' ? { enabled: true } : {}),
       ...(headers === undefined ? {} : { headers }),
     };
   }
@@ -489,6 +573,55 @@ const HOOK_EVENT_BY_PHASE: Record<string, string> = {
   stop: 'stop',
 };
 
+type HookAnchor = { index: number; event: string; registration: boolean };
+
+/** One registration anchor pattern: where a hook's registration begins. */
+type HookAnchorPattern = {
+  pattern: RegExp;
+  event: (match: RegExpExecArray) => string;
+  /**
+   * True for the block a hook is registered in, false for a label that names
+   * the event inside a run call. A non-registration anchor can identify a
+   * command's event but never start its matcher window.
+   */
+  registration: boolean;
+};
+
+/**
+ * The V2 (`opencode`) plugin's registration anchors, measured at rulesync
+ * 43.11.0: a tool hook (`ctx.tool.hook("execute.before"|"execute.after", ...)`)
+ * and an event hook whose `label: "<event>"` has no tool anchor.
+ */
+const OPENCODE_V2_HOOK_ANCHORS: readonly HookAnchorPattern[] = [
+  { pattern: /ctx\.tool\.hook\("execute\.before"/g, event: () => 'preToolUse', registration: true },
+  { pattern: /ctx\.tool\.hook\("execute\.after"/g, event: () => 'postToolUse', registration: true },
+  {
+    pattern: /label: "(preToolUse|postToolUse|sessionStart|stop)"/g,
+    event: (match) => match[1] ?? '',
+    registration: false,
+  },
+];
+
+/**
+ * The V1 (`opencodev1`) `RulesyncHooksPlugin` registration anchors, measured at
+ * rulesync 43.11.0: the returned object keys `"tool.execute.before"` and
+ * `"tool.execute.after"`, and the event-loop branches
+ * `event.type === "session.created"` / `event.type === "session.idle"`. The
+ * V1 plugin also carries `label: "sessionStart"|"stop"|"postToolUse"` inside
+ * each run call; those are labels, not anchors, so they are deliberately absent
+ * from this list.
+ */
+const OPENCODE_V1_HOOK_ANCHORS: readonly HookAnchorPattern[] = [
+  { pattern: /"tool\.execute\.before":/g, event: () => 'preToolUse', registration: true },
+  { pattern: /"tool\.execute\.after":/g, event: () => 'postToolUse', registration: true },
+  {
+    pattern: /event\.type === "session\.created"/g,
+    event: () => 'sessionStart',
+    registration: true,
+  },
+  { pattern: /event\.type === "session\.idle"/g, event: () => 'stop', registration: true },
+];
+
 /**
  * The hooks plugin is generated JavaScript, so it is verified at the level that
  * matters: exactly the declared commands, each bound to its declared event and
@@ -496,42 +629,35 @@ const HOOK_EVENT_BY_PHASE: Record<string, string> = {
  * undeclared command is injected, a declared one is dropped, or one is moved to
  * another event.
  *
- * rulesync emits two registration shapes at 43.11.0: a tool hook
- * (`ctx.tool.hook("execute.before"|"execute.after", ...)` with the command as a
- * `command: "<json>"` literal and a `new RegExp("<matcher>")` guard) and an
- * event hook (`label: "<event>", command: "<json>"`). A command's event is the
- * nearest preceding registration anchor; its matcher is the `new RegExp(...)`
- * between the previous command and this one within that registration.
+ * A command's event is the nearest preceding registration anchor; its matcher
+ * is the `new RegExp(...)` between the previous command and this one within that
+ * registration. The anchor set is the only thing that differs between the two
+ * OpenCode majors: V2 registers through `ctx.tool.hook(...)` and a label-only
+ * event loop, V1 through the returned `"tool.execute.*"` keys and
+ * `event.type === ...` branches.
  *
- * An `after-tool` command is emitted inside `ctx.tool.hook("execute.after", ...)`
- * *and* carries `label: "postToolUse"` in the same `__rulesyncRunHook(...)` call.
- * That label sits AFTER the matcher guard, so it must never start the matcher
- * window: only the registration anchor (`ctx.tool.hook(...)`, or an event-loop
- * `label:` with no tool anchor) may. The window then runs from the previous
- * command's end, so a matcher-less hook cannot inherit its neighbour's guard.
+ * An `after-tool` command in V2 is emitted inside `ctx.tool.hook("execute.after",
+ * ...)` *and* carries `label: "postToolUse"` in the same `__rulesyncRunHook(...)`
+ * call. That label sits AFTER the matcher guard, so it must never start the
+ * matcher window: only the registration anchor may. The window runs from the
+ * previous command's end, so a matcher-less hook cannot inherit its neighbour's
+ * guard.
  */
-function verifyHookPlugin(source: ResolvedSource, text: string, subject: string): void {
-  type Anchor = { index: number; event: string; registration: boolean };
-  const anchors: Anchor[] = [];
-  const addAnchors = (
-    pattern: RegExp,
-    event: (match: RegExpExecArray) => string,
-    registration: boolean,
-  ): void => {
+function verifyHookPlugin(
+  source: ResolvedSource,
+  text: string,
+  subject: string,
+  anchorPatterns: readonly HookAnchorPattern[],
+): void {
+  const anchors: HookAnchor[] = [];
+  for (const { pattern, event, registration } of anchorPatterns) {
     for (const match of text.matchAll(pattern)) {
       anchors.push({ index: match.index ?? 0, event: event(match), registration });
     }
-  };
-  addAnchors(/ctx\.tool\.hook\("execute\.before"/g, () => 'preToolUse', true);
-  addAnchors(/ctx\.tool\.hook\("execute\.after"/g, () => 'postToolUse', true);
-  addAnchors(
-    /label: "(preToolUse|postToolUse|sessionStart|stop)"/g,
-    (match) => match[1] ?? '',
-    false,
-  );
+  }
 
-  const nearestAnchor = (index: number): Anchor | undefined => {
-    let found: Anchor | undefined;
+  const nearestAnchor = (index: number): HookAnchor | undefined => {
+    let found: HookAnchor | undefined;
     for (const anchor of anchors) {
       if (anchor.index < index && (found === undefined || anchor.index > found.index)) {
         found = anchor;
@@ -541,7 +667,7 @@ function verifyHookPlugin(source: ResolvedSource, text: string, subject: string)
   };
   /** The start of the block that holds the command, never a label inside its run call. */
   const registrationStartAt = (index: number): number | undefined => {
-    let found: Anchor | undefined;
+    let found: HookAnchor | undefined;
     for (const anchor of anchors) {
       if (anchor.index >= index || !anchor.registration) {
         continue;
@@ -637,6 +763,7 @@ function verifyHookPlugin(source: ResolvedSource, text: string, subject: string)
 async function verifyOpencodeWorkspace(
   source: ResolvedSource,
   outputRoot: string,
+  target: OpencodeTarget,
 ): Promise<Map<string, string>> {
   const verified = new Map<string, string>();
   if (source.mcp.length > 0) {
@@ -667,17 +794,24 @@ async function verifyOpencodeWorkspace(
     if (mcp === null || typeof mcp !== 'object' || Array.isArray(mcp)) {
       throw declaredNotEmitted('opencode config mcp is not an object', { subject: path });
     }
-    const mcpKeys = Object.keys(mcp as Record<string, unknown>).sort(compareCodepoints);
-    if (mcpKeys.length !== 1 || mcpKeys[0] !== 'servers') {
-      throw declaredNotEmitted(`opencode config mcp carries keys ${describe(mcpKeys)}`, {
-        subject: path,
-      });
+    const expected = expectedMcpServers(source, target);
+    let emitted: unknown;
+    if (source.target === 'opencodev1') {
+      // V1 is the flat map directly under `mcp`. An envelope here would be the
+      // V2 shape, which OpenCode 1.x does not read as servers.
+      emitted = mcp;
+    } else {
+      const mcpKeys = Object.keys(mcp as Record<string, unknown>).sort(compareCodepoints);
+      if (mcpKeys.length !== 1 || mcpKeys[0] !== 'servers') {
+        throw declaredNotEmitted(`opencode config mcp carries keys ${describe(mcpKeys)}`, {
+          subject: path,
+        });
+      }
+      emitted = (mcp as Record<string, unknown>)['servers'];
     }
-    const servers = (mcp as Record<string, unknown>)['servers'];
-    const expected = expectedMcpServers(source);
-    if (!isDeepStrictEqual(servers, expected)) {
+    if (!isDeepStrictEqual(emitted, expected)) {
       throw declaredNotEmitted(
-        `opencode mcp servers are ${describe(servers)} but the source declares ${describe(expected)}`,
+        `opencode mcp servers are ${describe(emitted)} but the source declares ${describe(expected)}`,
         {
           subject: path,
           action: 'the renderer dropped, invented or rewrote an MCP server; nothing was written',
@@ -706,7 +840,12 @@ async function verifyOpencodeWorkspace(
     if (text.length === 0) {
       throw declaredNotEmitted('hooks plugin is empty', { subject: OPENCODE_HOOKS_PLUGIN });
     }
-    verifyHookPlugin(source, text, OPENCODE_HOOKS_PLUGIN);
+    verifyHookPlugin(
+      source,
+      text,
+      OPENCODE_HOOKS_PLUGIN,
+      target === 'opencodev1' ? OPENCODE_V1_HOOK_ANCHORS : OPENCODE_V2_HOOK_ANCHORS,
+    );
     verified.set(OPENCODE_HOOKS_PLUGIN, text);
   }
   return verified;
@@ -718,11 +857,10 @@ async function verifyOpencodeWorkspace(
  * gate is checking, so it cannot also define the expectation.
  */
 export function expectedPaths(source: ResolvedSource): string[] {
-  const paths: string[] =
-    source.target === 'opencode'
-      ? source.personas.map((persona) => expectedAgentPath('opencode', persona.id))
-      : source.personas.map((persona) => expectedAgentPath('claudecode', persona.id));
-  if (source.target === 'opencode') {
+  const paths: string[] = source.personas.map((persona) =>
+    expectedAgentPath(source.target, persona.id),
+  );
+  if (isOpencodeTarget(source.target)) {
     if (source.mcp.length > 0) {
       paths.push(OPENCODE_CONFIG_FILE);
     }
@@ -811,16 +949,16 @@ export async function verifyRender(
       });
     }
     const parsed = parseEmittedAgent(text, managedPath);
-    if (source.target === 'opencode') {
-      verifyOpencodeAgent(persona, source, parsed, managedPath);
+    if (isOpencodeTarget(source.target)) {
+      verifyOpencodeAgent(source.target, persona, source, parsed, managedPath);
     } else {
       verifyClaudeAgent(persona, source, parsed, managedPath);
     }
     verified.set(managedPath, text);
   }
 
-  if (source.target === 'opencode') {
-    for (const [path, text] of await verifyOpencodeWorkspace(source, outputRoot)) {
+  if (isOpencodeTarget(source.target)) {
+    for (const [path, text] of await verifyOpencodeWorkspace(source, outputRoot, source.target)) {
       verified.set(path, text);
     }
   }

@@ -1,10 +1,10 @@
 import type { Config } from '../config/schema.js';
 import {
   CONFIG_PATH,
+  isOpencodeTarget,
   MAX_EXTENDS_DEPTH,
   MODE_AGENT,
   MODE_PROFILE,
-  OPENCODE_TARGET,
   OPENCODE_WORKSPACE_KINDS,
   PROFILE_FORCING_KINDS,
   PROFILE_TARGETS,
@@ -333,7 +333,7 @@ function assertSupportedRef(
   // absence is a refusal, never a silent workspace-wide emission.
   if (
     mode === MODE_AGENT &&
-    target === OPENCODE_TARGET &&
+    isOpencodeTarget(target) &&
     (OPENCODE_WORKSPACE_KINDS as readonly string[]).includes(kind)
   ) {
     const { id } = splitRef(ref);
@@ -341,8 +341,7 @@ function assertSupportedRef(
       `${kind}/${id} is declared by persona ${persona.id} and requires profile mode`,
       {
         subject: persona.path,
-        action:
-          'set targets.opencode.active to this persona (or pass --persona <id>) to run profile mode, or remove the reference',
+        action: `set targets.${target}.active to this persona (or pass --persona <id>) to run profile mode, or remove the reference`,
       },
     );
   }
@@ -447,7 +446,7 @@ function resolveOne(
       }
       if (kind === 'permission') {
         const permission = byKind.permissions.get(id) ?? missing('permission', id, contributor);
-        if (permission.allowlist === true && target === 'opencode') {
+        if (permission.allowlist === true && isOpencodeTarget(target)) {
           throw invalidConfig(
             'a permission resource opts into a tool allow-list, which OpenCode cannot express',
             {
@@ -579,10 +578,9 @@ function resolveOne(
     target === 'claudecode'
       ? mapPermissions(permissions, { persona: persona.id, target })
       : undefined;
-  const mappedOpencode =
-    target === 'opencode'
-      ? mapOpencodePermissions(permissions, { persona: persona.id, target })
-      : undefined;
+  const mappedOpencode = isOpencodeTarget(target)
+    ? mapOpencodePermissions(permissions, { persona: persona.id, target })
+    : undefined;
   if (mapped !== undefined) {
     warnings.push(...mapped.warnings);
   }

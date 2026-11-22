@@ -27,7 +27,7 @@ export const configSchema = z
       )
       .refine(
         (targets) => Object.keys(targets).length === 1,
-        'this slice renders exactly one configured target per run; choose claudecode or opencode',
+        `this slice renders exactly one configured target per run; choose one of: ${SUPPORTED_TARGETS.join(', ')} — configuring both opencode and opencodev1 in one run is refused`,
       ),
     models: z.record(z.string(), z.record(z.string(), z.string().min(1))).optional(),
   })

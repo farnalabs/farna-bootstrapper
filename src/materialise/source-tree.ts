@@ -4,7 +4,9 @@ import { stringify } from 'yaml';
 import type { ResolvedPersona, ResolvedSource } from '../compose/resolve.js';
 import {
   COMMANDS_DIR,
-  OPENCODE_TARGET,
+  isOpencodeTarget,
+  OPENCODE_V1_TARGET,
+  type OpencodeTarget,
   RULESYNC_HOOKS_FILE,
   RULESYNC_MCP_FILE,
   SKILL_FILE_NAME,
@@ -73,7 +75,13 @@ export type PersonaFrontmatter = {
   description: string;
   claudecode?: ClaudeBlock;
   opencode?: OpencodePersonaSection;
+  opencodev1?: OpencodePersonaSection;
 };
+
+/** The rulesync tool-scoped section and target id for one OpenCode major. */
+function opencodeSectionKey(target: OpencodeTarget): 'opencode' | 'opencodev1' {
+  return target === OPENCODE_V1_TARGET ? 'opencodev1' : 'opencode';
+}
 
 /**
  * The renderer source form for the Claude Code per-agent block. `tools` and
@@ -108,13 +116,19 @@ export function personaSourceFile(persona: ResolvedPersona): string {
 }
 
 /**
- * The renderer source form for the OpenCode per-agent block. The emitted
- * frontmatter is `description`, `mode`, `model` and `permissions`; the body is
- * the persona's composed rules. The rulesync section carries the permission map
- * under its canonical category names (`read`, `edit`, `bash`, `task`), which the
- * OpenCode adapter emits as ordered `{action, resource, effect}` records.
+ * The renderer source form for an OpenCode per-agent block. The V2 target
+ * (`opencode`) emits `description`, `mode`, `model` and the ordered
+ * `permissions` array; the V1 target (`opencodev1`) emits `name`,
+ * `description`, `mode`, `model` and the per-tool `permission` map. Both are
+ * authored from the same resolved permission map under rulesync's canonical
+ * category names (`read`, `edit`, `bash`, `task`): the adapter chooses the
+ * emitted shape, so the product never restates one target's shape for the
+ * other.
  */
-export function opencodePersonaFrontmatter(persona: ResolvedPersona): PersonaFrontmatter {
+export function opencodePersonaFrontmatter(
+  persona: ResolvedPersona,
+  target: OpencodeTarget,
+): PersonaFrontmatter {
   const section: OpencodePersonaSection = { mode: 'subagent' };
   if (persona.model !== undefined) {
     section.model = persona.model;
@@ -130,16 +144,20 @@ export function opencodePersonaFrontmatter(persona: ResolvedPersona): PersonaFro
     }
     section.permission = permission;
   }
-  return {
+  const frontmatter: PersonaFrontmatter = {
     name: persona.id,
-    targets: [OPENCODE_TARGET],
+    targets: [target],
     description: persona.purpose,
-    opencode: section,
   };
+  frontmatter[opencodeSectionKey(target)] = section;
+  return frontmatter;
 }
 
-export function opencodePersonaSourceFile(persona: ResolvedPersona): string {
-  const frontmatter = stringify(opencodePersonaFrontmatter(persona), { lineWidth: 0 });
+export function opencodePersonaSourceFile(
+  persona: ResolvedPersona,
+  target: OpencodeTarget,
+): string {
+  const frontmatter = stringify(opencodePersonaFrontmatter(persona, target), { lineWidth: 0 });
   return `---\n${frontmatter}---\n\n${personaBody(persona)}`;
 }
 
@@ -227,7 +245,7 @@ async function writeOpencodeSkills(sourceRoot: string, source: ResolvedSource): 
     const skillRoot = join(sourceRoot, SKILLS_DIR, skill.id);
     await mkdir(skillRoot, { recursive: true });
     const frontmatter = stringify(
-      { name: skill.id, description: skill.description, targets: [OPENCODE_TARGET] },
+      { name: skill.id, description: skill.description, targets: [source.target] },
       { lineWidth: 0 },
     );
     await writeFile(
@@ -249,7 +267,7 @@ async function writeOpencodeCommands(sourceRoot: string, source: ResolvedSource)
     const frontmatter = stringify(
       {
         description: command.description,
-        targets: [OPENCODE_TARGET],
+        targets: [source.target],
       },
       { lineWidth: 0 },
     );
@@ -315,13 +333,12 @@ export async function materialiseSourceTree(
   const subagents = join(sourceRoot, 'subagents');
   await mkdir(subagents, { recursive: true });
   for (const persona of source.personas) {
-    const contents =
-      source.target === OPENCODE_TARGET
-        ? opencodePersonaSourceFile(persona)
-        : personaSourceFile(persona);
+    const contents = isOpencodeTarget(source.target)
+      ? opencodePersonaSourceFile(persona, source.target)
+      : personaSourceFile(persona);
     await writeFile(join(subagents, `${persona.id}.md`), contents, 'utf8');
   }
-  if (source.target !== OPENCODE_TARGET) {
+  if (!isOpencodeTarget(source.target)) {
     return;
   }
   await writeOpencodeMcp(sourceRoot, source);

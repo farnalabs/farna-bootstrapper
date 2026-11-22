@@ -4,6 +4,7 @@ import {
   DRIFT_CODE,
   EXIT,
   OPENCODE_SUPPORTED_MAJOR,
+  OPENCODE_V1_SUPPORTED_MAJOR,
   PRODUCT_NAME,
   PRODUCT_VERSION,
   SCHEMA_VERSION,
@@ -114,11 +115,13 @@ export function buildProgram(context: CliContext): Command {
     )
     .addHelpText(
       'after',
-      `\nThe OpenCode target supports OpenCode ${OPENCODE_SUPPORTED_MAJOR}.x only; the 1.x layout is unsupported.
+      `\nTwo OpenCode targets are supported, one per run: "opencode" for OpenCode ${OPENCODE_SUPPORTED_MAJOR}.x
+(@opencode/cli) and "opencodev1" for OpenCode ${OPENCODE_V1_SUPPORTED_MAJOR}.x (opencode-ai). They write the same
+paths in each major's own shapes; configuring both at once is refused.
 \nProfile mode: pass --persona <id> to generate or check, or set "active" under a target
 in .farna/config.jsonc. Exactly one persona is live and owns the workspace: its
 opencode.jsonc is written at the repository root, and its skills, commands and hooks
-under .opencode/. Profile mode is supported for the opencode target; agent mode
+under .opencode/. Profile mode is supported for both OpenCode targets; agent mode
 remains the default.`,
     )
     .version(
