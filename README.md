@@ -37,7 +37,7 @@ It is a compiler in the useful sense, not a loader:
 - **Not a telemetry collector.** There is no analytics package, no usage ping and no crash reporter,
   and no dependency on Farna Control at build time or run time.
 - **Not a multi-target orchestrator in this release.** Exactly one configured target is rendered per
-  run; a second is refused.
+  run; more than one is refused.
 - **Not a replacement for the harness.** It does not claim runtime behaviour. The README's
   capability matrix states what each target carries; the harness remains the authority on what it
   does with it.

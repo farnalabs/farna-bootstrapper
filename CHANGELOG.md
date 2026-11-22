@@ -6,18 +6,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before 1.0.0, a minor
 release may contain a breaking change; every change of that kind is listed under **Changed**.
 
-## [Unreleased]
-
-### Added
-
-- **OpenCode 1.x support (`opencodev1`).** A second OpenCode target, alongside `opencode` (2.x),
-  which writes the same paths in OpenCode 1.x shapes: V1 agent frontmatter with `name` and the
-  per-tool `permission` map, the flat `mcp.<name>` map with `enabled: true`, V1 command frontmatter
-  and the `RulesyncHooksPlugin` module. Profile mode works for both OpenCode targets, and a target
-  switch rewrites the recorded paths in place rather than orphaning them. Configuring both OpenCode
-  targets in one run is `F001`. `examples/opencode-v1/` is the new profile-mode example;
-  `examples/opencode-profile/` is renamed `examples/opencode-v2/` and uses `@opencode/cli`.
-
 ## [0.1.0] - 2026-11-22
 
 The first public release. `farna-bootstrapper` compiles named agent personas and their resources
@@ -30,12 +18,19 @@ output still matches the source.
   the `.gitignore` and `.gitattributes` lines the generated files need. `generate` renders,
   verifies and writes the managed files plus `.farna/lock.json`; `--dry-run`, `--adopt` and
   `--json` are supported. `check` re-renders into a temporary directory and exits `1` on any drift.
-- **Two targets.** `claudecode` writes `.claude/agents/<id>.md`; `opencode` (2.x) writes
-  `.opencode/agents/<id>.md`. Exactly one target is configured per run. (An unreleased follow-up
-  adds `opencodev1` for OpenCode 1.x.)
+- **Three targets.** `claudecode` writes `.claude/agents/<id>.md`; `opencode` (OpenCode V2, package
+  `@opencode/cli`) and `opencodev1` (OpenCode V1, package `opencode-ai`) both write
+  `.opencode/agents/<id>.md` in each major's own shapes. Exactly one target is configured per run.
+- **OpenCode V1 support (`opencodev1`).** The V1 target writes OpenCode 1.x shapes: V1 agent
+  frontmatter with `name` and the per-tool `permission` map, the flat `mcp.<name>` map with
+  `enabled: true`, V1 command frontmatter and the `RulesyncHooksPlugin` module. Profile mode works
+  for both OpenCode targets, and a target switch rewrites the recorded paths in place rather than
+  orphaning them. Configuring both OpenCode targets in one run is `F001`. `examples/opencode-v1/`
+  is the V1 profile-mode example; `examples/opencode-v2/` is the V2 profile-mode example and uses
+  `@opencode/cli`.
 - **Agent and profile modes.** Agent mode is the default and carries every persona per agent.
-  Profile mode, supported for `opencode`, makes exactly one persona live so it can own the
-  workspace: `opencode.jsonc` at the repository root, plus its skills, commands and hooks under
+  Profile mode, supported for both OpenCode targets, makes exactly one persona live so it can own
+  the workspace: `opencode.jsonc` at the repository root, plus its skills, commands and hooks under
   `.opencode/`. `targets.opencode.active` selects the persona, and `--persona` overrides it for one
   run. Every resolved-but-not-live persona is reported (`notLive`).
 - **Persona composition.** A persona may extend one base persona. Rules and permissions are unioned
@@ -70,14 +65,14 @@ output still matches the source.
 
 ### Known limitations
 
-- **One target per run.** Two configured targets are refused; the lockfile and mode plan are
-  per-target.
+- **One target per run.** More than one configured target is refused; the lockfile and mode plan
+  are per-target.
 - **No `doctor` command.** `--dry-run` prints the plan, but there is no capability-report command.
 - **`claudecode` profile mode is not implemented**, and the workspace resource kinds (`mcp`,
   `skill`, `command`, `hook`) are not carried by `claudecode` at all in this release.
-- **`opencode` carries the workspace resource kinds in profile mode only.** Agent mode refuses a
-  reference with `F001` rather than emitting it workspace-wide. A hook OpenCode cannot represent
-  (`session-end`, or a matcher on a non-tool event) is reported (`W101`) and not emitted.
+- **Both OpenCode targets carry the workspace resource kinds in profile mode only.** Agent mode
+  refuses a reference with `F001` rather than emitting it workspace-wide. A hook OpenCode cannot
+  represent (`session-end`, or a matcher on a non-tool event) is reported (`W101`) and not emitted.
 - **No cross-target single run, no `patch`/`replaceWith`, no per-target filters, no `--strict`, no
   `.farna/local.jsonc` override, no region ownership (`CLAUDE.md`/`AGENTS.md`).** `opencode.jsonc`
   is the only structured file, and the only key it owns is `mcp`.
@@ -93,5 +88,4 @@ output still matches the source.
   runner does not grant), the POSIX mode assertions, the FIFO cases and the install-layout suite are
   skipped on Windows; CI runs them on Linux.
 
-[Unreleased]: https://github.com/farnalabs/farna-bootstrapper/compare/v0.1.0...HEAD
 [0.1.0]: https://github.com/farnalabs/farna-bootstrapper/releases/tag/v0.1.0

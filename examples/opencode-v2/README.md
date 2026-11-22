@@ -107,6 +107,6 @@ workspace-only on OpenCode, so agent mode refuses a reference to any of them (F0
 dropping it; with only rules and permissions left, both personas become live and no workspace file
 is written.
 
-For OpenCode 1.x (`opencode-ai`), see [`examples/opencode-v1/`](../opencode-v1/). The two targets
-write the same paths in each major's own shapes, so switching is one config edit and does not
-orphan the recorded output.
+For OpenCode 1.x (`opencode-ai`), see [`examples/opencode-v1/`](../opencode-v1/). Both OpenCode
+targets write the same paths in each major's own shapes, so switching is one config edit and does
+not orphan the recorded output.
