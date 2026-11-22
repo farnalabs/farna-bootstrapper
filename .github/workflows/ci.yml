@@ -18,16 +18,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        # actions/checkout v4
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        # actions/checkout v5.1.0
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
         with:
           # The job never pushes; do not leave a credential in .git/config for
           # any later step (or a compromised dependency) to read.
           persist-credentials: false
 
       - name: Set up Node 22
-        # actions/setup-node v4
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        # actions/setup-node v5.0.0
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
         with:
           node-version: '22'
           cache: npm
@@ -50,9 +50,13 @@ jobs:
       # The gate moves any existing `dist/` aside before `npm pack`, so it can
       # only pass when `prepack` builds the entry points. It runs before the
       # explicit build for the same reason: a stale earlier build must not be
-      # able to satisfy it.
-      - name: Assert the published tarball contains dist
-        run: node scripts/assert-pack.mjs
+      # able to satisfy it. It also refuses a repository-only path in the
+      # tarball (src/, tests/, scripts/, examples/, docs/, .github/), so a
+      # widened `files` allowlist fails here rather than at the registry.
+      - name: Assert the published tarball contents
+        run: |
+          node scripts/assert-pack.mjs
+          npm pack --dry-run
 
       - name: Build
         run: npm run build
