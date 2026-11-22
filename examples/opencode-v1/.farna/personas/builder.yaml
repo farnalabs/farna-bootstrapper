@@ -9,4 +9,4 @@ resources:
   - mcp/docs
   - skill/release-check
   - command/run-tests
-  - hook/format-on-save
+  - hook/session-start

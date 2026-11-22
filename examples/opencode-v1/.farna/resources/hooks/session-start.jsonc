@@ -1,0 +1,10 @@
+// A hook is data: the tool writes it into the generated OpenCode plugin and
+// never executes it. `session-start` is representable on both OpenCode targets
+// and needs no matcher. The command is local and pinned to the shell: it prints
+// one line and fetches no package, so it is safe to copy as a starting point.
+{
+  "kind": "hook",
+  "id": "session-start",
+  "phase": "session-start",
+  "command": "echo \"farna-bootstrapper: session started\""
+}

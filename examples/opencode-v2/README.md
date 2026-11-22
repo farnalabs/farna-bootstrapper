@@ -22,7 +22,7 @@ examples/opencode-v2/
       mcp/docs.jsonc                   an HTTP server; the token is an env reference
       skills/release-check/SKILL.md
       commands/run-tests.md
-      hooks/format-on-save.jsonc
+      hooks/session-start.jsonc
 ```
 
 `builder` declares `mcp`, `skill`, `command` and `hook`. The MCP server and the hook are boundary
@@ -102,7 +102,7 @@ The generated output is ignored by this directory's `.gitignore` so the example 
 tree. In your own repository, commit `.farna/lock.json` and the generated files.
 
 If you want agent mode instead, remove `mcp/docs`, `skill/release-check`, `command/run-tests` and
-`hook/format-on-save` from `builder` and delete `active` from the config. All four kinds are
+`hook/session-start` from `builder` and delete `active` from the config. All four kinds are
 workspace-only on OpenCode, so agent mode refuses a reference to any of them (F001) rather than
 dropping it; with only rules and permissions left, both personas become live and no workspace file
 is written.

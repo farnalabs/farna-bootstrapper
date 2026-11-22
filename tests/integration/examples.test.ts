@@ -58,9 +58,13 @@ describe('the shipped examples', () => {
       expect(existsSync(join(example.root, '.claude/agents/reviewer.md'))).toBe(true);
       expect(existsSync(join(example.root, '.farna/lock.json'))).toBe(true);
 
-      // The reviewer's restriction is emitted, not merely promised in prose.
+      // The reviewer's restriction is emitted, not merely promised in prose:
+      // every mutating category reaches the exact Claude Code tool name.
       const reviewer = await readFile(join(example.root, '.claude/agents/reviewer.md'), 'utf8');
-      expect(reviewer).toContain('disallowedTools:');
+      const disallowed = reviewer.slice(reviewer.indexOf('disallowedTools:'));
+      for (const tool of ['Agent', 'Bash', 'Edit', 'Write']) {
+        expect(disallowed).toContain(`  - ${tool}\n`);
+      }
 
       const check = await run(example.root, ['check']);
       expect(check.code, check.stderr).toBe(0);
@@ -104,6 +108,16 @@ describe('the shipped examples', () => {
       const workspace = await readFile(join(example.root, 'opencode.jsonc'), 'utf8');
       expect(workspace).toContain('DOCS_TOKEN');
 
+      // The example's declared hook command reaches the emitted plugin. It is
+      // local and self-contained: no `npx` package fetch and no undefined
+      // `$FILE` variable.
+      const plugin = await readFile(
+        join(example.root, '.opencode/plugins/rulesync-hooks.js'),
+        'utf8',
+      );
+      expect(plugin).toContain('farna-bootstrapper: session started');
+      expect(plugin).not.toContain('prettier');
+
       const check = await run(example.root, ['check']);
       expect(check.code, check.stderr).toBe(0);
       expect(check.stdout).toContain('check: clean');
@@ -138,6 +152,8 @@ describe('the shipped examples', () => {
         'utf8',
       );
       expect(plugin).toContain('export const RulesyncHooksPlugin');
+      expect(plugin).toContain('farna-bootstrapper: session started');
+      expect(plugin).not.toContain('prettier');
 
       const check = await run(example.root, ['check']);
       expect(check.code, check.stderr).toBe(0);
