@@ -44,7 +44,7 @@ It is a compiler in the useful sense, not a loader:
 
 ## Status
 
-Version `0.1.0`, the first public release. It implements three commands (`init`, `generate` and
+This is the first public release. It implements three commands (`init`, `generate` and
 `check`), three targets (`claudecode`, `opencode` for OpenCode 2.x and `opencodev1` for OpenCode
 1.x), agent mode plus OpenCode profile mode, six resource kinds (`rule`, `permission`, `mcp`,
 `skill`, `command` and `hook`) with a model class, and composition with one base persona per
@@ -88,10 +88,10 @@ stale render, or a source change that was never regenerated exits `1` and names 
 
 `generate` never writes until every gate has passed. Containment means equality, not substring
 presence: each persona's artefact must be a non-empty markdown file whose emitted frontmatter has
-exactly the keys the persona declares (`name` and `description`, plus `model`, `disallowedTools`
-and, only when a permission resource opts in, `tools`; on OpenCode 2.x `description`, `mode`,
-`model` and `permissions`; on OpenCode 1.x `name`, `description`, `mode`, `model` and the
-`permission` map) with matching values, and whose body is
+exactly the keys that target writes, with matching values. Claude Code writes `name`, `description`
+and `model`, plus `disallowedTools` and, only when a permission resource opts in, `tools`;
+OpenCode 2.x writes `description`, `mode`, `model` and the ordered `permissions` records; OpenCode
+1.x writes `name`, `description`, `mode`, `model` and the per-tool `permission` map. The body is
 exactly that persona's composed body, with one trailing newline normalised. An absent field must be absent, and an extra
 field is refused: a renderer that adds a harness directive such as `permissionMode` or `hooks` is
 adding a capability the persona never declared. A renderer that drops content, weakens or invents a
@@ -175,9 +175,9 @@ tool never shells out to a harness, so a version is documented rather than detec
 
 ### The library entry
 
-The package also exports its TypeScript types (`.`, `types: ./dist/index.d.ts`). In `0.1.0` that
-entry is types-only: the CLI is the product surface, and there is no runtime library API to depend
-on. The `./package.json` subpath is exported for tooling.
+The package also exports its TypeScript types (`.`, `types: ./dist/index.d.ts`). In this release
+that entry is types-only: the CLI is the product surface, and there is no runtime library API to
+depend on. The `./package.json` subpath is exported for tooling.
 
 ## Use
 
@@ -186,7 +186,8 @@ mkdir my-agents && cd my-agents
 farna-bootstrapper init
 ```
 
-`init` creates (it accepts `--json` like `generate` and `check`, emitting one object on stdout):
+`init` creates (it accepts `--json` after the command name, like `generate` and `check`, emitting
+one object on stdout):
 
 ```text
 .farna/
@@ -200,13 +201,14 @@ farna-bootstrapper init
     commands/
     hooks/
 .gitignore        # .farna/local.jsonc, the journal, the generate lock, the staging namespace and OS metadata
-.gitattributes    # every generated path, for every target, pinned to LF
+.gitattributes    # .farna/** and every generated path, for every target, pinned to LF
 ```
 
 The `--json` object is `schemaVersion`, `command` (`init`), `ok`, `exitCode`, `root`,
 `configPath`, `created` and `updated` (the array of existing shared files this run appended to),
-and `nextStep`. It reports the shared files as `created` or `updated`; it never claims a file it
-did not touch. `init` preserves the existing bytes and mode of `.gitignore` and `.gitattributes`,
+and `nextStep`. It reports the shared files as `created` or `updated`, and `created` names only the
+directories this run actually created (a pre-existing directory is omitted); it never claims a path
+it did not touch. `init` preserves the existing bytes and mode of `.gitignore` and `.gitattributes`,
 appends only the missing lines, and restores both byte for byte if a later step fails.
 
 Add one YAML file per persona under `.farna/personas/`, one Markdown file per rule under
@@ -291,7 +293,7 @@ The complete flag surface:
 
 | Command | Flag | Behaviour |
 |---|---|---|
-| all | `--json` | emit one JSON object on stdout; the human line still goes to stderr |
+| all | `--json` | emit one JSON object on stdout and suppress the human report; a typed failure also writes its one human line to stderr |
 | all | `-v, --version`, `-h, --help` | print the compiled-in version or usage; neither needs the renderer |
 | `init` | `--json` | the created/updated paths and the next step |
 | `generate` | `--dry-run` | print the plan and write nothing; `would-write` and `unchanged` are counted separately |
@@ -302,11 +304,14 @@ The complete flag surface:
 `--persona` is the one CLI selection override. It selects profile mode and wins over
 `targets.<target>.active`; see [Profile mode](#profile-mode).
 
-Every command emits one machine-readable object on stdout under `--json`, and every object carries
+`--json` is a per-command flag: place it after the command
+(`farna-bootstrapper generate --json`), not before it. Every command then emits one machine-readable
+object on stdout and no human report: a success is one object on stdout and nothing on stderr; a
+typed failure is one object on stdout and its single human line on stderr. Every object carries
 `schemaVersion`, `command`, `ok` and `exitCode`; a success object also carries the command's own
 fields (`init` adds `root`, `configPath`, `created`, `updated` and `nextStep`), and a typed failure
-also carries `code`, `subject` and `message`, and is emitted on stdout with the human line on
-stderr. `--dry-run` compares each managed path with the working tree, so `unchanged` and
+also carries `code`, `subject` and `message`. `--dry-run` compares each managed path with the
+working tree, so `unchanged` and
 `would-write` are distinguished rather than every path being reported as a write. Its summary
 counts the `would-write` files, not the size of the plan: a tree that already matches reports
 `would write 0 file(s), N unchanged`.
@@ -400,8 +405,8 @@ Two details matter more than the table:
   `mcp`, `skill`, `command` or `hook` at all yet; a reference is refused rather than silently
   losing it. Profile mode on `claudecode` is later work.
 
-The design's full 71-target matrix, the `agent with loss` and `refuse` plan outcomes, and the
-generated capability page are not in this release. See
+A full 71-target capability matrix, the `agent with loss` and `refuse` plan outcomes, and a
+generated capability report page are not in this release. See
 [What this slice does not do](#what-this-slice-does-not-do).
 
 ### Output layout
@@ -471,9 +476,9 @@ persona. The lockfile records one `personas[]` entry, `mode: "profile"`, `active
 and `notLive` is empty. `generate` and `check` print the not-live set, and `--json` carries it as
 `notLive`, so a deactivated persona is never silent.
 
-Selecting profile mode with `active` or `--persona` when no persona declares a capability that
-*requires* it (an MCP server or a hook, which OpenCode carries only at the workspace level) is a
-choice, and it is reported as `W109_PROFILE_BY_CHOICE` at info severity. A skill or command is
+Selecting profile mode with `active` or `--persona` when the live persona declares no capability
+that *requires* it (an MCP server or a hook, which OpenCode carries only at the workspace level) is
+a choice, and it is reported as `W109_PROFILE_BY_CHOICE` at info severity. A skill or command is
 content the target could in principle drop, so it does not force the mode.
 
 **The profile is the repository root.** It is never a cache directory and never a subdirectory
@@ -632,8 +637,8 @@ nothing (the tool is available unless denied), while `deny` and an `ask` downgra
 emitted into `disallowedTools`. A partial allow set can never silently narrow a persona.
 
 A permission resource may opt in with `"allowlist": true`. The resolved persona then emits the
-ordered `tools` allow-list and a `W113_ALLOW_LIST_NARROWS` warning names every unmodelled tool the
-narrowing removes. The mode is persona-scoped: if any contributing resource opts in, the union of
+ordered `tools` allow-list and a `W113_ALLOW_LIST_NARROWS` warning names examples of the unmodelled
+tools the narrowing removes (the product does not enumerate every harness tool). The mode is persona-scoped: if any contributing resource opts in, the union of
 its resolved `allow` entries becomes the allow-list. `check` applies the same rule, so a renderer
 that invents or drops `tools` is refused either way. If the opt-in resolves to no `allow` entry
 (every category is denied, or a deny removed the only allow), `tools` is omitted and W113 reports
@@ -682,12 +687,12 @@ is part of the code's definition, never set by a flag.
 | Code | Default severity | What it reports |
 |---|---|---|
 | `W101_CAPABILITY_DROPPED` | high for a boundary capability, medium for content | A resolved capability the target cannot carry was not emitted. In profile mode this is a hook OpenCode cannot represent (`session-end`, or a matcher on a non-tool event). Never a silent omission. |
-| `W106_DENY_WINS` | medium when a deny removes an allow, otherwise info | Two permission resources disagreed on a category; the stricter value won, and the disagreement (and what it removed) is named. |
+| `W106_DENY_WINS` | medium when the losing value is `allow`, otherwise info | Two permission resources disagreed on a category; the stricter value won, and the disagreement (and what it removed) is named. |
 | `W107_OUTSIDE_OWNERSHIP` | low | An unrecorded file is inside a skill directory this tool owns. `check` reports it as drift; `generate` never deletes it. |
 | `W109_PROFILE_BY_CHOICE` | info | Profile mode was selected although the live persona declares no capability that requires it (an MCP server or a hook). Agent mode is the default. |
 | `W111_ASK_DOWNGRADED` | medium | An `ask` permission was emitted as `deny`, because no target has a measured ask surface. |
 | `W112_PERMISSION_LOSSY` | high | On OpenCode, `write` folds into `edit`; a write-derived `allow` that no edit declaration covers is lost. A deny is never reported, because a stricter rule is not a loss. |
-| `W113_ALLOW_LIST_NARROWS` | medium | A permission resource opted into the Claude Code `tools` allow-list, which removes every tool the product does not model. The removed tools are named; an opt-in that resolves to nothing is reported as having no effect. |
+| `W113_ALLOW_LIST_NARROWS` | medium | A permission resource opted into the Claude Code `tools` allow-list, which removes every tool the product does not model. Examples of the removed tools are named; an opt-in that resolves to nothing is reported as having no effect. |
 | `W114_RENDERER_INTEGRITY_UNVERIFIED` | medium | No npm lock record at the install root supplied the renderer's tarball integrity. The pinned version is still enforced; this is a provenance gap, never a clean pass. |
 | `W115_CREDENTIAL_IN_URL` | high | An MCP `http` URL carries a credential-shaped query parameter (`token`, `api_key`, `apikey`, `access_token`, `secret`, `password`). The value is never echoed. |
 | `W116_SECRET_IN_ARGS` | high | An MCP `args` literal looks like a credential (`sk-`, `ghp_`, `glpat-`, `npm_`, `AKIA`, a JWT, or a long token-shaped string). The value is never echoed; put the credential in `env` or `headers` instead. |
@@ -705,8 +710,9 @@ is part of the code's definition, never set by a flag.
 
 `check` uses exit `1` for drift and carries `F007_DRIFT` in its payload with the first drifted path
 as `subject`; drift is a result, not an exception, so it is absent from the exception table. A
-usage error (an unknown command or option) exits `1`. Under `--json` every result and every typed
-failure is one object on stdout; the human line goes to stderr.
+usage error (an unknown command or option) exits `1`. Under `--json` the human report is
+suppressed: a success is one object on stdout and nothing on stderr; a typed failure is one object
+on stdout and its single human line on stderr.
 
 ## Layout
 
@@ -730,7 +736,7 @@ src/
   core/           constants, typed errors, paths, strict UTF-8 reads, canonical JSON
   report/         text and JSON output, warning records
 tests/
-  fixtures/demo/      the M1 fixture: two personas, two rules, no permissions
+  fixtures/demo/      the demo fixture: two personas, two rules, no permissions
   fixtures/composed/  builder, builder-python (extends builder) and reviewer, with permissions
   fixtures/opencode/     the OpenCode 2.x fixture: rules, permissions and the files for the refused kinds
   fixtures/opencode-v1/  the OpenCode 1.x fixture, same shape on the V1 target
@@ -779,8 +785,10 @@ The generated bytes are the product, so they must not depend on where or when th
   [The renderer boundary](#the-renderer-boundary)). The lockfile records the pin, not the integrity
   the local package manager happened to write, so two machines that both verified their install -
   and one that could not verify its own - produce the same lockfile bytes for the same source.
-- **Line endings are pinned.** `init` adds the generated paths to `.gitattributes` with `text eol=lf`,
-  so a Windows checkout does not make `check` report drift the source never declared.
+- **Line endings are pinned.** `init` adds `/.farna/**` and every generated path to `.gitattributes`
+  with `text eol=lf`, so a Windows checkout does not change a source byte (and therefore
+  `configDigest`) or make `check` report drift the source never declared. This repository pins its
+  own `.farna/**` tree the same way.
 - **`check` is a byte comparison.** It re-renders into a temporary directory and compares the exact
   bytes (or, for `opencode.jsonc`, the owned key's value). A file that exists is not a file that
   matches.
@@ -880,23 +888,18 @@ the built CLI generates each one in a temporary copy and `check` must exit `0`.
 Each example has its own README with the exact commands and the files it writes. None commits
 generated output; the example is the source tree.
 
-## Design documents
+## Where to look for a decision
 
-The product design record is maintained with the product rather than in this repository. When a
-design decision is not covered by this README, ask the maintainers rather than inferring behaviour
-from a generated file; the README is the user-facing contract and the design record for everything
-it covers. The documents are:
-
-- `prd.md` - the problem, users, principles, v1 scope, acceptance criteria and definition of done;
-- `implementation-plan.md` - architecture, module boundaries, determinism, security and milestones;
-- `design/` - the concrete schema, CLI, capability matrix, ownership model, vertical slice and the
-  worked example.
-
-See also [CONTRIBUTING.md](CONTRIBUTING.md) for where a change belongs and which gates it must pass.
+This README is the user-facing contract and the record of the behaviour it covers. Each target's
+section, the [Capability matrix](#capability-matrix), [Warnings](#warnings) and
+[Residual risks and known gaps](#residual-risks-and-known-gaps) answer the questions a separate
+design note would otherwise answer. If a behaviour is not explained anywhere here, open an issue
+rather than inferring it from a generated file. See also [CONTRIBUTING.md](CONTRIBUTING.md) for
+where a change belongs and which gates it must pass.
 
 ## What this slice does not do
 
-Deliberately out of scope, by milestone:
+Deliberately out of scope:
 
 - `doctor`; `agent with loss` and `refuse` as plan outcomes; profile mode on `claudecode`;
   rendering more than one configured target per run; every target other than `claudecode`,
@@ -906,13 +909,16 @@ Deliberately out of scope, by milestone:
   where those workspace capabilities belong, and agent mode still refuses them
 - `patch` and `replaceWith` on a persona resource reference; `targets` filters on personas and
   resources; `--strict`; `--accept-config` gating; `.farna/local.jsonc`
-- removing a cross-target orphan under a directory the current target does not write: profile mode
-  now removes every recorded orphan in a managed location, but an orphan outside every managed
-  location is refused rather than deleted; an empty directory left after a skill's last file is
-  removed is not swept
+- removing a recorded orphan that is not in a managed location: a path outside `.claude/agents/`,
+  `.opencode/` or `opencode.jsonc` is refused rather than deleted, because ownership cannot be
+  proven; an empty directory left after a skill's last file is removed is not swept
 - region ownership (`CLAUDE.md`, `AGENTS.md`); `opencode.jsonc` is the only structured file, and the
   only key it owns is `mcp`. Every other managed path is a whole file or a whole tree
-- the weekly renderer-sync bot and the two compiled binaries
+
+Recursive deletion is limited to directories the tool created. There are three sites:
+`src/render/stage.ts` removes the disposable `mkdtemp` stage, and `src/render/generate-lock.ts`
+removes the lock directory renamed aside on reclaim and again on release. Each deletes only a
+directory this tool created; no user content is recursively deleted.
 
 ## Residual risks and known gaps
 
@@ -970,9 +976,12 @@ These are deliberate limits of the current controls, stated rather than implied 
 - **No coverage gate.** There is no coverage provider or threshold in this slice. CI runs lint,
   type-check, tests (with a minimum count and real-renderer suite assertions), a dependency audit at
   `moderate`, and a published-tarball check.
-- **Windows-specific test skips.** The symlink regression tests are skipped on Windows because
-  creating a symlink needs a privilege the runner does not grant. CI runs them on Linux; the guard
-  code itself is platform-independent.
+- **Windows-specific test skips.** Four classes of test cannot run on Windows: the symlink
+  regression suites (creating a symbolic link needs a privilege the runner does not grant), the
+  POSIX file- and directory-mode assertions (mode bits are not meaningful on NTFS), the FIFO cases
+  (Windows has no `mkfifo`-equivalent endpoint to create one), and the install-layout suite (its
+  fixtures model a hoisted or nested install with symlinks). CI runs all of them on Linux; the
+  guard code itself is platform-independent.
 - **Unrecorded files are not drift.** With a lockfile present, `check` compares the paths in the
   fresh plan (missing or changed) and the paths the committed lockfile records (an output the source
   no longer produces). A file the user keeps in a managed directory is not this tool's output, so it
@@ -996,189 +1005,37 @@ These are deliberate limits of the current controls, stated rather than implied 
   binary asset inside a skill directory is refused (F001) rather than carried; decoding and
   re-encoding a valid UTF-8 file is byte-identical.
 
-## Deviations from `design/`
+## Behaviour notes
 
-The M1 slice was intentionally narrower than the design documents; M2a, M2b and M3 narrow or
-extend them further. The differences, all deliberate:
+These are the deliberate choices a reader of the harness documentation may not expect. Each is
+rendered by the pinned renderer and verified before a byte is written.
 
-1. **npm and Node, not Bun.** The design pins `bun` as the package manager and test runner. Bun is
-   not installed on the delivery host, so this slice uses npm, `tsc` and Vitest. The package
-   exposes the same ESM build and `bin`, and `engines.node` is unchanged at `>=22.22.0`.
-2. **Personas are YAML, not JSONC.** The brief for M1 specified `.farna/personas/*.yaml`. The
-   design's JSONC persona format, with its parse-tree duplicate-key rules, remains a later target.
-   Config and permission resources are JSONC with duplicate keys rejected.
-3. **Permission resources may declare `patterns`.** `schema.md` 4.5 has no pattern field on a
-   permission resource. The brief requires the `Bash(P)` / `Edit(P)` byte form, so a resource may
-   add `patterns: { "<category>": { "<pattern>": "allow" | "ask" | "deny" } }`. Patterns are
-   emitted into the per-agent lists, which is the only array this slice writes. The design notes
-   that a per-agent *pattern* map is not a measured Claude Code surface; the workspace
-   `.claude/settings.json` is not written in agent mode, because a shared permission block would
-   leak one persona's deny onto every other persona.
-4. **A permission resource's identity is its declared `id`, not its file name.** This is the
-   design's rule (`schema.md` 1.2) and is what makes the duplicate-content conflict reachable: two
-   permission files may declare the same id, which is F005 (naming both paths) when their content
-   differs and a deduplication when it does not. Rules keep M1's file-name rule.
-5. **A model conflict is detected on the resolved concrete model id.** Two classes that map to the
-   same model id do not conflict; two classes that resolve to different ids do (F005).
-6. **A persona may reference `rule`, `permission`, `mcp`, `skill`, `command` and `hook`, and name
-   a `model` class.** The workspace kinds are loaded and validated for every target but require
-   profile mode; agent mode refuses a reference with F001 rather than silently losing it or
-   emitting it workspace-wide. A `model/<id>` reference is still refused: a model is the persona's
-   `model` class.
-   `targets.<t>.active` is accepted and selects profile mode (it is refused where the target does
-   not support it). `targets.<t>.exclude` is still rejected: the per-target filter is later work,
-   and accepting it would be a silent no-op. For the same reason `ignoredFiles` is not accepted
-   yet: an unknown-key error is louder than a setting that quietly does nothing.
-7. **`check` exits `1` on any drift; `generate` refuses an unowned managed path with `F007`.**
-   The brief requires `0` clean / `1` drift, so `check` returns `1` and reports `F007_DRIFT` in
-   its payload. `generate` uses the same code and exit `1` when `.farna/lock.json` is missing and a
-   planned managed output exists, or when a managed target exists but is not recorded in the
-   committed lockfile **and its bytes differ from the fresh render**: taking over a file this tool
-   did not write is drift, not a renderer failure. The explicit recovery is `generate --adopt`,
-   which takes ownership of every existing planned output; an unrecorded target whose bytes are
-   already identical is adopted by that run too, and nothing unrecorded is destroyed. `F007`
-   therefore stays out of the exception table (`EXIT_BY_CODE`) while remaining a reportable
-   diagnostic code with exit `1`. `generate` keeps the design's per-code exits for the rest
-   (`F008` is `4`, `F011` is `3`).
-8. **No matrix snapshot or matrix digest.** The one-target, seven-cell snapshot, `probe`, and the
-    `matrixDigest` lockfile field are later work. The lockfile records the renderer identity,
-    personas, resources, digests, managed files and source warnings only.
-9. **The lockfile records source warnings and two digests per persona.** `schema.md` 5.1 has a
-    `warnings[]` array; it is carried here together with a `permissionDigest`. The resolved
-    resource `rank` is not recorded; `fromPersona` is. The array holds warnings derived from the
-    source, never a renderer-level one such as `W114`: that is evidence about the machine, and
-    recording it made two machines with the same source produce different lockfile bytes.
-10. **The permission digest covers the resolved product map** (category values and ordered
-    patterns), not the emitted Claude Code entries. Patterns are recorded as ordered arrays, so a
-    source that reorders two patterns has a different digest: OpenCode's last-match-wins makes
-    order semantic. The target mapping is code, not source; the digest changes when the source
-    changes.
-11. **W101, W106, W107, W109, W111, W112, W113, W114, W115 and W116 are emitted in this
-    milestone.** The full codes are `W101_CAPABILITY_DROPPED`, `W106_DENY_WINS`,
-    `W107_OUTSIDE_OWNERSHIP` (an extra skill-tree file, reported by `check` as drift),
-    `W109_PROFILE_BY_CHOICE` (profile selected where the live persona forces nothing, info),
-    `W111_ASK_DOWNGRADED`, `W112_PERMISSION_LOSSY` (OpenCode's `write` fold only; `write` is native
-    on Claude Code), `W113_ALLOW_LIST_NARROWS`, `W114_RENDERER_INTEGRITY_UNVERIFIED`,
-    `W115_CREDENTIAL_IN_URL` and `W116_SECRET_IN_ARGS`. W101 is emitted in profile
-    mode when any resolved persona declares a hook OpenCode cannot represent (including an inactive
-    persona, whose warning is still reported); agent mode refuses a hook reference before
-    representability is considered, so it has no W101 to report. W113 is emitted whenever a resource opts into the `tools`
-    allow-list: it names the tools the narrowing removes, and an opt-in whose categories all
-    resolve deny/ask is reported as having no effect (no `tools` is emitted, and the digest records
-    the same effective value the artefact does). W114 is emitted when the installed renderer's
-    tarball integrity could not be located and verified in the hidden
-    (`<installRoot>/node_modules/.package-lock.json`) or install-root
-    (`<installRoot>/package-lock.json`) npm lock record; its medium severity reflects that the
-    version check still runs, so this is a provenance gap rather than a correctness failure, but it
-    is never a silent pass. It is reported by `generate` and `check` and is not written into the
-    lockfile. W115 flags a credential-shaped query parameter in an MCP URL and never echoes its
-    value. The remaining W table, `--strict`, and severity promotion are deferred.
-12. **One recursive delete exists, in `src/render/stage.ts`.** It removes only the `mkdtemp`
-    directory the stage created, after proving it is inside the canonical temporary root. The
-    design's "no recursive delete in `src/`" rule is about never deleting user content; a
-    self-created temp stage is the one justified exception, and stage cleanup is required.
-13. **`F012_WRITE_FAILED` (exit `5`) is added for a commit that cannot complete.** It names the
-    managed path. A failure before the first rename leaves the tree unchanged; a failure between
-    renames restores what it can and reports any file it could not restore. The design's code table
-    has no write-failure code; this is a new one rather than overloading `F009` (a renderer
-    failure) with a filesystem error.
-14. **A rule's `description` frontmatter key is rejected.** Nothing emitted it, and a field the tool
-    accepts and ignores is the silent no-op the strict schema exists to prevent. Persona
-    `displayName` remains a required human label but is no longer required to be unique: it is not
-    emitted either, so a uniqueness rejection would have been a false rejection of valid input.
-15. **A YAML file with more than one document is refused (F001).** Parsing only the first document
-    would silently discard every persona after the first `---`.
-16. **`generate` and `init` are atomic for a caught failure, and honest after a removal.**
-    The managed output is staged in sibling temporary files and renamed only after every write has
-    succeeded, and a rename failure restores what it already replaced (reporting any restore it
-    could not complete). Created directories are recorded one level at a time and removed on
-    failure; a directory the rollback could not remove is named in the error instead of the error
-    claiming a clean tree. Orphan removal runs **before** the commit, so a commit failure after a
-    removal names the paths already removed instead of claiming "nothing was written"; the tree is
-    partially updated and `check` reports it. A crash between renames is not atomic; `init`
-    preflights the one path that can fail on an ordinary filesystem state, writes it with `O_EXCL`
-    under an unpredictable name, and rolls back what it created.
-17. **Exactly one target is rendered per run.** `targets` admits one entry; a second is F001.
-    Rendering both in one run needs a per-target lockfile and mode plan, which is later work. The
-    committed lockfile records the target that produced it, and `check` compares the bytes.
-18. **OpenCode's workspace resources require profile mode and are refused in agent mode.** MCP,
-    skills, commands and hooks are workspace-level on OpenCode. Emitting them from the union of the
-    live personas would hand every persona the declarer's resource, with no per-recipient record
-    and no opt-out, so agent mode refuses a reference with F001 naming the resource, the declaring
-    persona and "requires profile mode". Profile mode (this milestone) resolves only the active
-    persona and emits its config at the repository root and its skills, commands and hooks under
-    `.opencode/`.
-19. **The OpenCode per-agent `task` category is authored as `task`, not `agent`.** The design's
-    canonical mapping authors `task` as rulesync's `agent`. Measured at rulesync 43.11.0, the
-    per-agent V2 raise path translates `task` to `subagent` but passes `agent` through
-    untranslated, where OpenCode does not read it. Authoring `agent` would emit an inert record,
-    so the materialiser authors `task` and a test pins the emitted `subagent` action.
-20. **An unrepresentable OpenCode hook is a reported loss, not an omission.** `session-end` has
-    no OpenCode event, and a `matcher` is honoured only on the tool events (`before-tool`,
-    `after-tool`). Agent mode refuses any hook reference before representability is considered; in
-    profile mode the carried hooks are emitted and each unrepresentable one is reported as
-    `W101_CAPABILITY_DROPPED` at `high` severity.
-21. **A skill's extra files are UTF-8 text.** The managed-output pipeline compares and writes text,
-    so a valid UTF-8 file is reproduced byte for byte and a non-UTF-8 asset is refused (F001)
-    rather than corrupted.
-22. **`"allowlist": true` is refused on OpenCode.** OpenCode's permission records are a deny-list
-    and cannot name every unmodelled tool, so the Claude Code allow-list opt-in has no faithful
-    representation; it is F001, never a silent no-op.
-23. **The command kind is carried only at the workspace level.** The design's matrix marks
-    `command` as workspace-level; agent mode refuses it on OpenCode and on Claude Code with the
-    other workspace kinds. OpenCode profile mode carries it as `.opencode/commands/<id>.md`.
-24. **The new resource kinds accept only fields the tool carries.** `command` and `skill` require
-    `description` (emitted; a command without one cannot be rendered, so the missing field is a
-    deliberate F001), and neither accepts `displayName`; `mcp` and `hook` accept neither, because
-    neither is written into the artefact. `schema.md`'s generic `ResourceBase` allows a display name for every
-    resource; accepting one that is never emitted would be the silent no-op the strict schema exists
-    to reject. A rule keeps `displayName`, because it names the rule's section in the persona body.
-
-25. **The lockfile field is `activePersona`, not `active`.** `schema.md` 5.1 names the selection
-    `active`. This build records `activePersona` because the brief for M3 names it, and because the
-    field is the persona id while the config field it comes from is also called `active`; two
-    different scopes with one name invites a consumer to read the wrong one. `mode` is `agent` or
-    `profile`; `agent-with-loss` and `refuse` are not yet produced by this build. `notLive` records
-    the resolved-but-not-live personas, and `configDigest` records the config plus every persona and
-    resource file. Both are optional on read so a pre-M3 lockfile still parses; a legacy lockfile is
-    normalised to `mode: "agent"` and `activePersona: null`. A structured entry records `shape` and
-    `ownedKeys`, and its `sha256`/`size` describe the owned subset, not the whole file.
-26. **Profile mode is OpenCode-only in this build.** The design allows `active` on any target. This
-    build refuses it on `claudecode`, whose only workspace-only capability is `command` (content,
-    so it does not force a profile). Accepting a setting that does nothing would be the silent
-    no-op the strict schema exists to prevent.
-27. **Orphan removal is limited to recorded regular files in managed locations.** A recorded path
-    is removable only when it is in a managed directory (or is a target's whole root config file),
-    is still a regular file, and still has the recorded SHA-256, re-checked immediately before the
-    edit or `rm`. A symlink is refused and never followed; a directory, an edited file or an
-    unrecorded user file is never removed; an absent recorded path is dropped from the new lockfile.
-    A structured orphan keeps the user's other keys: only the owned key is deleted in place, and a
-    file left with nothing but comments is removed. The whole set is preflighted before any write,
-    and removals run before the new set is committed so a failed commit is reported as a partial
-    update rather than as an unrecorded leftover.
-28. **`opencode.jsonc` is structured, not whole-file.** The design's ownership model has five
-    shapes; this build implements `whole`, `tree` and `structured`. `opencode.jsonc` owns the `mcp`
-    key only and edits it **in place** with `jsonc-parser`'s `parseTree` + `applyEdits`, through
-    the precise source range of the owned property: setting replaces only the `mcp` value range,
-    deleting removes only the property plus the one separator that keeps the document valid (the
-    comma that follows it, or the comma before a final member with no trailing comma, so a valid
-    trailing-comma document never becomes `{ , }`), and inserting an absent key appends it without
-    reformatting the last foreign member. `jsonc-parser`'s `modify` is deliberately unused because
-    it reformats the neighbouring member and drops a comment above the property. Every other byte
-    is preserved, including comments, whitespace and the user's own keys (`$schema`, `theme`,
-    `instructions`, providers). `check` compares the owned key only, so a foreign-key or comment
-    edit is not drift, and the lockfile records the owned subset's digest rather than the whole
-    file, so two roots with the same source still produce identical lockfile bytes. An existing
-    `opencode.jsonc` the lockfile does not record is adopted only with `generate --adopt`, which
-    merges the owned key and keeps the user's keys. Region
-    ownership (`CLAUDE.md`, `AGENTS.md`) is still later work, and the persona's permissions stay in
-    its per-agent file: the per-agent permission array is the matrix's native per-persona carrier on
-    OpenCode, and a shared permissions block would be a second structured key this milestone does
-    not implement. The workspace `opencode.jsonc` therefore carries only `mcp` and profile mode does
-    not widen or share any permission across personas.
-29. **The active persona's OpenCode frontmatter keeps `mode: subagent`.** Profile mode changes
-    which personas are emitted, not the shape of the per-agent file. Promoting the live persona to
-    a primary mode is a product decision about how the session starts, and is not made here.
+- **Personas are YAML; config and permission resources are JSONC.** Config and permission files
+  reject duplicate keys. Persona files are `.farna/personas/*.yaml`.
+- **A permission resource may declare `patterns`.** A resource can carry
+  `patterns: { "<category>": { "<pattern>": "allow" | "ask" | "deny" } }` in addition to its bare
+  category values, which emits the harness's `Bash(P)` / `Edit(P)` byte form. A numeric pattern key
+  is refused because JavaScript would reorder it.
+- **A permission resource's identity is its declared `id`, not its file name.** Two permission
+  files may declare the same id: identical content is deduplicated, different content is
+  `F005_CONFLICT` naming both paths. A rule's identity is its file name.
+- **A model conflict is detected on the resolved concrete model id.** Two model classes that map to
+  the same id do not conflict; two classes that resolve to different ids do.
+- **The OpenCode per-agent `task` category is authored as `task`.** The V2 raise path translates
+  `task` to `subagent`; authoring `agent` would emit a record OpenCode does not read.
+- **An unrepresentable OpenCode hook is a reported loss, not an omission.** `session-end`, or a
+  matcher on a non-tool event, is reported as `W101_CAPABILITY_DROPPED` and is not emitted.
+- **`"allowlist": true` is refused on OpenCode.** OpenCode's records are a deny-list and cannot
+  name every unmodelled tool, so the Claude Code allow-list opt-in has no faithful representation.
+- **Profile mode is OpenCode-only in this release.** `claudecode` refuses `active` rather than
+  accepting a setting that does nothing.
+- **The lockfile field is `activePersona`.** `mode` is `agent` or `profile`; `notLive` records the
+  resolved-but-not-live personas. Both the mode and the selection are optional on read, so a
+  lockfile written before profile mode existed still parses and is normalised to agent mode.
+- **`opencode.jsonc` is structured, not whole-file.** It owns the `mcp` key only and edits it in
+  place, preserving the user's own keys and comments.
+- **Orphan removal is limited to recorded regular files in managed locations.** A symlink, a
+  directory, an edited file or an unrecorded user file is never removed.
 
 ## Develop
 
@@ -1189,7 +1046,7 @@ npm run typecheck
 npm test
 npm run build
 npm audit --audit-level=moderate
-node scripts/assert-pack.mjs     # the tarball carries the entry points and no repository-only path
+node scripts/assert-pack.mjs     # the tarball is dist/ plus the legal files, with no source map
 npm pack --dry-run               # the exact package npm would publish
 npm publish --dry-run            # the publish path, without publishing
 ```
@@ -1206,15 +1063,18 @@ the total, and a new suite is a deliberate, visible manifest edit. It also enfor
 test count (not an exact one), that no test is pending or `todo`, that `numPassedTests` accounts for
 the whole run, and that the real-renderer suites ran. CI also type-checks `tests/`, audits
 dependencies at `moderate`, and proves that `npm pack` from a tree with `dist/` moved aside still
-contains the entry points, which can only happen if `prepack` builds them.
+contains the entry points, which can only happen if `prepack` builds them, and that every path in
+the tarball is on the allowlist with no source map.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the full gate list and the pull-request expectations.
-Maintainers publish a release by pushing a `v*` tag; `.github/workflows/release.yml` runs the gates,
-publishes to npm with provenance and creates the GitHub Release, using the repository's
-`NPM_TOKEN` secret. See [Releasing](CONTRIBUTING.md#releasing).
+Maintainers publish a release by pushing a `v*` tag; `.github/workflows/release.yml` verifies the
+tag is on `main`, runs the gates, publishes the packed tarball to npm with provenance, and creates
+the GitHub Release. The publish job waits for approval on the `release` environment, whose
+`NPM_TOKEN` secret carries the npm token. See [Releasing](CONTRIBUTING.md#releasing).
 
 ## Licence
 
-MIT, Copyright (c) 2026 Farnalabs Ltd. See `LICENSE` and `NOTICE`. This project depends on
+MIT, Copyright (c) 2026 Farnalabs Ltd. See `LICENSE` and `NOTICE`. Security reports are handled
+under [SECURITY.md](SECURITY.md). This project depends on
 [rulesync](https://github.com/dyoshikawa/rulesync) (MIT, Copyright (c) 2024 dyoshikawa), used
 unmodified as a library; the third-party licence text is reproduced in `NOTICE`.

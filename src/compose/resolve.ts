@@ -364,7 +364,7 @@ function addResource(resources: Map<string, ResolvedResource>, resource: Resolve
   resources.set(key, resource);
 }
 
-/** Sorted canonically: schema.md 1.3 resource-kind order, then codepoint id. */
+/** Sorted canonically: resource-kind order, then codepoint id. */
 function sortResources(resources: ResolvedResource[]): ResolvedResource[] {
   return [...resources].sort((a, b) => {
     const byKind = (KIND_ORDER[a.kind] ?? 99) - (KIND_ORDER[b.kind] ?? 99);
@@ -764,7 +764,7 @@ export function resolveSource(
             code: 'W109_PROFILE_BY_CHOICE',
             persona: active ?? SOURCE_WARNING_SUBJECT,
             target,
-            message: `profile mode is active for ${target}${active === null ? '' : ` as ${active}`}, but no persona declares a capability that requires it; agent mode is the default${
+            message: `profile mode is active for ${target}${active === null ? '' : ` as ${active}`}, but ${active === null ? 'no persona' : 'the live persona'} declares no capability that requires it; agent mode is the default${
               notLive.length === 0
                 ? ''
                 : `, and ${notLive.join(', ')} ${notLive.length === 1 ? 'is' : 'are'} not live`

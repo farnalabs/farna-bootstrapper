@@ -4,7 +4,7 @@ import { canonicalJson, compareCodepoints, sha256Hex } from '../core/json.js';
 import { type Warning, warning } from '../report/warnings.js';
 
 /**
- * The product's permission vocabulary (schema.md section 4.5). This is the only
+ * The product's permission vocabulary. This is the only
  * place these words exist; the renderer source tree never receives one of them.
  */
 export const PERMISSION_CATEGORIES = [
@@ -35,7 +35,7 @@ export type PermissionPatterns = Partial<
  * `Task` name is a legacy alias). `network` and a bare `mcp` have no tool.
  *
  * W112 is not emitted here: `write` is native on Claude Code. The lossy
- * `write` -> `edit` collapse in the design belongs to OpenCode (M2b).
+ * `write` -> `edit` collapse belongs to OpenCode.
  */
 export const CLAUDE_TOOL_BY_CATEGORY: Record<'read' | 'write' | 'edit' | 'shell' | 'task', string> =
   {

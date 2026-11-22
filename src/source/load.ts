@@ -205,7 +205,7 @@ async function listEntries(
 }
 
 /**
- * Only the resource kinds this milestone loads may exist on disk. A `models/`
+ * Only the resource kinds this release loads may exist on disk. A `models/`
  * directory is not created by `init` and is refused when populated: a model is
  * the persona's `model` class, and accepting a model resource file the tool
  * then ignored would be the silent no-op the strict schema exists to prevent.

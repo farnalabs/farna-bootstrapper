@@ -90,7 +90,7 @@ describe('lockfile reading', () => {
   });
 
   it('accepts a legacy lockfile written before profile mode existed', async () => {
-    // A pre-M3 lockfile has neither `mode` nor `activePersona`. Failing to
+    // A lockfile written before profile mode has neither `mode` nor `activePersona`. Failing to
     // parse it made every path unrecorded, so a persona switch left the old
     // artefacts live and `check` reported clean.
     const repo = await generatedRepo();

@@ -3,12 +3,12 @@
 ## Supported versions
 
 `farna-bootstrapper` is pre-1.0. Only the latest published release receives fixes; the project does
-not maintain security backports for earlier `0.1.x` releases.
+not maintain security backports for earlier releases.
 
 | Version | Supported |
 |---|---|
-| `0.1.x` (latest release) | yes |
-| earlier `0.1.x` releases | no |
+| the latest published release | yes |
+| every earlier release | no |
 
 ## Reporting a vulnerability
 

@@ -28,7 +28,7 @@ output still matches the source.
 
 - **Three commands.** `init` creates the `.farna/` source root, the empty resource directories, and
   the `.gitignore` and `.gitattributes` lines the generated files need. `generate` renders,
-  verifies and commits the managed files plus `.farna/lock.json`; `--dry-run`, `--adopt` and
+  verifies and writes the managed files plus `.farna/lock.json`; `--dry-run`, `--adopt` and
   `--json` are supported. `check` re-renders into a temporary directory and exits `1` on any drift.
 - **Two targets.** `claudecode` writes `.claude/agents/<id>.md`; `opencode` (2.x) writes
   `.opencode/agents/<id>.md`. Exactly one target is configured per run. (An unreleased follow-up
@@ -45,8 +45,8 @@ output still matches the source.
   `hook` are strict sources; a persona names its model class in the persona file. MCP credentials
   are environment references only.
 - **Permission mapping.** Canonical categories map to each target's own byte form: Claude Code's
-  `Read`/`Edit`/`Bash`/`Agent` entries and per-agent `tools`/`disallowedTools`; OpenCode's ordered
-  `{ action, resource, effect }` records. A category neither target can carry is refused rather
+  `Read`/`Write`/`Edit`/`Bash`/`Agent` entries and per-agent `tools`/`disallowedTools`; OpenCode's
+  ordered `{ action, resource, effect }` records. A category neither target can carry is refused rather
   than emitted as an inert string. An opt-in Claude Code `tools` allow-list is reported when it
   narrows the tool set.
 - **Ownership with an explicit record.** `.farna/lock.json` records every managed path with its
@@ -63,7 +63,7 @@ output still matches the source.
   staged and renamed; a caught write failure restores what it replaced and names anything it could
   not restore. One `generate` runs at a time through a local lock.
 - **Release packaging.** The package publishes the ESM library types entry, the CLI `bin`, the
-  README, CHANGELOG, LICENSE and NOTICE. Publishing uses npm provenance.
+  README, CHANGELOG, LICENSE, NOTICE and SECURITY.md. Publishing uses npm provenance.
 - **No telemetry, no phone-home, no Farna Control dependency.** Generation and checking make no
   network request of their own, and a hook, MCP server or command the tool writes is never executed
   by it.
@@ -89,8 +89,9 @@ output still matches the source.
 - **No coverage threshold.** CI enforces lint, type-check, tests (with a minimum count and
   real-renderer suite assertions), a dependency audit at `moderate`, and the published-tarball
   contents.
-- **Windows test skips.** The symlink regression tests are skipped on Windows because creating a
-  symlink needs a privilege the runner does not grant; CI runs them on Linux.
+- **Windows test skips.** The symlink regression suites (creating a symlink needs a privilege the
+  runner does not grant), the POSIX mode assertions, the FIFO cases and the install-layout suite are
+  skipped on Windows; CI runs them on Linux.
 
 [Unreleased]: https://github.com/farnalabs/farna-bootstrapper/compare/v0.1.0...HEAD
 [0.1.0]: https://github.com/farnalabs/farna-bootstrapper/releases/tag/v0.1.0

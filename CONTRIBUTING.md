@@ -1,15 +1,15 @@
 # Contributing
 
 Thanks for taking a look. This is a small, deliberately narrow project: one package, one command
-surface, two targets. The fastest way to get a change accepted is to keep it inside that shape and
+surface, three targets. The fastest way to get a change accepted is to keep it inside that shape and
 to bring a test with it.
 
 ## Requirements
 
 - **Node.js 22.22.0 or newer** (the `rulesync` floor, and what `engines.node` promises). Older
   Node versions are not supported and CI does not test them.
-- **npm**. The repository was designed around `bun`; the delivered build uses npm, `tsc` and
-  Vitest. Do not add a second package manager, a workspace or a bundler step.
+- **npm**. The build uses npm, `tsc` and Vitest. Do not add a second package manager, a workspace
+  or a bundler step.
 - No Docker, no database, no service. The real-renderer suites run from an ordinary `npm ci`.
 
 ## Set up
@@ -51,11 +51,11 @@ What each gate is for:
 | `assert-test-count` | no suite silently deleted, skipped, left as `todo`, or failing to collect |
 | `build` | the published `dist/` entry points |
 | `audit` | no known moderate-or-worse advisory in the dependency tree |
-| `assert-pack` | `prepack` built the entry points, and the tarball carries only the product |
+| `assert-pack` | `prepack` built the entry points, and every tarball path is on the allowlist (`dist/` plus the legal files), with no source map |
 | `pack` / `publish-check` | the exact package npm will publish, without publishing it |
 
-Do not use `--no-verify`, skip a hook, lower the minimum test count, or delete or disable a test to
-get a green run. If a test is genuinely wrong, fix it in place and explain why in the pull request.
+Do not use `--no-verify`, lower the minimum test count, or delete or disable a test to get a green
+run. If a test is genuinely wrong, fix it in place and explain why in the pull request.
 
 ### Adding a test file
 
@@ -79,18 +79,11 @@ product**. Two rules follow:
 If you need a renderer behaviour the port does not expose, say so in the pull request before
 threading a new field through. A silent widening of the seam is a design change, not a fix.
 
-## Design location
+## Where a change belongs
 
-The design record for the product is maintained by the maintainers outside this repository:
-
-- `prd.md` — the problem, users, principles, v1 scope and the product's definition of done;
-- `implementation-plan.md` — architecture, module boundaries, determinism, security and milestones;
-- `design/` — the concrete schema, CLI, capability matrix and vertical-slice design, including the
-  worked example.
-
-This repository's README is the user-facing contract and the design record for anything it covers.
-If a design decision is not explained by either, open an issue and ask rather than guessing; a
-change that silently invents product behaviour will be declined.
+This repository's README is the user-facing contract and the record of the behaviour it covers. If a
+behaviour is not explained there, open an issue and ask rather than inferring it from a generated
+file; a change that silently invents product behaviour will be declined.
 
 ## Pull request expectations
 
@@ -118,6 +111,7 @@ publishes from a laptop.
 
 1. Update `version` in `package.json` and add the entry to `CHANGELOG.md` in a normal pull request.
    `PRODUCT_VERSION` in `src/core/constants.ts` must equal the manifest version (a test asserts it).
+   If the release changes behaviour the README states, update the README in the same pull request.
 2. Merge the pull request and wait for CI on `main` to pass.
 3. Create and push an annotated tag whose name is `v` plus that exact version:
 
@@ -126,18 +120,29 @@ publishes from a laptop.
    git push origin v0.1.0
    ```
 
-   `.github/workflows/release.yml` runs on `v*` tags, refuses a tag that does not match
-   `package.json`, runs the full gate list, packs, publishes with npm provenance, and creates the
-   GitHub Release. The maintainer publishes the tag; the workflow does the rest.
+   `.github/workflows/release.yml` runs on `v*` tags. Its `verify` job checks out full history,
+   refuses a tag that does not match `package.json` or whose commit is not an ancestor of
+   `origin/main`, runs the full gate list, and uploads the exact tarball `npm pack` produced. Its
+   `publish` job names the `release` environment, so it waits for the required reviewers before the
+   npm token is available, then publishes that tarball with npm provenance and creates the GitHub
+   Release.
+4. Approve the `release` environment when the publish job asks.
 
-The repository secret **`NPM_TOKEN`** is required (Settings > Secrets and variables > Actions). It
-is an npm automation token with publish rights for `farna-bootstrapper`. The GitHub Release uses the
-workflow's own `GITHUB_TOKEN`. Provenance is generated from the workflow's OIDC identity, so no
-additional signing secret is stored.
+The environment secret **`release.NPM_TOKEN`** is required (Settings > Environments > release >
+Environment secrets). It is an npm automation token with publish rights for `farna-bootstrapper`.
+The GitHub Release uses the workflow's own `GITHUB_TOKEN`. Provenance is generated from the
+workflow's OIDC identity, so no additional signing secret is stored.
+
+The dist-tag is derived by the workflow, never typed: `1.2.3` publishes to `latest` and
+`1.2.3-beta.1` publishes to `next`; a version that is neither fails the run before publishing.
+Re-running a partially failed release is safe: an npm version that already exists is skipped, and
+the GitHub Release is created only when it is absent.
 
 Before tagging, `npm run pack`, `npm run publish-check` and `npm run assert-pack` must all exit `0`
-locally. If a release must be withdrawn, unpublish or deprecate the npm version deliberately and
-record why in the changelog; never re-tag a published version.
+locally. After the first successful publish of a version, verify that the README quickstart
+(`npx farna-bootstrapper --version`, then `init`, `generate` and `check`) works against the
+published package. If a release must be withdrawn, unpublish or deprecate the npm version
+deliberately and record why in the changelog; never re-tag a published version.
 
 ## No telemetry, no phone-home, no secrets
 
