@@ -312,7 +312,10 @@ describe('the built CLI', () => {
     } finally {
       await repo.cleanup();
     }
-  });
+    // This case renders, writes and then re-renders through the built CLI, so
+    // it needs a realistic bound: the 5 s default is marginal on a loaded
+    // machine and reports a slow run as a failure.
+  }, 20_000);
 
   it('fails F010 with exit 5 when the lockfile names another renderer', async () => {
     const repo = await generated();

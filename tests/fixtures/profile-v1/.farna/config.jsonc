@@ -1,0 +1,15 @@
+{
+  // Profile mode on the OpenCode 1.x target: exactly one persona is live and
+  // owns the workspace at the repository root, so its MCP servers, skills,
+  // commands and hooks are emitted there in the V1 shapes. Switch the persona
+  // with `--persona <id>`.
+  "schemaVersion": 1,
+  "targets": {
+    "opencodev1": { "active": "builder" }
+  },
+  "models": {
+    "standard": {
+      "opencodev1": "anthropic/claude-sonnet-4-5"
+    }
+  }
+}

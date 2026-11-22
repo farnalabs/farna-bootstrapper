@@ -12,7 +12,10 @@
       "!node_modules",
       "!package-lock.json",
       "!vitest-report.json",
-      "!tests/golden/opencode-builder.md"
+      "!tests/golden/opencode-builder.md",
+      "!tests/golden/opencode-v1-builder.md",
+      "!tests/golden/opencode-v1.jsonc",
+      "!tests/golden/opencode-v1-hooks.js"
     ]
   },
   "formatter": {

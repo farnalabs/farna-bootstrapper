@@ -1,0 +1,16 @@
+{
+  "mcp": {
+    "scan": {
+      "type": "local",
+      "command": [
+        "npx",
+        "-y",
+        "example-security-mcp"
+      ],
+      "enabled": true,
+      "environment": {
+        "EXAMPLE_TOKEN": "{env:EXAMPLE_TOKEN}"
+      }
+    }
+  }
+}

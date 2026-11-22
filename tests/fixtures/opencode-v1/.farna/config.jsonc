@@ -1,0 +1,14 @@
+{
+  // The OpenCode 1.x target in agent mode. The workspace resource kinds (mcp,
+  // skill, command and hook) require profile mode and are refused here; the
+  // fixture keeps their source files so the refusal is exercised deliberately.
+  "schemaVersion": 1,
+  "targets": {
+    "opencodev1": {}
+  },
+  "models": {
+    "standard": {
+      "opencodev1": "anthropic/claude-sonnet-4-5"
+    }
+  }
+}

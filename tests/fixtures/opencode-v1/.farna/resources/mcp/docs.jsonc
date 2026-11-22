@@ -1,0 +1,11 @@
+{
+  "kind": "mcp",
+  "id": "docs",
+  "server": {
+    "type": "http",
+    "url": "https://docs.example.test/mcp",
+    "headers": {
+      "Authorization": { "fromEnv": "DOCS_TOKEN" }
+    }
+  }
+}
