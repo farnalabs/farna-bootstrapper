@@ -95,9 +95,9 @@ file; a change that silently invents product behaviour will be declined.
   true. A docs-only edit is still a change: verify the statement against the code, do not assume it.
 - **Keep `files` an allowlist.** `src/`, `tests/`, `scripts/`, `examples/`, `docs/` and `.github/`
   never reach the published package. `scripts/assert-pack.mjs` fails the build if one does.
-- **No new subcommand.** The CLI surface is `init`, `generate` and `check`. `doctor`, `run`, `use`,
-  `list`, `fetch` and the like are deliberately absent (see the README's
-  [What this slice does not do](README.md#what-this-slice-does-not-do)).
+- **No new subcommand without a design change.** The CLI surface is `init`, `doctor`, `report`,
+  `generate` and `check`. `run`, `use`, `list`, `fetch` and the like are deliberately absent (see
+  the README's [What this slice does not do](README.md#what-this-slice-does-not-do)).
 - **Exactly one target per run.** A change that renders several targets in one invocation needs a
   per-target lockfile and mode plan; propose it as a design change first.
 - **No change to a golden byte without explaining which source change moved it.**
@@ -116,8 +116,8 @@ publishes from a laptop.
 3. Create and push an annotated tag whose name is `v` plus that exact version:
 
    ```sh
-   git tag -a v0.1.0 -m "v0.1.0"
-   git push origin v0.1.0
+   git tag -a v0.1.1 -m "v0.1.1"
+   git push origin v0.1.1
    ```
 
    `.github/workflows/release.yml` runs on `v*` tags. Its `verify` job checks out full history,

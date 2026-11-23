@@ -5,7 +5,12 @@ import { promisify } from 'node:util';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { buildProgram } from '../../src/cli/program.js';
 import { FakeRenderTarget } from '../support/fake-renderer.js';
-import { createTempRepo, type TempRepo } from '../support/temp-repo.js';
+import {
+  createEmptyTempDir,
+  createTempRepo,
+  hashTree,
+  type TempRepo,
+} from '../support/temp-repo.js';
 
 const execFileAsync = promisify(execFile);
 const ROOT = process.cwd();
@@ -69,10 +74,12 @@ describe('the built CLI', () => {
     await execFileAsync(NPM, ['run', 'build'], { cwd: ROOT, timeout: 180_000 });
   }, 180_000);
 
-  it('documents the supported OpenCode major in --help', async () => {
+  it('documents the supported OpenCode major and the five commands in --help', async () => {
     const result = await runCli(ROOT, ['--help']);
     expect(result.code).toBe(0);
     expect(result.stdout).toContain('OpenCode 2.x');
+    expect(result.stdout).toContain('doctor');
+    expect(result.stdout).toContain('report');
   });
 
   it('generates cleanly and emits the success envelope on stdout', async () => {
@@ -356,6 +363,89 @@ describe('the built CLI', () => {
         subject: null,
       });
       expect(String(body['message'])).toContain('unknown option');
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
+  it('validates a source with doctor and emits the success envelope', async () => {
+    const repo = await createTempRepo('composed');
+    try {
+      const before = await hashTree(repo.root);
+      const result = await runCli(repo.root, ['doctor', '--json']);
+      expect(result.code).toBe(0);
+      expect(result.stderr).toBe('');
+      const body = parseObject(result.stdout);
+      expect(body).toMatchObject({
+        schemaVersion: 1,
+        command: 'doctor',
+        ok: true,
+        exitCode: 0,
+        target: 'claudecode',
+        mode: 'agent',
+        configPath: '.farna/config.jsonc',
+      });
+      expect(Array.isArray(body['checks'])).toBe(true);
+      expect(Array.isArray(body['personas'])).toBe(true);
+      // doctor writes nothing at all, not even a lockfile or a stage.
+      expect(await hashTree(repo.root)).toBe(before);
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
+  it('prints the doctor report without --json', async () => {
+    const repo = await createTempRepo('demo');
+    try {
+      const result = await runCli(repo.root, ['doctor']);
+      expect(result.code).toBe(0);
+      expect(result.stdout).toContain('farna-bootstrapper doctor');
+      expect(result.stdout).toContain('claudecode (agent mode)');
+      expect(result.stdout).toContain('doctor: ok');
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
+  it('fails doctor with the typed code and a non-zero exit on an invalid source', async () => {
+    const repo = await createTempRepo('demo');
+    try {
+      await writeFile(join(repo.root, '.farna/config.jsonc'), '{ "schemaVersion": 2 }\n', 'utf8');
+      const result = await runCli(repo.root, ['doctor', '--json']);
+      expect(result.code).toBe(1);
+      const body = parseObject(result.stdout);
+      expect(body).toMatchObject({
+        command: 'doctor',
+        ok: false,
+        exitCode: 1,
+        code: 'F001_INVALID_CONFIG',
+      });
+      expect(result.stderr).toContain('F001_INVALID_CONFIG');
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
+  it('prints the capability matrix outside a source tree, with JSON and human output', async () => {
+    const repo = await createEmptyTempDir();
+    try {
+      const before = await hashTree(repo.root);
+      const json = await runCli(repo.root, ['report', '--json']);
+      expect(json.code).toBe(0);
+      expect(json.stderr).toBe('');
+      const body = parseObject(json.stdout);
+      expect(body).toMatchObject({ schemaVersion: 1, command: 'report', ok: true, exitCode: 0 });
+      expect(Array.isArray(body['targets'])).toBe(true);
+      expect((body['targets'] as unknown[]).length).toBe(3);
+
+      const human = await runCli(repo.root, ['report']);
+      expect(human.code).toBe(0);
+      expect(human.stdout).toContain('capability matrix');
+      expect(human.stdout).toContain('report: ok');
+      // `unknown` is rendered as its own glyph and word, never as a tick.
+      expect(human.stdout).toContain('not measured');
+      expect(human.stdout).toContain('[?]');
+      expect(await hashTree(repo.root)).toBe(before);
     } finally {
       await repo.cleanup();
     }

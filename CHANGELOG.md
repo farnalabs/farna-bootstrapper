@@ -6,6 +6,35 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before 1.0.0, a minor
 release may contain a breaking change; every change of that kind is listed under **Changed**.
 
+## [0.1.2] - 2026-11-23
+
+### Added
+
+- **`doctor`.** Validates a `.farna` source without rendering or writing: the config schema, persona
+  and resource references, `extends` cycles, the model map, target support, permission categories
+  and patterns, secret references, path and symlink safety, and the profile-mode invariants. It
+  reuses the same config loader, source loader and resolver as `generate` and `check`, so it cannot
+  accept a source they refuse. A failure carries the same typed code and exit status; `--json`
+  emits one object, and the human report lists every check that ran, every resolved persona and
+  resource with its source path, and every warning.
+- **`report`.** Prints the measured capability matrix for all three supported targets, with two
+  emissions per capability (per persona and workspace level) and a per-key permission table. The
+  vocabulary is `native`, `emulated`, `dropped` and `unknown`; `unknown` renders as `[?] not
+  measured` and is never a tick. `--json` emits the same claim as data. The command reads no source
+  tree and writes nothing.
+- **A structural matrix guard.** `verifySnapshot` refuses (F010) a snapshot measured against a
+  different renderer, a missing supported-target row, or an `unknown` cell on a promised target.
+
+### Changed
+
+- The README, `CONTRIBUTING.md` and `--help` describe the five-command surface and the capability
+  report.
+
+### Fixed
+
+- The `CONTRIBUTING.md` release example used `v0.1.0` as its tag; it now uses the current release
+  version.
+
 ## [0.1.1] - 2026-11-22
 
 ### Added
@@ -103,5 +132,6 @@ output still matches the source.
   runner does not grant), the POSIX mode assertions, the FIFO cases and the install-layout suite are
   skipped on Windows; CI runs them on Linux.
 
+[0.1.2]: https://github.com/farnalabs/farna-bootstrapper/releases/tag/v0.1.2
 [0.1.1]: https://github.com/farnalabs/farna-bootstrapper/releases/tag/v0.1.1
 [0.1.0]: https://github.com/farnalabs/farna-bootstrapper/releases/tag/v0.1.0

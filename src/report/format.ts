@@ -1,4 +1,5 @@
 import type { CheckResult } from '../cli/commands/check.js';
+import type { DoctorResult } from '../cli/commands/doctor.js';
 import type { GenerateResult } from '../cli/commands/generate.js';
 import type { InitResult } from '../cli/commands/init.js';
 import type { RenderMode } from '../core/constants.js';
@@ -112,6 +113,62 @@ export function formatCheck(result: CheckResult): string {
   }
   lines.push(...warningLines(result.warnings));
   lines.push('', 'check: drift');
+  return `${lines.join('\n')}\n`;
+}
+
+/**
+ * The validation report. Every check listed here ran to completion: `doctor`
+ * fails at the first error and never prints a partial success, so a check name
+ * in this section is evidence the check did not fail.
+ */
+export function formatDoctor(result: DoctorResult): string {
+  const lines = ['farna-bootstrapper doctor'];
+  lines.push(`  source    ${escapeControlCharacters(result.configPath)}`);
+  lines.push(
+    `  target    ${escapeControlCharacters(result.target)} (${modeLabel(result.mode, result.activePersona)})`,
+  );
+  lines.push(`  personas  ${result.counts.personas} in source, ${result.counts.live} live`);
+  const notLive = notLiveLine(result.mode, result.notLive);
+  if (notLive !== undefined) {
+    lines.push(notLive);
+  }
+  lines.push(`  checks    ${result.checks.length} ok`);
+  lines.push(`  warnings  ${result.warnings.length}`);
+
+  lines.push('', 'checks');
+  for (const check of result.checks) {
+    lines.push(`  ok  ${check.name.padEnd(36)}${escapeControlCharacters(check.detail)}`);
+  }
+
+  lines.push('', 'personas');
+  for (const persona of result.personas) {
+    lines.push(`  ${escapeControlCharacters(persona.id)}`);
+    lines.push(`    chain      ${persona.chain.map(escapeControlCharacters).join(' -> ')}`);
+    lines.push(`    mode       ${persona.mode ?? 'subagent (default)'}`);
+    lines.push(
+      `    model      ${persona.model === null ? '<none>' : escapeControlCharacters(persona.model)}`,
+    );
+    for (const resource of persona.resources) {
+      const from =
+        resource.fromPersona === persona.id
+          ? ''
+          : ` (from ${escapeControlCharacters(resource.fromPersona)}, rank ${resource.rank})`;
+      lines.push(
+        `    resource   ${`${resource.kind}/${resource.id}`.padEnd(28)}${escapeControlCharacters(resource.path)}${from}`,
+      );
+    }
+  }
+
+  if (result.warnings.length > 0) {
+    lines.push('', 'warnings');
+    for (const entry of result.warnings) {
+      lines.push(
+        `  ${entry.code} ${entry.severity.padEnd(6)} ${escapeControlCharacters(entry.persona)}: ${escapeControlCharacters(entry.message)}`,
+      );
+    }
+  }
+
+  lines.push('', 'doctor: ok');
   return `${lines.join('\n')}\n`;
 }
 

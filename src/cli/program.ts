@@ -12,10 +12,19 @@ import {
 import { FarnaError } from '../core/errors.js';
 import type { RenderTarget } from '../render/port.js';
 import { RENDERER_PIN } from '../render/upstream.js';
-import { formatCheck, formatGenerate, formatInit, formatJson } from '../report/format.js';
+import { formatCapabilityReport } from '../report/capability.js';
+import {
+  formatCheck,
+  formatDoctor,
+  formatGenerate,
+  formatInit,
+  formatJson,
+} from '../report/format.js';
 import { runCheck } from './commands/check.js';
+import { runDoctor } from './commands/doctor.js';
 import { runGenerate } from './commands/generate.js';
 import { runInit } from './commands/init.js';
+import { runReport } from './commands/report.js';
 
 export type CliContext = {
   cwd: string;
@@ -25,7 +34,7 @@ export type CliContext = {
   argv: readonly string[];
 };
 
-type CommandName = 'init' | 'generate' | 'check';
+type CommandName = 'init' | 'doctor' | 'report' | 'generate' | 'check';
 
 type CommandOutcome = {
   payload: Record<string, unknown>;
@@ -105,17 +114,20 @@ async function emit(
   }
 }
 
-/** Commander wiring for the three commands this slice implements. */
+/** Commander wiring for the five commands this slice implements. */
 export function buildProgram(context: CliContext): Command {
   const program = new Command();
   program
     .name(PRODUCT_NAME)
     .description(
-      'Compile named agent personas and resources into harness configuration, and prove the output still matches the source.',
+      'Compile named agent personas and resources into harness configuration, prove the output still matches the source, and report what each target carries.',
     )
     .addHelpText(
       'after',
-      `\nTwo OpenCode targets are supported, one per run: "opencode" for OpenCode ${OPENCODE_SUPPORTED_MAJOR}.x
+      `\nFive commands: init, doctor, report, generate and check. doctor validates a source without
+rendering or writing; report prints the measured capability matrix for every supported target.
+
+Two OpenCode targets are supported, one per run: "opencode" for OpenCode ${OPENCODE_SUPPORTED_MAJOR}.x
 (@opencode/cli) and "opencodev1" for OpenCode ${OPENCODE_V1_SUPPORTED_MAJOR}.x (opencode-ai). They write the same
 paths in each major's own shapes; configuring both at once is refused.
 \nProfile mode: pass --persona <id> to generate or check, or set "active" under a target
@@ -152,6 +164,43 @@ remains the default.`,
             exitCode: EXIT.ok,
           },
           text: formatInit(result),
+          exitCode: EXIT.ok,
+        };
+      });
+    });
+
+  program
+    .command('doctor')
+    .exitOverride()
+    .description('validate the source without rendering or writing anything')
+    .option('--json', 'print one JSON object')
+    .action(async (options: { json?: boolean }) => {
+      await emit('doctor', options.json === true, context, async () => {
+        const result = await runDoctor(context.cwd);
+        return {
+          payload: {
+            schemaVersion: SCHEMA_VERSION,
+            command: 'doctor',
+            ...result,
+            exitCode: EXIT.ok,
+          },
+          text: formatDoctor(result),
+          exitCode: EXIT.ok,
+        };
+      });
+    });
+
+  program
+    .command('report')
+    .exitOverride()
+    .description('print the measured capability matrix for every supported target')
+    .option('--json', 'print one JSON object')
+    .action(async (options: { json?: boolean }) => {
+      await emit('report', options.json === true, context, async () => {
+        const result = runReport();
+        return {
+          payload: result,
+          text: formatCapabilityReport(result),
           exitCode: EXIT.ok,
         };
       });

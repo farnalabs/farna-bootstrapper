@@ -281,6 +281,35 @@ describe('source loader', () => {
     }
   });
 
+  it('refuses every workspace resource kind on claudecode, not only skill', async () => {
+    const repo = await createTempRepo();
+    try {
+      for (const ref of [
+        'skill/secure-review',
+        'command/pytest',
+        'mcp/scan',
+        'hook/format-on-save',
+      ]) {
+        await writeFile(
+          join(repo.root, '.farna/personas/reviewer.yaml'),
+          `kind: persona\nid: reviewer\ndisplayName: Reviewer\npurpose: Reviews a change.\nresources:\n  - ${ref}\n`,
+          'utf8',
+        );
+        const config = await loadConfig(repo.root);
+        const source = await loadSource(repo.root);
+        const error = await expectFarnaError(
+          Promise.resolve().then(() => resolveSource(source, config)),
+          'F001_INVALID_CONFIG',
+        );
+        expect(error.message).toBe(
+          `the ${ref.split('/')[0]} resource kind is not carried by claudecode in this slice`,
+        );
+      }
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
   it('rejects a resource directory this slice does not implement', async () => {
     const repo = await createTempRepo();
     try {

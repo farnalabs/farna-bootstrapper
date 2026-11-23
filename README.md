@@ -16,6 +16,12 @@ and their resources once, under `.farna/`, and it renders the files a harness re
 - **`check`** renders the same source into a temporary directory and compares it with the
   repository. Exit `0` when identical, `1` when anything drifted. It never writes.
 - **`init`** creates the source root and the ignore/attribute lines generated output needs.
+- **`doctor`** validates the source without rendering or writing: schema, references, `extends`
+  cycles, the model map, target support, permissions, secret references, paths and profile-mode
+  invariants. It exits `0` when the source is valid; when it is not, it reports the loader's own
+  typed code and exits non-zero.
+- **`report`** prints the measured capability matrix for every supported target, in a human table
+  or as one JSON object. It reads no source and writes nothing.
 
 It is a compiler in the useful sense, not a loader:
 
@@ -44,10 +50,10 @@ It is a compiler in the useful sense, not a loader:
 
 ## Status
 
-This is the first public release. It implements three commands (`init`, `generate` and
-`check`), three targets (`claudecode`, `opencode` for OpenCode 2.x and `opencodev1` for OpenCode
-1.x), agent mode plus OpenCode profile mode, six resource kinds (`rule`, `permission`, `mcp`,
-`skill`, `command` and `hook`) with a model class, and composition with one base persona per
+This is the first public release. It implements five commands (`init`, `doctor`, `report`,
+`generate` and `check`), three targets (`claudecode`, `opencode` for OpenCode 2.x and `opencodev1`
+for OpenCode 1.x), agent mode plus OpenCode profile mode, six resource kinds (`rule`, `permission`,
+`mcp`, `skill`, `command` and `hook`) with a model class, and composition with one base persona per
 composed persona. Exactly one configured target is rendered per run. Everything else is
 deliberately deferred; see
 [What this slice does not do](#what-this-slice-does-not-do) and
@@ -68,8 +74,10 @@ npx farna-bootstrapper init
 one file per resource; [Use](#use) has a complete pair. Then:
 
 ```sh
+npx farna-bootstrapper doctor     # validate the source; write nothing
 npx farna-bootstrapper generate   # render the target and write .farna/lock.json
 npx farna-bootstrapper check      # exit 0 when the tree matches a fresh render
+npx farna-bootstrapper report     # print the measured capability matrix
 ```
 
 Commit `.farna/` and the generated files. Running `check` in CI is the drift gate: a hand edit, a
@@ -78,6 +86,7 @@ stale render, or a source change that was never regenerated exits `1` and names 
 ## The loop
 
 1. You declare personas and their resources under `.farna/`, and select one target in the config.
+   `farna-bootstrapper doctor` validates that declaration without rendering it.
 2. `farna-bootstrapper generate` renders that target's artefacts and records what it wrote in
    `.farna/lock.json`. Claude Code gets one whole file per persona under `.claude/agents/`; OpenCode
    in agent mode gets one whole file per persona under `.opencode/agents/` and no workspace file;
@@ -301,6 +310,8 @@ Write the smallest change that satisfies the ticket.
 Then run:
 
 ```sh
+farna-bootstrapper doctor            # validate the source; render and write nothing
+farna-bootstrapper report            # print the measured capability matrix
 farna-bootstrapper generate          # write the agent files and the lockfile
 farna-bootstrapper generate --dry-run # print the plan, write nothing
 farna-bootstrapper generate --adopt  # take ownership of existing outputs (see below)
@@ -316,6 +327,8 @@ The complete flag surface:
 | all | `--json` | emit one JSON object on stdout and suppress the human report; a typed failure also writes its one human line to stderr |
 | all | `-v, --version`, `-h, --help` | print the compiled-in version or usage; neither needs the renderer |
 | `init` | `--json` | the created/updated paths and the next step |
+| `doctor` | `--json` | every validation that ran, every resolved persona and resource, and the warnings |
+| `report` | `--json` | the measured capability matrix for every supported target |
 | `generate` | `--dry-run` | print the plan and write nothing; `would-write` and `unchanged` are counted separately |
 | `generate` | `--adopt` | take ownership of every existing planned managed output; required when the lockfile is missing |
 | `generate` | `--persona <id>` | run profile mode as that persona; wins over `targets.<target>.active` and is not written back |
@@ -377,24 +390,49 @@ writing any of them.
 
 ### Capability matrix
 
-What this release actually carries. A cell is either **native** (written into the emitted
-artefact), **profile only** (written at the workspace level, so it requires profile mode and exactly
-one live persona), **not carried** (refused with `F001`, naming the reference; nothing is written),
-or **unknown** (the harness behaviour is not verified by this release, so it is never claimed as a
-tick).
+What this release actually carries, as measured by the tests that pin the emitted bytes and the
+refusals. A cell has one of four values, and each has exactly one rendering in the `report` command:
 
-| Capability | Claude Code, per agent | Claude Code, workspace | OpenCode 2.x, per agent | OpenCode 2.x, workspace | OpenCode 1.x, per agent | OpenCode 1.x, workspace |
+| Value | Meaning | Glyph | Never |
+|---|---|---|---|
+| **native** | written into the emitted artefact | `[x]` | a claim that the harness obeys it at runtime |
+| **emulated** | carried under a different category whose effect differs | `[~]` | counted as carried for a boundary capability |
+| **dropped** | the target receives nothing; a declared reference is refused (`F001`) or reported (`W101`) | `[ ]` | silent |
+| **unknown** | not measured in this release | `[?] not measured` | rendered as a tick |
+
+`farna-bootstrapper report` prints this matrix for all three supported targets, as a human table or
+as one JSON object with `--json`. It reads no source and writes nothing; the same data is what this
+section documents.
+
+| Capability | claudecode, agent | claudecode, workspace | opencode, agent | opencode, workspace | opencodev1, agent | opencodev1, workspace |
 |---|---|---|---|---|---|---|
-| `rule` | native | — | native | — | native | — |
-| `model` | native | — | native | — | native | — |
-| `mode` (`primary`/`subagent`/`all`) | not carried (`W117`) | — | native | — | native | — |
-| `permission` | native (allow-list via opt-in) | — | native (deny-list; `write` folds into `edit`, W112) | — | native (per-tool map; `write` folds into `edit`, W112) | — |
-| `mcp` | not carried | — | not carried in agent mode | profile only (`mcp.servers`) | not carried in agent mode | profile only (flat `mcp.<name>`) |
-| `skill` | not carried | — | not carried in agent mode | profile only | not carried in agent mode | profile only |
-| `command` | not carried | — | not carried in agent mode | profile only | not carried in agent mode | profile only |
-| `hook` | not carried | — | not carried in agent mode | profile only; `{ id, setup }` plugin, representable events only (W101) | not carried in agent mode | profile only; `RulesyncHooksPlugin`, representable events only (W101) |
-| `temperature` | not carried (not authored) | — | not carried (not authored) | — | not carried (not authored) | — |
-| `tools` (per-agent) | native (allow-list via opt-in) | — | not carried (an OpenCode allow-list cannot be expressed) | — | not carried (an OpenCode allow-list cannot be expressed) | — |
+| `rule` | native | dropped [^claude-workspace] | native | native | native | native |
+| `model` | native | dropped [^claude-workspace] | native | native | native | native |
+| `permission` | native | dropped [^claude-workspace] | native | native | native | native |
+| `skill` | dropped | dropped [^claude-workspace] | dropped | native | dropped | native |
+| `command` | dropped | dropped [^claude-workspace] | dropped | native | dropped | native |
+| `mcp` | dropped | dropped [^claude-workspace] | dropped | native | dropped | native |
+| `hook` | dropped | dropped [^claude-workspace] | dropped | native | dropped | native |
+
+[^claude-workspace]: Profile mode is not supported on `claudecode` in this release, so no
+    workspace-level output is written for any capability.
+
+The `permission` capability is one cell but a per-key measurement. `report` prints the key table
+too, because the cell alone would hide where a key widens or refuses:
+
+| Permission key | claudecode | opencode | opencodev1 |
+|---|---|---|---|
+| `read`, `edit`, `shell`, `task` | native | native | native |
+| `write` | native | emulated (`W112`) | emulated (`W112`) |
+| `network` | dropped (`F011`) | dropped (`F011`) | dropped (`F011`) |
+| `mcp` (bare category) | dropped (`F011`) | not measured, refused (`F011`) | not measured, refused (`F011`) |
+
+`write` on OpenCode is emulated, not native: OpenCode has no write category, so the rule lands as
+`edit`, and an `allow` then also permits modifying existing files. `W112_PERMISSION_LOSSY` at high
+severity names the widening, and a declaration is never silently weakened. A bare `network` or
+`mcp` category has no mapping on any target, so it is refused (`F011`) rather than written as an
+inert rule; the bare `mcp` category on OpenCode is recorded as **not measured** and is never claimed
+as carried.
 
 The OpenCode V1 columns record these differences from V2, each verified against rulesync 43.11.0
 output in this repository's golden tests:
@@ -411,23 +449,24 @@ output in this repository's golden tests:
 - **Hooks plugin** — V1 writes the `RulesyncHooksPlugin` module, which OpenCode 2.x does not run;
   V2 writes the `{ id, setup }` plugin, which OpenCode 1.x does not run.
 
-Cells that are not verified by a test in this release are **unknown**, never a tick. In particular,
-this release verifies the emitted bytes and their containment; it does not verify that a particular
-OpenCode build honours `temperature` or per-agent `tools`, and it does not author either field, so
-they are not claimed.
-
 Two details matter more than the table:
 
 - **OpenCode's workspace kinds are not an agent-mode loss warning.** A workspace emission would give
   every persona the declaring persona's MCP server, skill, command or hook, with no per-recipient
   record and no opt-out. That is not a capability the author declared for those personas, so agent
-  mode refuses the reference and points at profile mode instead of emitting it.
+  mode refuses the reference and points at profile mode instead of emitting it. Profile mode carries
+  the live persona's kinds; a hook OpenCode cannot represent (`session-end`, or a matcher on a
+  non-tool event) is reported as `W101_CAPABILITY_DROPPED` at high severity and is not emitted.
 - **Claude Code's workspace kinds are absent from this release.** `claudecode` does not carry
-  `mcp`, `skill`, `command` or `hook` at all yet; a reference is refused rather than silently
+  `mcp`, `skill`, `command` or `hook` at any level yet; a reference is refused rather than silently
   losing it. Profile mode on `claudecode` is later work.
 
-A full 71-target capability matrix, the `agent with loss` and `refuse` plan outcomes, and a
-generated capability report page are not in this release. See
+A persona `mode` is documented separately from these seven capabilities: it is native on both
+OpenCode targets and has no Claude Code field (`W117_PERSONA_MODE_IGNORED`). The opt-in Claude Code
+`tools` allow-list has no OpenCode equivalent and is refused there; see [Permissions](#permissions).
+
+The full 71-target matrix and the generated `docs/capability-matrix.md` page are not in this
+release. `report` prints the measured matrix for the three supported targets today. See
 [What this slice does not do](#what-this-slice-does-not-do).
 
 ### Output layout
@@ -740,12 +779,13 @@ on stdout and its single human line on stderr.
 
 ```text
 src/
-  cli/            Commander wiring, the three commands, and the error boundary
+  cli/            Commander wiring, the five commands, and the error boundary
   config/         strict JSONC config schema and loader
   source/         YAML personas; markdown rules, skills and commands; JSONC permissions,
                   MCP servers and hooks; strict frontmatter and reference-only secrets
   compose/        mode resolution, extends resolution, resource union, deny-wins merge, digests
   permissions/    the canonical vocabulary and the Claude Code and OpenCode mappings
+  matrix/         the measured capability snapshot and its F010 integrity guard
   materialise/    persona and workspace resources -> rulesync source tree
   render/         port.ts (the seam), upstream.ts (the only rulesync import),
                   identity.ts (installed vs pinned renderer), prepare.ts (the pipeline),
@@ -756,7 +796,7 @@ src/
   verify/         containment and cross-persona isolation gates
   lock/           lockfile construction and validated reading
   core/           constants, typed errors, paths, strict UTF-8 reads, canonical JSON
-  report/         text and JSON output, warning records
+  report/         text and JSON output, warning records, the capability report
 tests/
   fixtures/demo/      the demo fixture: two personas, two rules, no permissions
   fixtures/composed/  builder, builder-python (extends builder) and reviewer, with permissions
@@ -923,9 +963,10 @@ where a change belongs and which gates it must pass.
 
 Deliberately out of scope:
 
-- `doctor`; `agent with loss` and `refuse` as plan outcomes; profile mode on `claudecode`;
-  rendering more than one configured target per run; every target other than `claudecode`,
-  `opencode` and `opencodev1`; the full 71-target capability matrix and the capability report page
+- `agent with loss` and `refuse` as plan outcomes; profile mode on `claudecode`; rendering more
+  than one configured target per run; every target other than `claudecode`, `opencode` and
+  `opencodev1`; the full 71-target capability matrix and the generated `docs/capability-matrix.md`
+  page (the `report` command prints the measured matrix for the three supported targets today)
 - model resources (a model is the persona's `model` class in this slice)
 - carrying `mcp`, `skill`, `command` or `hook` on any target in **agent** mode; profile mode is
   where those workspace capabilities belong, and agent mode still refuses them
