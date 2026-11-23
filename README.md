@@ -349,6 +349,13 @@ working tree, so `unchanged` and
 counts the `would-write` files, not the size of the plan: a tree that already matches reports
 `would write 0 file(s), N unchanged`.
 
+`doctor` adds `target`, `mode`, `activePersona`, `notLive`, `configPath`, `counts`, `checks`,
+`personas` and `warnings`; each persona carries its `chain`, `mode`, `model` and every resolved
+resource with its `path`, `fromPersona` and `rank`. `report` adds `renderer` and `targets[]`, where
+each target carries `id`, `status`, `agentReach`, `capabilities` (the seven cells, each with
+`agent`, `workspace`, `basis`, `testId` and `consequence`) and `permissionKeys` (each with
+`emission`, `code` and `consequence`).
+
 A persona's rule text is joined into the body of its subagent, in canonical rule-id order, under a
 `## displayName` heading. The rule body itself is never re-wrapped or re-indented. There is no
 shared root rules file: the per-agent body is the only rule surface, so one persona's rules never
