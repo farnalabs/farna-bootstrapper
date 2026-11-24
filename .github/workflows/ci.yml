@@ -60,6 +60,14 @@ jobs:
       - name: Build
         run: npm run build
 
+      # This repository dogfoods itself: `.claude/agents/maintainer.md` and
+      # `.farna/lock.json` are generated from `.farna/` and committed. `check`
+      # re-renders into a temporary directory and compares, so a source edit
+      # that was never regenerated, or a hand-edited generated file, fails here
+      # instead of merging green.
+      - name: Check the committed agent configuration
+        run: node dist/cli/main.js check
+
       - name: Test
         run: npm test -- --reporter=default --reporter=json --outputFile=vitest-report.json
 

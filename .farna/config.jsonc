@@ -1,0 +1,15 @@
+{
+  // The Claude Code target, agent mode: the maintainer persona is live and gets
+  // its own file under .claude/agents/. This release renders exactly one
+  // configured target per run, so the OpenCode half of the dogfood waits on
+  // multi-target rendering.
+  "schemaVersion": 1,
+  "targets": {
+    "claudecode": {}
+  },
+  "models": {
+    "standard": {
+      "claudecode": "claude-sonnet-4-5"
+    }
+  }
+}

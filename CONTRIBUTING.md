@@ -101,6 +101,9 @@ file; a change that silently invents product behaviour will be declined.
 - **Exactly one target per run.** A change that renders several targets in one invocation needs a
   per-target lockfile and mode plan; propose it as a design change first.
 - **No change to a golden byte without explaining which source change moved it.**
+- **A change under `.farna/` re-runs `generate` and commits the regenerated files.** The
+  repository's own `.claude/agents/maintainer.md` and `.farna/lock.json` are committed output;
+  `farna-bootstrapper check` runs in CI and fails on drift.
 - Before opening the pull request, run the gates above from a clean `npm ci` once. A green run
   against a stale `node_modules` is not evidence.
 

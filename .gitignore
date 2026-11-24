@@ -22,3 +22,7 @@ dist.farna-pack-gate.lock
 # Per-task git worktrees are local execution environments, never repository
 # content.
 .agents/worktrees/
+/.farna/.generate.lock
+**/.*.farna-tmp-*
+Thumbs.db
+desktop.ini

@@ -1,0 +1,19 @@
+// A maintainer may read, write, edit and run shell commands; it may not hand
+// work to a subagent. `allow` entries emit nothing on Claude Code (the default
+// is a deny-list), so this adds no restriction beyond the deny below.
+{
+  "kind": "permission",
+  "id": "maintainer-tools",
+  "tools": {
+    "read": "allow",
+    "write": "allow",
+    "edit": "allow",
+    "shell": "allow",
+    "task": "deny"
+  },
+  "patterns": {
+    "shell": {
+      "git push --force*": "deny"
+    }
+  }
+}

@@ -1116,6 +1116,7 @@ npm run lint
 npm run typecheck
 npm test
 npm run build
+node dist/cli/main.js check      # the committed agent config matches .farna/
 npm audit --audit-level=moderate
 node scripts/assert-pack.mjs     # the tarball is dist/ plus the legal files, with no source map
 npm pack --dry-run               # the exact package npm would publish
@@ -1142,6 +1143,25 @@ Maintainers publish a release by pushing a `v*` tag; `.github/workflows/release.
 tag is on `main`, runs the gates, publishes the packed tarball to npm with provenance, and creates
 the GitHub Release. The publish job waits for approval on the `release` environment, whose
 `NPM_TOKEN` secret carries the npm token. See [Releasing](CONTRIBUTING.md#releasing).
+
+## This repository dogfoods itself
+
+The source of this repository's own agent configuration is `.farna/`: one persona, `maintainer`,
+built from a rule distilled from [CONTRIBUTING.md](CONTRIBUTING.md) and a permission resource.
+`generate` renders it to a committed `.claude/agents/maintainer.md` and records the manifest in
+`.farna/lock.json`.
+
+```sh
+node dist/cli/main.js generate   # after any change under .farna/
+node dist/cli/main.js check      # re-render and compare; drift exits 1
+```
+
+`check` runs in CI, so a change to `.farna/` that was not regenerated, or a hand-edited generated
+file, fails the build rather than merging quietly.
+
+This is the `claudecode` target in agent mode, and nothing else. This release renders exactly one
+configured target per run and Claude Code has no profile mode, so the OpenCode half of the dogfood
+waits on multi-target rendering; it is not represented here today.
 
 ## Licence
 

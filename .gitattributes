@@ -13,3 +13,10 @@
 #   /opencode.jsonc text eol=lf
 # They are comments here because this repository has no generated output.
 /.farna/** text eol=lf
+/.claude/agents/** text eol=lf
+/.opencode/agents/** text eol=lf
+/.opencode/commands/** text eol=lf
+/.opencode/skills/** text eol=lf
+/.opencode/plugins/** text eol=lf
+/opencode.jsonc text eol=lf
+/.farna/lock.json text eol=lf
