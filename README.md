@@ -58,6 +58,7 @@ composed persona. Exactly one configured target is rendered per run. Everything 
 deliberately deferred; see
 [What this slice does not do](#what-this-slice-does-not-do) and
 [Residual risks and known gaps](#residual-risks-and-known-gaps).
+See [ROADMAP.md](ROADMAP.md) for what is shipped, what is next and what is deliberately out of scope.
 
 ## Quickstart
 
