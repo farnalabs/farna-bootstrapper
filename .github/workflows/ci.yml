@@ -85,3 +85,83 @@ jobs:
       - name: Audit dependencies
         run: npm audit --audit-level=moderate
 
+  # The Windows-skipped suites are the POSIX mode, symlink, FIFO and
+  # install-layout tests; running only on Linux never exercises them on a
+  # second platform. macOS is where the temporary-directory realpath
+  # difference (`/var` against `/private/var`) can bite, and it is the
+  # platform where a developer is most likely to run the tool. Every step is
+  # identical to the Linux job so a macOS-only failure is attributable to the
+  # platform, not to a weaker check. GitHub Actions minutes are free for a
+  # public repository, so running on every push and pull request costs nothing.
+  test-macos:
+    name: Node 22 (macOS)
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        # actions/checkout v5.1.0
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          # The job never pushes; do not leave a credential in .git/config for
+          # any later step (or a compromised dependency) to read.
+          persist-credentials: false
+
+      - name: Set up Node 22
+        # actions/setup-node v5.0.0
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install
+        # No dependency needs an install script, and the package's own `prepare`
+        # build runs explicitly below; `--ignore-scripts` removes an entire
+        # supply-chain execution surface from CI.
+        run: npm ci --ignore-scripts
+
+      - name: Lint
+        run: npm run lint
+
+      # `npm run build` type-checks `src/` only and Vitest transforms without
+      # type-checking, so a type error in `tests/` would otherwise merge green.
+      - name: Type check
+        run: npm run typecheck
+
+      # `dist/` is gitignored, so a tarball from a clean clone contains no code.
+      # The gate moves any existing `dist/` aside before `npm pack`, so it can
+      # only pass when `prepack` builds the entry points. It runs before the
+      # explicit build for the same reason: a stale earlier build must not be
+      # able to satisfy it. It checks the tarball against an allowlist (dist/
+      # plus the legal files) and refuses a source map, so a widened `files`
+      # field fails here rather than at the registry. It packs itself, so a
+      # separate `npm pack --dry-run` would only run the same pack twice.
+      - name: Assert the published tarball contents
+        run: node scripts/assert-pack.mjs
+
+      - name: Build
+        run: npm run build
+
+      # This repository dogfoods itself: `.claude/agents/maintainer.md` and
+      # `.farna/lock.json` are generated from `.farna/` and committed. `check`
+      # re-renders into a temporary directory and compares, so a source edit
+      # that was never regenerated, or a hand-edited generated file, fails here
+      # instead of merging green.
+      - name: Check the committed agent configuration
+        run: node dist/cli/main.js check
+
+      - name: Test
+        run: npm test -- --reporter=default --reporter=json --outputFile=vitest-report.json
+
+      # A green run proves nothing if a suite was deleted, silently skipped,
+      # failed to collect, or left a `todo`. This enumerates every
+      # tests/**/*.test.ts and requires it in the report, plus a minimum total,
+      # that `numPassedTests` accounts for the whole run, and that both
+      # real-renderer suites executed. Adding tests needs no gate edit.
+      - name: Assert the minimum tests and real-renderer suites ran
+        run: node scripts/assert-test-count.mjs vitest-report.json
+
+      # The input boundary is YAML and JSONC parsing, so a moderate parser
+      # advisory (stack overflow, DoS) is a real denial of service. Gate at
+      # moderate; the lock currently reports zero advisories at every level.
+      - name: Audit dependencies
+        run: npm audit --audit-level=moderate
+
