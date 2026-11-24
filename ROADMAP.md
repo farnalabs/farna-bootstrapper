@@ -54,8 +54,11 @@ The ordered near-term work. Each item is a concrete outcome, not a theme.
 2. **Stand up the weekly renderer-upgrade routine.** Each week, check for a new pinned renderer
    version, absorb it only with a golden diff that explains every byte change, and record the
    result. The first real upgrade, to `rulesync` 43.12.0, is already done and is evidence the
-   routine works. The routine is run by a maintainer; it is not yet automated, because there is no
-   scheduled workflow.
+   routine works. Detection is automated: the dependency-update bot opens a bump pull request, and
+   a weekly scheduled workflow (`.github/workflows/renderer-pin.yml`) opens one tracking issue when
+   the pin is behind and closes it when the pin catches up. Absorbing the bump is still a documented
+   procedure a maintainer runs, because every byte change needs a human explanation; it is written
+   down in [CONTRIBUTING.md](CONTRIBUTING.md#absorbing-a-renderer-upgrade).
 3. **Extend the self-dogfood to the OpenCode half.** Generate this repository's OpenCode
    configuration from the same `.farna/` source it already uses for Claude Code. This is blocked
    today by the one-target-per-run limit.

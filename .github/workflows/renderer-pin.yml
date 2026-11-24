@@ -1,0 +1,217 @@
+# Track the renderer pin.
+#
+# `rulesync` is pinned to an exact version with a tarball integrity, and the
+# emitted bytes are the product. A bump cannot be automated: absorbing one needs
+# a golden diff that explains every byte change and a re-measured capability
+# snapshot, which is a maintainer's judgement. So this workflow detects and
+# tracks, and never bumps anything.
+#
+# The dependency-update bot's bump pull request is the fast path. This workflow
+# is the independent backstop: it turns a pin which stays behind into one
+# durable tracking issue, with the absorb runbook one click away.
+#
+# The schedule is weekly on purpose. A weekly cron is low frequency enough that
+# the GitHub scheduler does not drop it, which high-frequency crons do when a
+# repository's Actions volume grows. Nothing here is time-critical: being up to
+# seven days late to a renderer release costs nothing.
+#
+# The job exits 0 when the pin is behind. The issue is the signal, and a red
+# weekly run would mask a real failure - a parse error, or the registry being
+# unreachable - as routine drift.
+
+name: Renderer pin
+
+on:
+  schedule:
+    # Monday 06:00 UTC.
+    - cron: '0 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  track:
+    name: Track the renderer pin
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      # `gh` authenticates with the workflow token. No repository secret is
+      # needed: `issues: write` above is the only privilege this job uses.
+      GH_TOKEN: ${{ github.token }}
+      # The exact title is the identity of the tracking issue. Every lookup
+      # below filters on this string for equality, so a similarly titled issue
+      # (or a pull request quoting it) is never touched.
+      ISSUE_TITLE: 'Renderer pin is behind the published rulesync'
+    steps:
+      - name: Checkout
+        # actions/checkout v5.1.0
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          # The job never pushes; do not leave a credential in .git/config for
+          # any later step (or a compromised dependency) to read.
+          persist-credentials: false
+
+      - name: Set up Node 22
+        # actions/setup-node v5.0.0
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
+        with:
+          node-version: '22'
+          # No cache: this job installs no dependencies. It reads one source
+          # file and asks the registry through `npm view`.
+
+      - name: Read the pinned renderer version
+        id: pinned
+        run: |
+          set -euo pipefail
+          # Read the constant rather than a second copy of the number, so the
+          # workflow can never disagree with the build. A parse that yields
+          # nothing fails the step: a guessed version, or a failed parse treated
+          # as "current", would let a real gap pass silently. `\W*` matches the
+          # opening quote in either style.
+          pinned="$(
+            node -e '
+              const { readFileSync } = process.getBuiltinModule("node:fs");
+              const source = readFileSync("src/render/upstream.ts", "utf8");
+              const match = /export const RENDERER_PIN[^{]*\{[\s\S]*?version:\s*\W*(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)/.exec(source);
+              if (match === null) {
+                console.error("::error::could not parse the pinned renderer version from src/render/upstream.ts");
+                process.exit(1);
+              }
+              process.stdout.write(match[1]);
+            '
+          )"
+          if [ -z "${pinned}" ]; then
+            echo "::error::the pinned renderer version parsed as empty"
+            exit 1
+          fi
+          echo "pinned=${pinned}" >> "${GITHUB_OUTPUT}"
+          echo "pinned renderer version: ${pinned}"
+
+      - name: Resolve the published renderer version
+        id: published
+        run: |
+          set -euo pipefail
+          # A registry or network failure must fail loudly. Treating it as
+          # "current" is the silent pass this workflow exists to prevent.
+          if ! published="$(npm view rulesync version)"; then
+            echo "::error::could not resolve the published rulesync version from the npm registry"
+            exit 1
+          fi
+          if [ -z "${published}" ] || ! printf '%s' "${published}" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$'; then
+            echo "::error::npm returned an unexpected published rulesync version: '${published}'"
+            exit 1
+          fi
+          echo "published=${published}" >> "${GITHUB_OUTPUT}"
+          echo "published renderer version: ${published}"
+
+      - name: Compare the pinned and published versions
+        id: compare
+        env:
+          PINNED: ${{ steps.pinned.outputs.pinned }}
+          PUBLISHED: ${{ steps.published.outputs.published }}
+        run: |
+          set -euo pipefail
+          if [ "${PINNED}" = "${PUBLISHED}" ]; then
+            behind="false"
+          else
+            behind="true"
+          fi
+          echo "behind=${behind}" >> "${GITHUB_OUTPUT}"
+          # The comparison is recorded whether or not the pin is behind, so the
+          # weekly run is evidence either way and not only when it complains.
+          {
+            echo "## Renderer pin"
+            echo
+            echo "| | Version |"
+            echo "| --- | --- |"
+            echo "| Pinned (\`src/render/upstream.ts\`) | \`${PINNED}\` |"
+            echo "| Published (\`npm view rulesync version\`) | \`${PUBLISHED}\` |"
+            echo
+            if [ "${behind}" = "true" ]; then
+              echo "Outcome: **behind** - the pin does not match the published version. The tracking issue is opened or refreshed by this run."
+            else
+              echo "Outcome: **current** - the pin matches the published version."
+            fi
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Find the open tracking issue
+        id: issue
+        run: |
+          set -euo pipefail
+          # `gh issue list` cannot filter by exact title, so fetch the open
+          # issues as JSON and compare titles for equality here. A partial or
+          # similarly titled match is a different issue and is left alone. Two
+          # issues with the exact title is an inconsistency: fail rather than
+          # pick one and leave a duplicate behind.
+          number="$(
+            gh issue list --state open --limit 200 --json number,title |
+              node -e '
+                let raw = "";
+                process.stdin.setEncoding("utf8");
+                process.stdin.on("data", (chunk) => { raw += chunk; });
+                process.stdin.on("end", () => {
+                  const wanted = process.env.ISSUE_TITLE;
+                  const matches = JSON.parse(raw).filter((issue) => issue.title === wanted);
+                  if (matches.length > 1) {
+                    const numbers = matches.map((issue) => "#" + String(issue.number)).join(", ");
+                    console.error("::error::" + String(matches.length) + " open issues carry the exact tracking title (" + numbers + "); refusing to choose one");
+                    process.exit(1);
+                  }
+                  if (matches.length === 1) {
+                    process.stdout.write(String(matches[0].number));
+                  }
+                });
+              '
+          )"
+          echo "number=${number}" >> "${GITHUB_OUTPUT}"
+          if [ -n "${number}" ]; then
+            echo "open tracking issue: #${number}"
+          else
+            echo "no open tracking issue"
+          fi
+
+      - name: Open the tracking issue
+        if: steps.compare.outputs.behind == 'true' && steps.issue.outputs.number == ''
+        env:
+          PINNED: ${{ steps.pinned.outputs.pinned }}
+          PUBLISHED: ${{ steps.published.outputs.published }}
+        run: |
+          set -euo pipefail
+          gh issue create --title "${ISSUE_TITLE}" --body-file - <<EOF
+          The pinned renderer is behind the version published on npm.
+
+          - Pinned in \`src/render/upstream.ts\`: \`${PINNED}\`
+          - Published for \`rulesync\` on npm: \`${PUBLISHED}\`
+
+          Absorbing the bump is a documented procedure a maintainer runs: see
+          [Absorbing a renderer upgrade](CONTRIBUTING.md#absorbing-a-renderer-upgrade).
+          The emitted bytes are the product, so the pin moves only with a golden
+          diff that explains every byte change and a re-measured capability
+          snapshot.
+
+          This issue is refreshed weekly by \`.github/workflows/renderer-pin.yml\`
+          - a comment with the current versions while the pin stays behind - and
+          is closed automatically when the pin catches up. A new issue is opened
+          if the pin falls behind again later.
+          EOF
+
+      - name: Refresh the tracking issue
+        if: steps.compare.outputs.behind == 'true' && steps.issue.outputs.number != ''
+        env:
+          NUMBER: ${{ steps.issue.outputs.number }}
+          PINNED: ${{ steps.pinned.outputs.pinned }}
+          PUBLISHED: ${{ steps.published.outputs.published }}
+        run: |
+          set -euo pipefail
+          gh issue comment "${NUMBER}" --body "The pin is still behind: pinned \`${PINNED}\`, published \`${PUBLISHED}\`."
+
+      - name: Close the tracking issue
+        if: steps.compare.outputs.behind == 'false' && steps.issue.outputs.number != ''
+        env:
+          NUMBER: ${{ steps.issue.outputs.number }}
+          PINNED: ${{ steps.pinned.outputs.pinned }}
+        run: |
+          set -euo pipefail
+          gh issue close "${NUMBER}" --comment "The pin is current: \`${PINNED}\` is also the published \`rulesync\` version. A tracking issue is opened again if the pin falls behind."

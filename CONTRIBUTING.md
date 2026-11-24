@@ -79,6 +79,49 @@ product**. Two rules follow:
 If you need a renderer behaviour the port does not expose, say so in the pull request before
 threading a new field through. A silent widening of the seam is a design change, not a fix.
 
+## Absorbing a renderer upgrade
+
+This section is for maintainers. Detection is automated: the dependency-update bot opens a pull
+request when a new `rulesync` version is published, and
+`.github/workflows/renderer-pin.yml` opens one tracking issue titled "Renderer pin is behind the
+published rulesync" when the pin stays behind. Absorbing the bump is not automated, because the
+emitted bytes are the product and every byte change needs a human explanation. Do the whole
+procedure as one change.
+
+1. **Read what npm publishes.** `npm view rulesync version` names the published version, and
+   `npm view rulesync dist.integrity` the tarball integrity it will install. Record both; they are
+   what the pin will be compared against.
+2. **Move the dependency exactly.** `npm install --save-exact rulesync@<version>`. No range is
+   introduced, and the lockfile records the new version and integrity.
+3. **Move both pins.** Update `RENDERER_PIN` in `src/render/upstream.ts` with the installed version
+   and the integrity the install recorded (the `node_modules/rulesync` entry in
+   `package-lock.json`), and update the `SNAPSHOT` renderer version in `src/matrix/snapshot.ts`.
+   A version that disagrees with the installed package is `F010` with exit `5`, so the two move
+   together.
+4. **Capture the byte diff.** Build, then run the golden and integration suites. For every golden
+   that fails, capture the exact byte difference of the regenerated file and explain each changed
+   line-group in the pull request before updating that golden.
+5. **Re-measure the capability matrix.** Run `report` and `report --json`. If an emitted shape
+   changed, update the affected matrix cell and permission-key table in `src/matrix/snapshot.ts`,
+   and the emitted-matcher translation in `src/verify/containment.ts`, in the same change, so the
+   documented capability still describes the bytes the pinned renderer produces.
+6. **Regenerate this repository's own managed output.** Run `generate`, then `check` and require it
+   to be clean. `.claude/agents/maintainer.md` and `.farna/lock.json` are committed output, and a
+   stale one fails CI.
+7. **Update every current-pin claim.** The README (the quickstart, [The renderer
+   boundary](README.md#the-renderer-boundary) and [Determinism](README.md#determinism)), this file,
+   the source comments that name the version, and a `CHANGELOG.md` entry that says which emitted
+   artefacts changed. Then run the full gate list from [The gates](#the-gates).
+8. **Commit, and say which bytes moved.** The commit message and the pull request both name the
+   version change and the artefacts it altered. A version number alone is not a description of the
+   change.
+
+Two rules stated above bind here: **a golden is never edited to make a test pass**, and **the pin
+moves only with a golden diff in the pull request**. If a bump produces no byte difference, say so
+explicitly in the pull request and show the evidence for it; an empty diff is a claim like any
+other. The 43.12.0 and 43.13.0 upgrades are the worked examples: each `CHANGELOG.md` entry names the
+emitted artefacts that moved and why.
+
 ## Where a change belongs
 
 This repository's README is the user-facing contract and the record of the behaviour it covers. If a
