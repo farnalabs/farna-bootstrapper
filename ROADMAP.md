@@ -92,9 +92,8 @@ These are absent by design, restated here so a reader does not have to ask:
 - Telemetry or phone-home. There is no analytics package, usage ping or crash reporter.
 - A dependency on a hosted control plane. Generation and checking make no network request of their
   own.
-- A prebuilt Windows binary in this line. There is no prebuilt Windows binary in this line; the tool
-  is distributed as a Node package rather than a native executable, and CI currently runs on Linux
-  only.
+- A prebuilt Windows binary in this line. The tool is distributed as a Node package rather than a
+  native executable, and CI currently runs on Linux only.
 - A GUI. The interface is the CLI.
 - A caching render root. The profile is the repository root, never a cache directory or a
   subdirectory below another config.
