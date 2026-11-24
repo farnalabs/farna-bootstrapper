@@ -35,8 +35,10 @@ What 0.1.x does today, all of it covered by the test suite and by CI:
   found the version check still applies and `W114_RENDERER_INTEGRITY_UNVERIFIED` names the gap.
 - **Fail-closed generation.** Every gate runs before the first byte is written, managed files are
   staged and renamed, and one `generate` runs at a time through a local single-writer lock.
-- **Reproducible checking.** The same source produces the same bytes and the same lockfile on every
-  machine, and `check` reports drift instead of repairing it silently.
+- **Reproducible checking.** Two clean runs of the same source on one machine produce identical bytes
+  and an identical lockfile, and `check` reports drift instead of repairing it silently. The same
+  rules are machine-independent: the lockfile records no timestamp, hostname, absolute path, user
+  name or process id, and `.gitattributes` pins generated line endings to LF.
 - **One configured target per run.** More than one configured target is refused, and the lockfile
   and mode plan are per target.
 - **Self-dogfood.** This repository's own `.claude/agents/maintainer.md` is generated from
@@ -90,8 +92,9 @@ These are absent by design, restated here so a reader does not have to ask:
 - Telemetry or phone-home. There is no analytics package, usage ping or crash reporter.
 - A dependency on a hosted control plane. Generation and checking make no network request of their
   own.
-- A prebuilt Windows binary in this line. The tool is distributed as a Node package and runs
-  wherever Node 22.22.0 or newer runs.
+- A prebuilt Windows binary in this line. There is no prebuilt Windows binary in this line; the tool
+  is distributed as a Node package rather than a native executable, and CI currently runs on Linux
+  only.
 - A GUI. The interface is the CLI.
 - A caching render root. The profile is the repository root, never a cache directory or a
   subdirectory below another config.
