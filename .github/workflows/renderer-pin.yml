@@ -146,7 +146,7 @@ jobs:
           # issues with the exact title is an inconsistency: fail rather than
           # pick one and leave a duplicate behind.
           number="$(
-            gh issue list --state open --limit 200 --json number,title |
+            gh issue list --repo "${GITHUB_REPOSITORY}" --state open --limit 200 --json number,title |
               node -e '
                 let raw = "";
                 process.stdin.setEncoding("utf8");
@@ -179,14 +179,17 @@ jobs:
           PUBLISHED: ${{ steps.published.outputs.published }}
         run: |
           set -euo pipefail
-          gh issue create --title "${ISSUE_TITLE}" --body-file - <<EOF
+          # An issue body has no repository-relative base: a relative link
+          # resolves against the issue URL and 404s, so the runbook link is
+          # built as an absolute URL from the Actions environment.
+          gh issue create --repo "${GITHUB_REPOSITORY}" --title "${ISSUE_TITLE}" --body-file - <<EOF
           The pinned renderer is behind the version published on npm.
 
           - Pinned in \`src/render/upstream.ts\`: \`${PINNED}\`
           - Published for \`rulesync\` on npm: \`${PUBLISHED}\`
 
           Absorbing the bump is a documented procedure a maintainer runs: see
-          [Absorbing a renderer upgrade](CONTRIBUTING.md#absorbing-a-renderer-upgrade).
+          [Absorbing a renderer upgrade](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/blob/main/CONTRIBUTING.md#absorbing-a-renderer-upgrade).
           The emitted bytes are the product, so the pin moves only with a golden
           diff that explains every byte change and a re-measured capability
           snapshot.
@@ -205,7 +208,7 @@ jobs:
           PUBLISHED: ${{ steps.published.outputs.published }}
         run: |
           set -euo pipefail
-          gh issue comment "${NUMBER}" --body "The pin is still behind: pinned \`${PINNED}\`, published \`${PUBLISHED}\`."
+          gh issue comment "${NUMBER}" --repo "${GITHUB_REPOSITORY}" --body "The pin is still behind: pinned \`${PINNED}\`, published \`${PUBLISHED}\`."
 
       - name: Close the tracking issue
         if: steps.compare.outputs.behind == 'false' && steps.issue.outputs.number != ''
@@ -214,4 +217,4 @@ jobs:
           PINNED: ${{ steps.pinned.outputs.pinned }}
         run: |
           set -euo pipefail
-          gh issue close "${NUMBER}" --comment "The pin is current: \`${PINNED}\` is also the published \`rulesync\` version. A tracking issue is opened again if the pin falls behind."
+          gh issue close "${NUMBER}" --repo "${GITHUB_REPOSITORY}" --comment "The pin is current: \`${PINNED}\` is also the published \`rulesync\` version. A tracking issue is opened again if the pin falls behind."
