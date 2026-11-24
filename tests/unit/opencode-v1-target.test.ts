@@ -203,7 +203,7 @@ describe('opencodev1 workspace files', () => {
       const plugin = await readText(repo.root, '.opencode/plugins/rulesync-hooks.js');
       expect(plugin).toContain('export const RulesyncHooksPlugin');
       expect(plugin).toContain('"tool.execute.before"');
-      expect(plugin).toContain('new RegExp("Edit|Write")');
+      expect(plugin).toContain('new RegExp("^(?:edit|write)$")');
       expect(plugin).toContain('pnpm exec prettier');
       expect(plugin).not.toContain('export default');
     } finally {
@@ -497,8 +497,8 @@ describe('opencodev1 hook events and matchers', () => {
         '"tool.execute.after"',
         'event.type === "session.created"',
         'event.type === "session.idle"',
-        'new RegExp("Edit|Write")',
-        'new RegExp("Bash")',
+        'new RegExp("^(?:edit|write)$")',
+        'new RegExp("^(?:bash)$")',
         'echo FBS_PRE',
         'echo FBS_POST',
         'echo FBS_START',
@@ -583,7 +583,7 @@ describe('opencodev1 containment gates fire on the V1 shapes', () => {
         repo,
         async (outputRoot) => {
           const text = await readOutput(outputRoot, '.opencode/plugins/rulesync-hooks.js');
-          const guard = 'const __re = new RegExp("Edit|Write");';
+          const guard = 'const __re = new RegExp("^(?:edit|write)$");';
           expect(text).toContain(guard);
           await writeOutput(
             outputRoot,

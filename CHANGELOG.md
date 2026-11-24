@@ -10,12 +10,19 @@ release may contain a breaking change; every change of that kind is listed under
 
 ### Changed
 
-- **Renderer pin moved to `rulesync` 43.12.0.** The only emitted artefact that changed is the
-  generated hooks plugin on both OpenCode targets. A `session-start` hook now runs with
-  `context: true`, so its stdout is captured as session context while its stderr streams to the
-  host, and the plugin's run helper returns its result on success. Every other golden is
-  byte-identical. Because the plugin is a managed file, `check` reports drift on an existing
-  project until the next `generate`.
+- **Renderer pin moved to `rulesync` 43.13.0** (from the released `43.11.0`). Two emitted artefacts
+  changed. An OpenCode agent file whose description contains a comma now writes it as a plain YAML
+  scalar instead of a single-quoted one: the renderer replaced its frontmatter serialiser
+  (`gray-matter`'s YAML 1.1 writer) with YAML 1.2, where a comma is plain-safe. The generated hooks
+  plugin on both OpenCode targets now translates a canonical tool name in a matcher to the target's
+  lowercase id and anchors a pure name list, so `Edit|Write` is written as `^(?:edit|write)$`
+  (`Bash` becomes `^(?:bash)$` on V1 and `^(?:shell)$` on V2): OpenCode reports those lowercase
+  tool ids, so the declared matcher now fires instead of silently never matching. This release also
+  carries the 43.12.0 change: a `session-start` hook runs with `context: true`, so its stdout is
+  captured as session context while its stderr streams to the host, and the plugin's run helper
+  returns its result on success. The claudecode golden is byte-identical. Because the plugin and the
+  agent files are managed output, `check` reports drift on an existing project until the next
+  `generate`.
 
 ## [0.1.2] - 2026-11-23
 

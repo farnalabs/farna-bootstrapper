@@ -151,7 +151,7 @@ export const CLAUDE_AGENTS_DIR = `${CLAUDE_DIR}/agents`;
 /**
  * The OpenCode paths this slice writes, relative to the repository root.
  * `commands` is plural and the workspace config is `opencode.jsonc`, both
- * measured at rulesync 43.12.0.
+ * measured at rulesync 43.13.0.
  */
 export const OPENCODE_DIR = '.opencode';
 export const OPENCODE_AGENTS_DIR = `${OPENCODE_DIR}/agents`;

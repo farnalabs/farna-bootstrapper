@@ -160,7 +160,7 @@ describe.skipIf(process.platform === 'win32')('install layouts', () => {
 
       const version = run(repo.root, [join(packageDir, GLOBAL_ENTRY), '--version']);
       expect(version.status).toBe(0);
-      expect(version.stdout).toContain('43.12.0');
+      expect(version.stdout).toContain('43.13.0');
 
       const initRoot = await mkdtemp(join(tmpdir(), 'fbs-init-'));
       try {

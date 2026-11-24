@@ -120,7 +120,7 @@ describe('hooks plugin containment', () => {
       expect(result.ok).toBe(true);
       const plugin = await readOutput(join(repo.root, '.opencode/plugins'), 'rulesync-hooks.js');
       expect(plugin).toContain('execute.after');
-      expect(plugin).toContain('new RegExp("Edit")');
+      expect(plugin).toContain('new RegExp("^(?:edit)$")');
       expect((await runCheck(repo.root, new UpstreamRenderTarget())).ok).toBe(true);
     } finally {
       await repo.cleanup();
@@ -136,7 +136,7 @@ describe('hooks plugin containment', () => {
         repo,
         async (outputRoot) => {
           const text = await readOutput(outputRoot, PLUGIN);
-          const guard = ' && __rulesyncMatchesTool(new RegExp("Edit"), event.tool)';
+          const guard = ' && __rulesyncMatchesTool(new RegExp("^(?:edit)$"), event.tool)';
           expect(text).toContain(guard);
           await writeOutput(outputRoot, PLUGIN, text.replace(guard, ''));
         },
@@ -157,7 +157,7 @@ describe('hooks plugin containment', () => {
         repo,
         async (outputRoot) => {
           const text = await readOutput(outputRoot, PLUGIN);
-          const needle = 'new RegExp("Bash")';
+          const needle = 'new RegExp("^(?:shell)$")';
           const last = text.lastIndexOf(needle);
           expect(last).toBeGreaterThan(0);
           await writeOutput(

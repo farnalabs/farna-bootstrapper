@@ -290,7 +290,7 @@ function permissionRecords(value: unknown): Array<Record<string, string>> | unde
 }
 
 /**
- * The V2 (`opencode`) per-agent file. Measured at rulesync 43.12.0: the
+ * The V2 (`opencode`) per-agent file. Measured at rulesync 43.13.0: the
  * frontmatter is `description`, `mode`, `model` (when declared) and
  * `permissions` (when the persona declares one), with no `name` key — OpenCode
  * 2.x names the agent from the file, and a stray V1 field would make the file
@@ -340,7 +340,7 @@ function verifyOpencodeV2Agent(
 }
 
 /**
- * The V1 (`opencodev1`) per-agent file. Measured at rulesync 43.12.0: the
+ * The V1 (`opencodev1`) per-agent file. Measured at rulesync 43.13.0: the
  * frontmatter is `name`, `description`, `mode`, `model` (when declared) and the
  * per-tool `permission` map (when the persona declares one). `temperature` and
  * `tools` are V1 keys this product does not author, so they must never appear;
@@ -602,7 +602,7 @@ type HookAnchorPattern = {
 
 /**
  * The V2 (`opencode`) plugin's registration anchors, measured at rulesync
- * 43.12.0: a tool hook (`ctx.tool.hook("execute.before"|"execute.after", ...)`)
+ * 43.13.0: a tool hook (`ctx.tool.hook("execute.before"|"execute.after", ...)`)
  * and an event hook whose `label: "<event>"` has no tool anchor.
  */
 const OPENCODE_V2_HOOK_ANCHORS: readonly HookAnchorPattern[] = [
@@ -617,7 +617,7 @@ const OPENCODE_V2_HOOK_ANCHORS: readonly HookAnchorPattern[] = [
 
 /**
  * The V1 (`opencodev1`) `RulesyncHooksPlugin` registration anchors, measured at
- * rulesync 43.12.0: the returned object keys `"tool.execute.before"` and
+ * rulesync 43.13.0: the returned object keys `"tool.execute.before"` and
  * `"tool.execute.after"`, and the event-loop branches
  * `event.type === "session.created"` / `event.type === "session.idle"`. The
  * V1 plugin also carries `label: "sessionStart"|"stop"|"postToolUse"` inside
@@ -636,6 +636,70 @@ const OPENCODE_V1_HOOK_ANCHORS: readonly HookAnchorPattern[] = [
 ];
 
 /**
+ * The canonical (Claude Code) tool names rulesync rewrites inside a hook
+ * matcher, and the id each OpenCode target reports at run time. Measured at
+ * rulesync 43.13.0: OpenCode 1.x reports `read`/`write`/`edit` and calls its
+ * shell tool `bash`, while OpenCode 2.x calls the same tool `shell`.
+ */
+const OPENCODE_V1_HOOK_TOOL_NAMES: Readonly<Record<string, string>> = {
+  Bash: 'bash',
+  Read: 'read',
+  Write: 'write',
+  Edit: 'edit',
+};
+
+const OPENCODE_V2_HOOK_TOOL_NAMES: Readonly<Record<string, string>> = {
+  Bash: 'shell',
+  Read: 'read',
+  Write: 'write',
+  Edit: 'edit',
+};
+
+/** The tool-name map for one OpenCode major (see the two tables above). */
+function opencodeHookToolNames(target: OpencodeTarget): Readonly<Record<string, string>> {
+  return target === 'opencodev1' ? OPENCODE_V1_HOOK_TOOL_NAMES : OPENCODE_V2_HOOK_TOOL_NAMES;
+}
+
+/**
+ * rulesync's whole-name tokenisation of a matcher, measured at 43.13.0: escapes
+ * and character classes are skipped, and a name is only a name at a word
+ * boundary (or after an escaped word character).
+ */
+const MATCHER_TOKEN_PATTERN = /\\.|\[(?:\\.|[^\]\\])*\]|(?<=^|[^\w\\]|\\\w)[A-Za-z_]\w*(?!\w)/gs;
+
+/** A token that is a whole name, not an escape or a character class. */
+function isMatcherName(token: string): boolean {
+  return !token.startsWith('\\') && !token.startsWith('[');
+}
+
+/** Rewrite the whole tool names in a matcher, leaving escapes and classes as written. */
+function replaceMatcherNames(matcher: string, names: Readonly<Record<string, string>>): string {
+  return matcher.replace(MATCHER_TOKEN_PATTERN, (token) =>
+    isMatcherName(token) && Object.hasOwn(names, token) ? (names[token] ?? token) : token,
+  );
+}
+
+/** A matcher made only of plain names joined by `|`, which Claude Code matches as an exact list. */
+const PLAIN_TOOL_NAME_MATCHER = /^[A-Za-z0-9_]+(?:\|[A-Za-z0-9_]+)*$/;
+
+/**
+ * The matcher rulesync emits for a declared one, measured at 43.13.0. Canonical
+ * tool names are translated to the target's ids, and a pure name-list matcher
+ * is anchored as `^(?:...)$` so `write` does not also match `todowrite`; a
+ * regex-style matcher, or one with no translated name, is written as declared.
+ * The source schema refuses newline, carriage return and NUL in a matcher, so
+ * the control-character strip rulesync applies to the emitted literal is a
+ * no-op here.
+ */
+function emittedHookMatcher(matcher: string, target: OpencodeTarget): string {
+  const translated = replaceMatcherNames(matcher, opencodeHookToolNames(target));
+  if (translated !== matcher && PLAIN_TOOL_NAME_MATCHER.test(matcher)) {
+    return `^(?:${translated})$`;
+  }
+  return translated;
+}
+
+/**
  * The hooks plugin is generated JavaScript, so it is verified at the level that
  * matters: exactly the declared commands, each bound to its declared event and
  * matcher. A byte pin lives in the golden test; this gate is what fails when an
@@ -647,7 +711,9 @@ const OPENCODE_V1_HOOK_ANCHORS: readonly HookAnchorPattern[] = [
  * registration. The anchor set is the only thing that differs between the two
  * OpenCode majors: V2 registers through `ctx.tool.hook(...)` and a label-only
  * event loop, V1 through the returned `"tool.execute.*"` keys and
- * `event.type === ...` branches.
+ * `event.type === ...` branches. The declared matcher is translated the way the
+ * renderer translates it (`emittedHookMatcher`) before it is compared, so a
+ * target-name rewrite is not mistaken for a dropped or invented matcher.
  *
  * An `after-tool` command in V2 is emitted inside `ctx.tool.hook("execute.after",
  * ...)` *and* carries `label: "postToolUse"` in the same `__rulesyncRunHook(...)`
@@ -660,6 +726,7 @@ function verifyHookPlugin(
   source: ResolvedSource,
   text: string,
   subject: string,
+  target: OpencodeTarget,
   anchorPatterns: readonly HookAnchorPattern[],
 ): void {
   const anchors: HookAnchor[] = [];
@@ -756,7 +823,7 @@ function verifyHookPlugin(
     .map((hook) => ({
       event: HOOK_EVENT_BY_PHASE[hook.phase] ?? '',
       command: hook.command,
-      ...(hook.matcher === undefined ? {} : { matcher: hook.matcher }),
+      ...(hook.matcher === undefined ? {} : { matcher: emittedHookMatcher(hook.matcher, target) }),
     }))
     .sort((a, b) => compareCodepoints(`${a.event}\0${a.command}`, `${b.event}\0${b.command}`));
   registrations.sort((a, b) =>
@@ -857,6 +924,7 @@ async function verifyOpencodeWorkspace(
       source,
       text,
       OPENCODE_HOOKS_PLUGIN,
+      target,
       target === 'opencodev1' ? OPENCODE_V1_HOOK_ANCHORS : OPENCODE_V2_HOOK_ANCHORS,
     );
     verified.set(OPENCODE_HOOKS_PLUGIN, text);

@@ -231,7 +231,7 @@ export const RulesyncHooksPlugin = async ({ directory }) => {
           cwd: directory ?? process.cwd(),
         }));
       {
-        const __re = new RegExp("Edit|Write");
+        const __re = new RegExp("^(?:edit|write)$");
         if (__re.test(input.tool)) {
           __rulesyncEnforcePreToolUseResult(await __rulesyncRunCommand({ command: "pnpm exec prettier --write \"$FILE\"", input: __rulesyncPreToolUseInput(), seconds: 600 }));
         }

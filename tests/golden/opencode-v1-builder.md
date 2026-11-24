@@ -1,5 +1,5 @@
 ---
-description: 'Writes code, runs the tests, and follows the house conventions.'
+description: Writes code, runs the tests, and follows the house conventions.
 mode: subagent
 name: builder
 model: anthropic/claude-sonnet-4-5
