@@ -164,4 +164,3 @@ jobs:
       # moderate; the lock currently reports zero advisories at every level.
       - name: Audit dependencies
         run: npm audit --audit-level=moderate
-
