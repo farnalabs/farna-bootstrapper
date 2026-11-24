@@ -57,7 +57,7 @@ jobs:
         # actions/setup-node v5.0.0
         uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
         with:
-          node-version: '22'
+          node-version: '26'
           # No cache: this job installs no dependencies. It reads one source
           # file and asks the registry through `npm view`.
 
