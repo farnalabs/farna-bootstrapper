@@ -18,3 +18,7 @@ vitest-report.json
 # lock while it packs. A killed run can leave one behind; it is never committed.
 dist.farna-pack-gate-*
 dist.farna-pack-gate.lock
+
+# Per-task git worktrees are local execution environments, never repository
+# content.
+.agents/worktrees/

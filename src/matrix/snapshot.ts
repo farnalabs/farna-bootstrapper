@@ -232,7 +232,7 @@ function opencodeCells(
  */
 export const SNAPSHOT: CapabilitySnapshot = {
   schemaVersion: 1,
-  renderer: { name: 'rulesync', version: '43.11.0' },
+  renderer: { name: 'rulesync', version: '43.12.0' },
   targets: [
     {
       id: DEFAULT_TARGET,

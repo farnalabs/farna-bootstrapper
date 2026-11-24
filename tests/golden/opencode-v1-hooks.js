@@ -118,15 +118,18 @@ export const RulesyncHooksPlugin = async ({ directory }) => {
     const timeout = () => new Promise((resolve) => (timer = setTimeout(resolve, seconds * 1000, null)));
     if (inProcess || !(await __rulesyncCanExec)) {
       const run = Bun.$`echo ${input} | ${{ raw: command }}`.cwd(directory ?? process.cwd()).nothrow();
-      const result = await Promise.race([echo ? run : run.quiet(), timeout()]).finally(() => clearTimeout(timer));
-      if (!result || echo) return result && { exitCode: result.exitCode };
+      // A sessionStart command's stderr reaches the host when it ends, even after its timeout.
+      const finished = echo === true ? run : run.quiet().then((done) => (echo && process.stderr.write(done.stderr), done));
+      const result = await Promise.race([finished, timeout()]).finally(() => clearTimeout(timer));
+      if (!result || echo === true) return result && { exitCode: result.exitCode };
       const { exitCode, stdout, stderr } = result;
       return { exitCode, stdout: stdout.toString(), stderr: stderr.toString(), overflow: stdout.length > 1048576 };
     }
-    // An ordinary command writes to the host's stdout and stderr; a preToolUse one is read.
-    const output = echo ? "inherit" : "pipe";
-    const proc = Bun.spawn([process.execPath, "--no-env-file", "exec", "export BUN_BE_BUN=\n" + command], { cwd: directory ?? process.cwd(), env: { ...process.env, BUN_BE_BUN: "1" }, stdin: new TextEncoder().encode(input + "\n"), stdout: output, stderr: output, windowsHide: true });
-    const [stdout, stderr] = echo ? [] : [__rulesyncRead(proc.stdout), __rulesyncRead(proc.stderr)];
+    // An ordinary command writes to the host's stdout and stderr; a preToolUse one is read, and
+    // a sessionStart one (`echo: "stderr"`) has its stdout read.
+    const proc = Bun.spawn([process.execPath, "--no-env-file", "exec", "export BUN_BE_BUN=\n" + command], { cwd: directory ?? process.cwd(), env: { ...process.env, BUN_BE_BUN: "1" }, stdin: new TextEncoder().encode(input + "\n"), stdout: echo === true ? "inherit" : "pipe", stderr: echo ? "inherit" : "pipe", windowsHide: true });
+    const stdout = echo === true ? undefined : __rulesyncRead(proc.stdout);
+    const stderr = echo ? undefined : __rulesyncRead(proc.stderr);
     const exitCode = await Promise.race([proc.exited, timeout()]).finally(() => clearTimeout(timer));
     if (exitCode === null) {
       stdout?.stop(), stderr?.stop();
@@ -134,15 +137,15 @@ export const RulesyncHooksPlugin = async ({ directory }) => {
       else __rulesyncKillTree(proc);
       return null;
     }
-    if (echo) return { exitCode };
-    await Promise.race([Promise.all([stdout.done, stderr.done]), Bun.sleep(1000)]);
-    stdout.stop(), stderr.stop();
-    return { exitCode, stdout: stdout.text(), stderr: stderr.text(), overflow: stdout.overflow() };
+    if (echo === true) return { exitCode };
+    await Promise.race([Promise.all([stdout.done, stderr?.done]), Bun.sleep(1000)]);
+    stdout.stop(), stderr?.stop();
+    return { exitCode, stdout: stdout.text(), stderr: stderr?.text() ?? "", overflow: stdout.overflow() };
   };
-  const __rulesyncRunHook = async ({ label, command, input, blocking, seconds, inProcess = false }) => {
+  const __rulesyncRunHook = async ({ label, command, input, blocking, seconds, inProcess = false, context = false }) => {
     let result;
     try {
-      result = await __rulesyncRunCommand({ command, input, seconds, inProcess, echo: true });
+      result = await __rulesyncRunCommand({ command, input, seconds, inProcess, echo: context ? "stderr" : true });
     } catch (error) {
       if (blocking) throw error;
       console.error("[rulesync-hooks] " + label + " hook failed:", error);
@@ -153,7 +156,7 @@ export const RulesyncHooksPlugin = async ({ directory }) => {
       if (blocking) throw new Error(message);
       return console.error(message);
     }
-    if (result.exitCode === 0) return;
+    if (result.exitCode === 0) return result;
     const message = "[rulesync-hooks] " + label + " hook exited with code " + result.exitCode;
     if (blocking) throw new Error(message);
     console.error(message);

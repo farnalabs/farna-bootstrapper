@@ -403,7 +403,7 @@ function stricterWinner(a: Winner | undefined, b: Winner | undefined): Winner | 
 
 /**
  * Map a persona's resolved permission map onto OpenCode's ordered permission
- * records. Measured at rulesync 43.11.0: `bash` becomes `shell`, `task` becomes
+ * records. Measured at rulesync 43.12.0: `bash` becomes `shell`, `task` becomes
  * `subagent`, and `write` folds into `edit` (there is no write category). The
  * fold is reported as W112 when a write-derived allow is emitted without a
  * matching edit declaration. `ask` becomes deny (W111).

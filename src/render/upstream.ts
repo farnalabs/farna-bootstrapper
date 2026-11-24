@@ -28,9 +28,9 @@ import type { RendererIdentity, RenderRequest, RenderResult, RenderTarget } from
  */
 export const RENDERER_PIN: RendererIdentity = {
   name: 'rulesync',
-  version: '43.11.0',
+  version: '43.12.0',
   integrity:
-    'sha512-P9YtvLVkUsSAfdU2zvh2CFGkikTT3/frT5dajHU+S1YoYxsd+NHF9sjN2f7jSWAbKMXKRWBLw75g4vobCClZYQ==',
+    'sha512-blJFbERhKS7NeZKaxyBQOZj0YO3jQALIZwS2vWuV8yhA0elFkA/DJ1xtnp8LUG/SBBo6xrNHpIuAlUKx3trmoA==',
 };
 
 /**

@@ -727,7 +727,7 @@ class UnverifiedRenderTarget implements RenderTarget {
   identity(): RendererIdentity {
     return {
       name: 'rulesync',
-      version: '43.11.0',
+      version: '43.12.0',
       integrityRecord: { verified: false, reason: 'no-record' },
     };
   }

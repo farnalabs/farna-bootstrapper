@@ -290,7 +290,7 @@ function permissionRecords(value: unknown): Array<Record<string, string>> | unde
 }
 
 /**
- * The V2 (`opencode`) per-agent file. Measured at rulesync 43.11.0: the
+ * The V2 (`opencode`) per-agent file. Measured at rulesync 43.12.0: the
  * frontmatter is `description`, `mode`, `model` (when declared) and
  * `permissions` (when the persona declares one), with no `name` key — OpenCode
  * 2.x names the agent from the file, and a stray V1 field would make the file
@@ -340,7 +340,7 @@ function verifyOpencodeV2Agent(
 }
 
 /**
- * The V1 (`opencodev1`) per-agent file. Measured at rulesync 43.11.0: the
+ * The V1 (`opencodev1`) per-agent file. Measured at rulesync 43.12.0: the
  * frontmatter is `name`, `description`, `mode`, `model` (when declared) and the
  * per-tool `permission` map (when the persona declares one). `temperature` and
  * `tools` are V1 keys this product does not author, so they must never appear;
@@ -602,7 +602,7 @@ type HookAnchorPattern = {
 
 /**
  * The V2 (`opencode`) plugin's registration anchors, measured at rulesync
- * 43.11.0: a tool hook (`ctx.tool.hook("execute.before"|"execute.after", ...)`)
+ * 43.12.0: a tool hook (`ctx.tool.hook("execute.before"|"execute.after", ...)`)
  * and an event hook whose `label: "<event>"` has no tool anchor.
  */
 const OPENCODE_V2_HOOK_ANCHORS: readonly HookAnchorPattern[] = [
@@ -617,7 +617,7 @@ const OPENCODE_V2_HOOK_ANCHORS: readonly HookAnchorPattern[] = [
 
 /**
  * The V1 (`opencodev1`) `RulesyncHooksPlugin` registration anchors, measured at
- * rulesync 43.11.0: the returned object keys `"tool.execute.before"` and
+ * rulesync 43.12.0: the returned object keys `"tool.execute.before"` and
  * `"tool.execute.after"`, and the event-loop branches
  * `event.type === "session.created"` / `event.type === "session.idle"`. The
  * V1 plugin also carries `label: "sessionStart"|"stop"|"postToolUse"` inside

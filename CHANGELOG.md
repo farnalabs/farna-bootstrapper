@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before 1.0.0, a minor
 release may contain a breaking change; every change of that kind is listed under **Changed**.
 
+## [Unreleased]
+
+### Changed
+
+- **Renderer pin moved to `rulesync` 43.12.0.** The only emitted artefact that changed is the
+  generated hooks plugin on both OpenCode targets. A `session-start` hook now runs with
+  `context: true`, so its stdout is captured as session context while its stderr streams to the
+  host, and the plugin's run helper returns its result on success. Every other golden is
+  byte-identical. Because the plugin is a managed file, `check` reports drift on an existing
+  project until the next `generate`.
+
 ## [0.1.2] - 2026-11-23
 
 ### Added
@@ -132,6 +143,7 @@ output still matches the source.
   runner does not grant), the POSIX mode assertions, the FIFO cases and the install-layout suite are
   skipped on Windows; CI runs them on Linux.
 
+[Unreleased]: https://github.com/farnalabs/farna-bootstrapper/compare/v0.1.2...HEAD
 [0.1.2]: https://github.com/farnalabs/farna-bootstrapper/releases/tag/v0.1.2
 [0.1.1]: https://github.com/farnalabs/farna-bootstrapper/releases/tag/v0.1.1
 [0.1.0]: https://github.com/farnalabs/farna-bootstrapper/releases/tag/v0.1.0
