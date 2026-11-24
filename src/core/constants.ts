@@ -6,7 +6,7 @@
  */
 
 export const PRODUCT_NAME = 'farna-bootstrapper';
-export const PRODUCT_VERSION = '0.1.2';
+export const PRODUCT_VERSION = '0.1.3';
 /** The one source/schema version this build understands. */
 export const SCHEMA_VERSION = 1 as const;
 

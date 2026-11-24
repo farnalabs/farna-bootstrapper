@@ -33,7 +33,7 @@
   ],
   "product": {
     "name": "farna-bootstrapper",
-    "version": "0.1.2"
+    "version": "0.1.3"
   },
   "renderer": {
     "integrity": "sha512-fGOfX/kbs089e2nPDNZtf/nY/eNKIgM8n5Mer6f+A2ZQlxjVTjBHS60O847aCV/kZIwHHUIXASgh6aRv3VlR9w==",

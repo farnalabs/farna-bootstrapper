@@ -2,11 +2,7 @@
 
 `farna-bootstrapper` compiles named agent personas and their resources into the configuration a
 coding harness reads, and proves that the committed output still matches the source. The latest
-published release is **0.1.2** (2026-11-23).
-
-`main` already contains unreleased work: the renderer pin has moved to `rulesync` 43.12.0, and this
-repository now generates its own agent configuration from `.farna/`. The `[Unreleased]` section of
-[CHANGELOG.md](CHANGELOG.md) records the renderer change.
+published release is **0.1.3** (2026-11-24).
 
 This is a pre-1.0 project. Everything below describes what exists today and what is intended next;
 it is not a promise of dates or a claim of production readiness.
@@ -44,33 +40,35 @@ What 0.1.x does today, all of it covered by the test suite and by CI:
 - **Self-dogfood.** This repository's own `.claude/agents/maintainer.md` is generated from
   `.farna/`, and `check` runs in CI so an unregenerated source change or a hand-edited generated
   file fails the build. The dogfood covers the `claudecode` target in agent mode only.
+- **The same CI steps on macOS.** A second CI job runs on macOS with every step identical to the
+  Linux job; it passed on its first run, including the full test suite and the `check` gate, so the
+  tool is verified on macOS as well as on Linux.
+- **A renderer-upgrade routine.** A weekly scheduled workflow (`.github/workflows/renderer-pin.yml`)
+  detects when the pinned renderer is behind the published npm version, opens one tracking issue
+  while it is behind, and closes it when the pin catches up. Absorbing an upgrade stays a documented
+  manual procedure ([CONTRIBUTING.md](CONTRIBUTING.md#absorbing-a-renderer-upgrade)), because every
+  emitted byte change needs a human explanation.
 
 ## Next
 
 The ordered near-term work. Each item is a concrete outcome, not a theme.
 
-1. **Verify the tool on macOS.** Add a macOS job to CI and confirm three things there: a clean
-   install, a `generate`, and a `check` that passes. Record the result. CI is Linux only today.
-2. **Stand up the weekly renderer-upgrade routine.** Each week, check for a new pinned renderer
-   version, absorb it only with a golden diff that explains every byte change, and record the
-   result. The first real upgrade, to `rulesync` 43.12.0, is already done and is evidence the
-   routine works. Detection is automated: the dependency-update bot opens a bump pull request, and
-   a weekly scheduled workflow (`.github/workflows/renderer-pin.yml`) opens one tracking issue when
-   the pin is behind and closes it when the pin catches up. Absorbing the bump is still a documented
-   procedure a maintainer runs, because every byte change needs a human explanation; it is written
-   down in [CONTRIBUTING.md](CONTRIBUTING.md#absorbing-a-renderer-upgrade).
+1. **Exercise the tracking issue's full lifecycle.** The renderer-pin workflow has run only on the
+   path where the pin matches the published version. When the next renderer version is published,
+   confirm that it opens one issue, comments weekly while the pin stays behind, and closes that
+   issue when the pin catches up.
+2. **Multi-target rendering in one run, with a per-target lockfile and mode plan.** More than one
+   configured target is refused today, and the lockfile, the mode plan and the write path are all
+   per target. This is the design change that unblocks the OpenCode half of the self-dogfood and
+   the "one source, several harnesses" story.
 3. **Extend the self-dogfood to the OpenCode half.** Generate this repository's OpenCode
-   configuration from the same `.farna/` source it already uses for Claude Code. This is blocked
-   today by the one-target-per-run limit.
+   configuration from the same `.farna/` source it already uses for Claude Code. This follows item
+   2, because it needs more than one target in a single run.
 
 ## Later
 
 The larger work, deliberately not next, with the reason each one waits.
 
-- **Multi-target rendering in one run, with a per-target lockfile and mode plan.** This is the change
-  that unblocks the OpenCode half of the self-dogfood and the "one source, several harnesses" story.
-  It is a design change, not an incremental fix: the lockfile, the mode plan and the write path are
-  all per target today.
 - **A measured capability matrix for every harness the renderer supports, and a generated
   capability page.** Today the `report` command prints the measured matrix for the three supported
   targets only, and the matrix is documentation rather than a generated page.
@@ -96,7 +94,7 @@ These are absent by design, restated here so a reader does not have to ask:
 - A dependency on a hosted control plane. Generation and checking make no network request of their
   own.
 - A prebuilt Windows binary in this line. The tool is distributed as a Node package rather than a
-  native executable, and CI currently runs on Linux only.
+  native executable, and CI runs on Linux and macOS, not Windows.
 - A GUI. The interface is the CLI.
 - A caching render root. The profile is the repository root, never a cache directory or a
   subdirectory below another config.
