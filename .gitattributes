@@ -5,13 +5,9 @@
 
 # The source tree and every generated file are compared byte for byte, so a
 # checkout that rewrites them to CRLF would report drift the source never
-# declared. `farna-bootstrapper init` merges the same class of patterns into a
-# CONSUMER repository's own .gitattributes:
-#   /.farna/** text eol=lf
-#   /.claude/agents/** text eol=lf
-#   /.opencode/** text eol=lf
-#   /opencode.jsonc text eol=lf
-# They are comments here because this repository has no generated output.
+# declared. They are pinned to LF below, and these are the same patterns
+# `farna-bootstrapper init` merges into a consumer repository's own
+# .gitattributes.
 /.farna/** text eol=lf
 /.claude/agents/** text eol=lf
 /.opencode/agents/** text eol=lf
