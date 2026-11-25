@@ -281,15 +281,10 @@ describe('source loader', () => {
     }
   });
 
-  it('refuses every workspace resource kind on claudecode, not only skill', async () => {
+  it('refuses skills and commands on claudecode in every mode, naming the target', async () => {
     const repo = await createTempRepo();
     try {
-      for (const ref of [
-        'skill/secure-review',
-        'command/pytest',
-        'mcp/scan',
-        'hook/format-on-save',
-      ]) {
+      for (const ref of ['skill/secure-review', 'command/pytest']) {
         await writeFile(
           join(repo.root, '.farna/personas/reviewer.yaml'),
           `kind: persona\nid: reviewer\ndisplayName: Reviewer\npurpose: Reviews a change.\nresources:\n  - ${ref}\n`,
@@ -304,6 +299,30 @@ describe('source loader', () => {
         expect(error.message).toBe(
           `the ${ref.split('/')[0]} resource kind is not carried by claudecode in this slice`,
         );
+        expect(error.action).toContain('claudecode');
+      }
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
+  it('refuses mcp and hook on claudecode in agent mode and offers profile mode', async () => {
+    const repo = await createTempRepo();
+    try {
+      for (const ref of ['mcp/scan', 'hook/format-on-save']) {
+        await writeFile(
+          join(repo.root, '.farna/personas/reviewer.yaml'),
+          `kind: persona\nid: reviewer\ndisplayName: Reviewer\npurpose: Reviews a change.\nresources:\n  - ${ref}\n`,
+          'utf8',
+        );
+        const config = await loadConfig(repo.root);
+        const source = await loadSource(repo.root);
+        const error = await expectFarnaError(
+          Promise.resolve().then(() => resolveSource(source, config)),
+          'F001_INVALID_CONFIG',
+        );
+        expect(error.message).toContain('requires profile mode on claudecode');
+        expect(error.action).toContain('targets.claudecode.active');
       }
     } finally {
       await repo.cleanup();

@@ -1,0 +1,15 @@
+{
+  "kind": "permission",
+  "id": "builder-default",
+  "tools": {
+    "read": "allow",
+    "write": "allow",
+    "shell": "allow",
+    "task": "ask"
+  },
+  "patterns": {
+    "shell": {
+      "git push *": "deny"
+    }
+  }
+}

@@ -393,8 +393,8 @@ describe('an orphaned region is stripped, not the whole file', () => {
   });
 });
 
-describe('no shipped target emits a region', () => {
-  it('writes no region entry and no CLAUDE.md from the demo fixture', async () => {
+describe('a region is emitted only by a profile render', () => {
+  it('writes no region entry and no CLAUDE.md from the demo fixture in agent mode', async () => {
     const repo = await createTempRepo();
     try {
       await runGenerate({ cwd: repo.root, dryRun: false }, new FakeRenderTarget());
@@ -433,16 +433,41 @@ describe('no shipped target emits a region', () => {
     }
   });
 
-  it('keeps claudecode out of profile mode and its feature list at subagents only', () => {
-    const source = {
+  it('puts claudecode in profile mode and asks for the features it declares there', () => {
+    const agent = {
       target: 'claudecode',
+      mode: 'agent',
+      personas: [{ rules: [] }, { rules: [] }],
       mcp: [],
       skills: [],
       commands: [],
       hooks: [],
     } as unknown as ResolvedSource;
-    expect(PROFILE_TARGETS as readonly string[]).not.toContain('claudecode');
-    expect(renderFeatures('claudecode', source)).toEqual(['subagents']);
+    expect(PROFILE_TARGETS as readonly string[]).toContain('claudecode');
+    // Agent mode is one subagent per persona and no workspace surface.
+    expect(renderFeatures('claudecode', agent)).toEqual(['subagents']);
+
+    const profile = {
+      target: 'claudecode',
+      mode: 'profile',
+      personas: [{ rules: [{}] }],
+      mcp: [{}],
+      skills: [],
+      commands: [],
+      hooks: [{ carried: true }],
+    } as unknown as ResolvedSource;
+    expect(renderFeatures('claudecode', profile)).toEqual(['subagents', 'rules', 'mcp', 'hooks']);
+
+    const ruleOnly = {
+      target: 'claudecode',
+      mode: 'profile',
+      personas: [{ rules: [{}] }],
+      mcp: [],
+      skills: [],
+      commands: [],
+      hooks: [{ carried: false }],
+    } as unknown as ResolvedSource;
+    expect(renderFeatures('claudecode', ruleOnly)).toEqual(['subagents', 'rules']);
   });
 
   it('claims CLAUDE.md for claudecode alone, so a second claimant is a collision', async () => {

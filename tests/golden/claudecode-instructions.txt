@@ -1,0 +1,9 @@
+# Team notes
+
+Some user prose before the region.
+
+<!-- farna:begin claude-instructions -->
+## House style
+
+FBS_RULE_BUILDER_4a1c Write the smallest change that satisfies the ticket.
+<!-- farna:end claude-instructions -->

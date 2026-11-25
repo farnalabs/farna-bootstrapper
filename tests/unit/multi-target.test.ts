@@ -167,7 +167,7 @@ describe('two configured targets in one run', () => {
     }
   }, 60_000);
 
-  it('applies --persona to the OpenCode target and leaves claudecode in agent mode', async () => {
+  it('applies --persona to every configured target and emits no W118', async () => {
     const repo = await repoWith(BOTH_TARGETS);
     try {
       const result = await runGenerate(
@@ -175,15 +175,15 @@ describe('two configured targets in one run', () => {
         new UpstreamRenderTarget(),
       );
       const [claude, opencode] = result.targets;
-      // The flag applies only to the profile-capable target. The agent target
-      // still renders every persona, so a mixed config can use the flag at all.
+      // Both targets support profile mode now, so the flag applies to both and
+      // the "flag ignored" warning is unreachable.
       expect(claude).toMatchObject({
         target: 'claudecode',
-        mode: 'agent',
-        activePersona: null,
-        notLive: [],
+        mode: 'profile',
+        activePersona: 'builder',
+        notLive: ['reviewer'],
       });
-      expect(claude?.personas).toEqual(['builder', 'reviewer']);
+      expect(claude?.personas).toEqual(['builder']);
       expect(opencode).toMatchObject({
         target: 'opencode',
         mode: 'profile',
@@ -192,24 +192,16 @@ describe('two configured targets in one run', () => {
       });
       expect(opencode?.personas).toEqual(['builder']);
 
-      const flagWarnings = result.warnings.filter(
-        (entry) => entry.code === 'W118_PERSONA_FLAG_NOT_APPLIED',
-      );
-      expect(flagWarnings).toHaveLength(1);
-      expect(flagWarnings[0]).toMatchObject({
-        code: 'W118_PERSONA_FLAG_NOT_APPLIED',
-        severity: 'info',
-        persona: '<flag>',
-        target: 'claudecode',
-      });
-      expect(flagWarnings[0]?.message).toContain('--persona');
-      expect(flagWarnings[0]?.message).toContain('"builder"');
-      expect(flagWarnings[0]?.message).toContain('claudecode');
+      expect(
+        result.warnings.filter((entry) => entry.code === 'W118_PERSONA_FLAG_NOT_APPLIED'),
+      ).toHaveLength(0);
 
       const files = await listFiles(repo.root);
-      for (const persona of PERSONAS) {
-        expect(files).toContain(`.claude/agents/${persona}.md`);
-      }
+      expect(files).toContain('.claude/agents/builder.md');
+      expect(files).not.toContain('.claude/agents/reviewer.md');
+      // The demo persona declares a rule, so profile mode owns the instruction
+      // region as well as the agent file.
+      expect(files).toContain('CLAUDE.md');
       expect(files).toContain('.opencode/agents/builder.md');
       expect(files).not.toContain('.opencode/agents/reviewer.md');
 
@@ -217,18 +209,18 @@ describe('two configured targets in one run', () => {
       expect(check.ok).toBe(true);
       expect(check.exitCode).toBe(0);
       expect(check.targets.map((target) => [target.target, target.mode])).toEqual([
-        ['claudecode', 'agent'],
+        ['claudecode', 'profile'],
         ['opencode', 'profile'],
       ]);
-      // `check` reports the same invocation-level warning, and it is still not
-      // part of the committed record.
-      expect(check.warnings.map((entry) => entry.code)).toContain('W118_PERSONA_FLAG_NOT_APPLIED');
+      expect(check.warnings.map((entry) => entry.code)).not.toContain(
+        'W118_PERSONA_FLAG_NOT_APPLIED',
+      );
     } finally {
       await repo.cleanup();
     }
   }, 60_000);
 
-  it('records independent per-target modes and keeps W118 out of the lockfile', async () => {
+  it('records the same profile mode for both targets and keeps W118 out of the lockfile', async () => {
     const repo = await repoWith(BOTH_TARGETS);
     try {
       await runGenerate(
@@ -252,9 +244,9 @@ describe('two configured targets in one run', () => {
       };
       expect(Object.keys(lock.targets)).toEqual(['claudecode', 'opencode']);
       expect(lock.targets['claudecode']).toMatchObject({
-        mode: 'agent',
-        activePersona: null,
-        notLive: [],
+        mode: 'profile',
+        activePersona: 'builder',
+        notLive: ['reviewer'],
       });
       expect(lock.targets['opencode']).toMatchObject({
         mode: 'profile',
@@ -263,7 +255,7 @@ describe('two configured targets in one run', () => {
       });
       expect(lock.targets['claudecode']?.files.map((file) => file.path)).toEqual([
         '.claude/agents/builder.md',
-        '.claude/agents/reviewer.md',
+        'CLAUDE.md',
       ]);
       expect(lock.targets['opencode']?.files.map((file) => file.path)).toEqual([
         '.opencode/agents/builder.md',
@@ -273,27 +265,28 @@ describe('two configured targets in one run', () => {
     }
   }, 60_000);
 
-  it('refuses --persona when no configured target supports profile mode, with zero writes', async () => {
+  it('accepts --persona on a claudecode-only config and renders its profile', async () => {
     const repo = await repoWith(CLAUDECODE_ONLY);
-    const before = await hashTree(repo.root);
     try {
-      let failure: FarnaError | undefined;
-      try {
-        await runGenerate(
-          { cwd: repo.root, dryRun: false, persona: 'builder' },
-          new UpstreamRenderTarget(),
-        );
-      } catch (error) {
-        expect(error).toBeInstanceOf(FarnaError);
-        failure = error as FarnaError;
-      }
-      expect(failure?.code).toBe('F001_INVALID_CONFIG');
-      expect(failure?.exitCode).toBe(1);
-      expect(failure?.subject).toBe('--persona');
-      expect(failure?.message).toContain('does not support profile mode');
-      expect(failure?.message).toContain('claudecode');
-      expect(await hashTree(repo.root)).toBe(before);
-      expect(await listFiles(repo.root)).not.toContain('.farna/lock.json');
+      const result = await runGenerate(
+        { cwd: repo.root, dryRun: false, persona: 'builder' },
+        new UpstreamRenderTarget(),
+      );
+      const [claude] = result.targets;
+      expect(claude).toMatchObject({
+        target: 'claudecode',
+        mode: 'profile',
+        activePersona: 'builder',
+        notLive: ['reviewer'],
+      });
+      expect(claude?.personas).toEqual(['builder']);
+      const files = await listFiles(repo.root);
+      expect(files).toContain('.claude/agents/builder.md');
+      expect(files).toContain('CLAUDE.md');
+      expect(files).not.toContain('.claude/agents/reviewer.md');
+      expect(
+        await runCheck(repo.root, new UpstreamRenderTarget(), { persona: 'builder' }),
+      ).toMatchObject({ ok: true, exitCode: 0 });
     } finally {
       await repo.cleanup();
     }
@@ -316,10 +309,10 @@ describe('two configured targets in one run', () => {
       expect(failure?.code).toBe('F001_INVALID_CONFIG');
       expect(failure?.exitCode).toBe(1);
       expect(failure?.subject).toBe('--persona');
-      // One refusal, and it says which target could not resolve the id: the
-      // agent target accepted the same run.
+      // One refusal, and it says which target could not resolve the id: every
+      // configured target resolves the same id, and the first reports it.
       expect(failure?.message).toContain('"ghost"');
-      expect(failure?.message).toContain('opencode');
+      expect(failure?.message).toContain('claudecode');
       expect(await hashTree(repo.root)).toBe(before);
     } finally {
       await repo.cleanup();

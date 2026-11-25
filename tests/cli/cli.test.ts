@@ -691,25 +691,27 @@ describe('the built CLI', () => {
       return warnings as JsonWarning[];
     }
 
-    it('prints one mode per target and the W118 line in the human report', async () => {
+    it('prints one profile mode per target and no W118 line in the human report', async () => {
       const repo = await mixedRepo();
       try {
         const result = await runCli(repo.root, ['generate', '--persona', 'builder']);
         expect(result.code).toBe(0);
-        expect(result.stdout).toContain('target claudecode (agent mode)');
+        expect(result.stdout).toContain('target claudecode (profile mode, active builder)');
         expect(result.stdout).toContain('target opencode (profile mode, active builder)');
-        // The agent target keeps every persona; the profile target emits one.
-        expect(result.stdout).toContain('.claude/agents/reviewer.md');
+        // Both targets are profile mode now, so both emit one live persona.
+        expect(result.stdout).not.toContain('.claude/agents/reviewer.md');
         expect(result.stdout).not.toContain('.opencode/agents/reviewer.md');
-        expect(result.stdout).toContain('W118_PERSONA_FLAG_NOT_APPLIED info');
-        expect(result.stdout).toContain('--persona "builder"');
-        expect(result.stdout).toContain('not applied to the claudecode target');
+        expect(result.stdout).toContain('.claude/agents/builder.md');
+        // The profile is forced only by a rule here, so W109 says the mode was
+        // a choice; the flag was applied everywhere and W118 is absent.
+        expect(result.stdout).toContain('W109_PROFILE_BY_CHOICE info');
+        expect(result.stdout).not.toContain('W118_PERSONA_FLAG_NOT_APPLIED');
       } finally {
         await repo.cleanup();
       }
     }, 60_000);
 
-    it('carries the two modes and W118 in the JSON payload, and never in the lockfile', async () => {
+    it('carries the two profile modes in the JSON payload, and keeps W118 out of the record', async () => {
       const repo = await mixedRepo();
       try {
         const result = await runCli(repo.root, ['generate', '--persona', 'builder', '--json']);
@@ -717,32 +719,26 @@ describe('the built CLI', () => {
         const body = parseObject(result.stdout);
         const targets = targetsOf(body) as ModeTarget[];
         expect(targets.map((target) => [target.target, target.mode])).toEqual([
-          ['claudecode', 'agent'],
+          ['claudecode', 'profile'],
           ['opencode', 'profile'],
         ]);
-        expect(targets[0]).toMatchObject({ activePersona: null, notLive: [] });
-        expect(targets[1]).toMatchObject({
-          activePersona: 'builder',
-          notLive: ['reviewer'],
-          personas: ['builder'],
-        });
+        for (const target of targets) {
+          expect(target).toMatchObject({
+            activePersona: 'builder',
+            notLive: ['reviewer'],
+            personas: ['builder'],
+          });
+        }
 
-        const w118 = warningsOf(body).filter(
-          (warning) => warning.code === 'W118_PERSONA_FLAG_NOT_APPLIED',
-        );
-        expect(w118).toHaveLength(1);
-        expect(w118[0]).toMatchObject({
-          severity: 'info',
-          persona: '<flag>',
-          target: 'claudecode',
-        });
-        expect(w118[0]?.message).toContain('--persona "builder"');
+        expect(
+          warningsOf(body).filter((warning) => warning.code === 'W118_PERSONA_FLAG_NOT_APPLIED'),
+        ).toHaveLength(0);
 
         const raw = await readFile(join(repo.root, '.farna/lock.json'), 'utf8');
         const lock = JSON.parse(raw) as { targets: Record<string, unknown>; warnings: unknown[] };
         expect(Object.keys(lock.targets)).toEqual(['claudecode', 'opencode']);
         // The warning is invocation-level, so it is not part of the committed
-        // record built from source warnings.
+        // record built from source warnings. There is none to record either.
         expect(raw).not.toContain('W118');
 
         const clean = await runCli(repo.root, ['check', '--persona', 'builder', '--json']);
@@ -751,29 +747,27 @@ describe('the built CLI', () => {
         expect(cleanBody).toMatchObject({ ok: true, exitCode: 0 });
         expect(
           warningsOf(cleanBody).some((warning) => warning.code === 'W118_PERSONA_FLAG_NOT_APPLIED'),
-        ).toBe(true);
+        ).toBe(false);
       } finally {
         await repo.cleanup();
       }
     }, 60_000);
 
-    it('refuses --persona when only claudecode is configured, with zero writes', async () => {
+    it('accepts --persona on a claudecode-only config and renders its profile', async () => {
       const repo = await mixedRepo(CLAUDECODE_ONLY);
       try {
-        const before = await hashTree(repo.root);
         const result = await runCli(repo.root, ['generate', '--persona', 'builder', '--json']);
-        expect(result.code).toBe(1);
+        expect(result.code).toBe(0);
         const body = parseObject(result.stdout);
-        expect(body).toMatchObject({
-          command: 'generate',
-          ok: false,
-          exitCode: 1,
-          code: 'F001_INVALID_CONFIG',
-          subject: '--persona',
+        const targets = targetsOf(body) as ModeTarget[];
+        expect(targets).toHaveLength(1);
+        expect(targets[0]).toMatchObject({
+          target: 'claudecode',
+          mode: 'profile',
+          activePersona: 'builder',
+          notLive: ['reviewer'],
+          personas: ['builder'],
         });
-        expect(String(body['message'])).toContain('does not support profile mode');
-        expect(String(body['message'])).toContain('claudecode');
-        expect(await hashTree(repo.root)).toBe(before);
       } finally {
         await repo.cleanup();
       }
@@ -794,7 +788,7 @@ describe('the built CLI', () => {
           detail: null,
         });
         expect(String(body['message'])).toContain('"ghost"');
-        expect(String(body['message'])).toContain('opencode');
+        expect(String(body['message'])).toContain('claudecode');
         // No detail block: the human diagnostic is the code+subject line, the
         // message line and the action line, and nothing more.
         const lines = result.stderr.trimEnd().split('\n');

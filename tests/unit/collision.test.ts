@@ -64,6 +64,24 @@ describe('location-collision guard', () => {
     }
   });
 
+  it('claims the three Claude Code workspace files as well as the agent directory', () => {
+    expect(managedLocationsOf('claudecode')).toEqual([
+      '.claude/agents',
+      '.mcp.json',
+      '.claude/settings.json',
+      'CLAUDE.md',
+    ]);
+  });
+
+  it('refuses a synthetic target that claims a Claude Code workspace file', () => {
+    expect(
+      findLocationCollisions({
+        claudecode: managedLocationsOf('claudecode'),
+        alpha: ['.mcp.json'],
+      }),
+    ).toEqual([{ location: '.mcp.json', targets: ['alpha', 'claudecode'] }]);
+  });
+
   it('accepts the real claudecode and opencode location sets', () => {
     expect(
       findLocationCollisions({

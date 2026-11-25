@@ -569,35 +569,36 @@ describe('profile mode', () => {
     }
   });
 
-  it('rejects profile mode on a target that does not support it', async () => {
+  it('accepts profile mode on claudecode through the committed active and the flag', async () => {
     const repo = await createTempRepo('demo');
     try {
       await writeFile(
         join(repo.root, '.farna/config.jsonc'),
-        '{"schemaVersion":1,"targets":{"claudecode":{"active":"builder"}}}\n',
+        '{"schemaVersion":1,"targets":{"claudecode":{"active":"builder"}},"models":{"standard":{"claudecode":"claude-sonnet-4-5"}}}\n',
         'utf8',
       );
-      await expectProfileFailure(
-        repo,
-        async () => {
-          await runGenerate({ cwd: repo.root, dryRun: false }, new UpstreamRenderTarget());
-        },
-        'F001_INVALID_CONFIG',
-        '.farna/config.jsonc',
-        'does not support profile mode',
+      const committed = await runGenerate(
+        { cwd: repo.root, dryRun: false },
+        new UpstreamRenderTarget(),
       );
-      await expectProfileFailure(
-        repo,
-        async () => {
-          await runGenerate(
-            { cwd: repo.root, dryRun: false, persona: 'builder' },
-            new UpstreamRenderTarget(),
-          );
-        },
-        'F001_INVALID_CONFIG',
-        '--persona',
-        'does not support profile mode',
+      expect(committed.targets[0]).toMatchObject({
+        target: 'claudecode',
+        mode: 'profile',
+        activePersona: 'builder',
+        notLive: ['reviewer'],
+      });
+
+      const viaFlag = await runGenerate(
+        { cwd: repo.root, dryRun: false, persona: 'builder' },
+        new UpstreamRenderTarget(),
       );
+      expect(viaFlag.targets[0]).toMatchObject({
+        target: 'claudecode',
+        mode: 'profile',
+        activePersona: 'builder',
+        notLive: ['reviewer'],
+      });
+      expect(await readText(repo.root, 'CLAUDE.md')).toContain('FBS_RULE_BUILDER_4a1c');
     } finally {
       await repo.cleanup();
     }

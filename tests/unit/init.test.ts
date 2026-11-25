@@ -43,6 +43,9 @@ describe('init', () => {
       // `check` compares bytes, so a CRLF checkout must not look like drift.
       const attributes = await readText(repo.root, '.gitattributes');
       expect(attributes).toContain('/.claude/agents/** text eol=lf');
+      expect(attributes).toContain('/.mcp.json text eol=lf');
+      expect(attributes).toContain('/.claude/settings.json text eol=lf');
+      expect(attributes).toContain('/CLAUDE.md text eol=lf');
       expect(attributes).toContain('/.farna/** text eol=lf');
       expect(attributes).toContain('/.farna/lock.json text eol=lf');
       // The rename moved a file this run created, never a link it followed.
@@ -269,6 +272,9 @@ describe('init', () => {
       const attributes = await readText(repo.root, '.gitattributes');
       expect(attributes.startsWith('* text=auto\n')).toBe(true);
       expect(attributes).toContain('/.claude/agents/** text eol=lf');
+      expect(attributes).toContain('/.mcp.json text eol=lf');
+      expect(attributes).toContain('/.claude/settings.json text eol=lf');
+      expect(attributes).toContain('/CLAUDE.md text eol=lf');
       expect(attributes).toContain('/.farna/lock.json text eol=lf');
       expect(result.updated).toContain('.gitattributes');
     } finally {

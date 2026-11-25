@@ -5,7 +5,6 @@ import {
   MAX_EXTENDS_DEPTH,
   MODE_AGENT,
   MODE_PROFILE,
-  OPENCODE_WORKSPACE_KINDS,
   type PersonaMode,
   PROFILE_FORCING_KINDS,
   PROFILE_TARGETS,
@@ -14,6 +13,7 @@ import {
   SUPPORTED_TARGETS,
   type SupportedTarget,
   targetSupportsProfile,
+  workspaceKindsOf,
 } from '../core/constants.js';
 import { conflict, invalidConfig } from '../core/errors.js';
 import { canonicalJson, compareCodepoints, sha256Hex } from '../core/json.js';
@@ -346,21 +346,20 @@ function assertSupportedRef(
       action: `a resource reference names one of: ${SUPPORTED_RESOURCE_KINDS.join(', ')}`,
     });
   }
-  if (target === 'claudecode' && (OPENCODE_WORKSPACE_KINDS as readonly string[]).includes(kind)) {
+  // Skills and commands are whole trees, not a structured file or an
+  // instruction region, so Claude Code refuses them in every mode: profile mode
+  // does not widen the ownership model to a managed directory.
+  if (target === 'claudecode' && (kind === 'skill' || kind === 'command')) {
     throw invalidConfig(`the ${kind} resource kind is not carried by ${target} in this slice`, {
       subject: persona.path,
-      action: `render this source for the opencode target, or remove the ${kind} reference`,
+      action: `remove the ${kind} reference; ${target} carries skills and commands in a later slice`,
     });
   }
   // A workspace kind in agent mode has no per-recipient record, no opt-out and
   // no honest warning: a workspace emission would give every persona the
   // declarer's resource. Profile mode is the only mode that carries it, and its
   // absence is a refusal, never a silent workspace-wide emission.
-  if (
-    mode === MODE_AGENT &&
-    isOpencodeTarget(target) &&
-    (OPENCODE_WORKSPACE_KINDS as readonly string[]).includes(kind)
-  ) {
+  if (mode === MODE_AGENT && (workspaceKindsOf(target) as readonly string[]).includes(kind)) {
     const { id } = splitRef(ref);
     throw invalidConfig(
       `${kind}/${id} is declared by persona ${persona.id} and requires profile mode on ${target}`,
@@ -398,16 +397,25 @@ function sortResources(resources: ResolvedResource[]): ResolvedResource[] {
 }
 
 /**
- * Why OpenCode cannot carry this hook, or `undefined` when it can. Measured at
- * rulesync 43.14.0: `session-end` has no OpenCode event, and a matcher is
- * honoured only on the tool events (`preToolUse`/`postToolUse`).
+ * Why this target cannot carry this hook, or `undefined` when it can.
+ *
+ * Measured at rulesync 43.14.0. OpenCode has no `session-end` event, and it
+ * honours a matcher on the tool events only (`preToolUse`/`postToolUse`).
+ * Claude Code emits all five phases, and preserves a matcher on every event
+ * except `stop`, where the renderer drops it silently.
  */
-function hookProblem(hook: ResolvedHook): string | undefined {
-  if (hook.phase === 'session-end') {
-    return 'OpenCode has no session-end event';
+function hookProblem(hook: ResolvedHook, target: SupportedTarget): string | undefined {
+  if (isOpencodeTarget(target)) {
+    if (hook.phase === 'session-end') {
+      return 'OpenCode has no session-end event';
+    }
+    if (hook.matcher !== undefined && hook.phase !== 'before-tool' && hook.phase !== 'after-tool') {
+      return `OpenCode honours a matcher on tool events only, not on ${hook.phase}`;
+    }
+    return undefined;
   }
-  if (hook.matcher !== undefined && hook.phase !== 'before-tool' && hook.phase !== 'after-tool') {
-    return `OpenCode honours a matcher on tool events only, not on ${hook.phase}`;
+  if (hook.matcher !== undefined && hook.phase === 'stop') {
+    return 'Claude Code drops a matcher on the stop event';
   }
   return undefined;
 }
@@ -592,7 +600,7 @@ function resolveOne(
   const resolvedHooks: ResolvedHookOutcome[] = sortedResources
     .filter((resource): resource is ResolvedHook => resource.kind === 'hook')
     .map((hook) => {
-      const reason = hookProblem(hook);
+      const reason = hookProblem(hook, target);
       return reason === undefined
         ? { ...hook, carried: true }
         : { ...hook, carried: false, reason };

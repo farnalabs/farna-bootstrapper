@@ -1,13 +1,15 @@
 import { applyEdits, type Edit, type Node, type ParseError, parseTree } from 'jsonc-parser';
-import { OPENCODE_CONFIG_FILE } from '../core/constants.js';
+import { CLAUDE_MCP_FILE, CLAUDE_SETTINGS_FILE, OPENCODE_CONFIG_FILE } from '../core/constants.js';
 import { invalidConfig } from '../core/errors.js';
 import { canonicalJson, canonicalJsonFile, parseJsonc, sha256Hex } from '../core/json.js';
 
 /**
  * The managed paths this tool owns **part** of, and the exact top-level keys it
- * owns in each. `opencode.jsonc` is the only such file in this build: it is the
- * one place a user is likely to keep their own `$schema`, `theme`,
- * `instructions` or extra providers beside the MCP servers this tool writes.
+ * owns in each. Every entry is a file a user is likely to keep their own keys
+ * in: `opencode.jsonc` carries `$schema`, `theme`, `instructions` and extra
+ * providers beside the MCP servers this tool writes; `.mcp.json` is a shared
+ * MCP document; `.claude/settings.json` carries `$schema` and `permissions`
+ * beside the hooks this tool writes.
  *
  * Owning the whole file destroyed those keys on every `generate`, and comparing
  * the whole file on `check` reported a user's own edit as our drift. Owning the
@@ -16,6 +18,8 @@ import { canonicalJson, canonicalJsonFile, parseJsonc, sha256Hex } from '../core
  */
 export const STRUCTURED_OUTPUTS: Readonly<Record<string, readonly string[]>> = {
   [OPENCODE_CONFIG_FILE]: ['mcp'],
+  [CLAUDE_MCP_FILE]: ['mcpServers'],
+  [CLAUDE_SETTINGS_FILE]: ['hooks'],
 };
 
 /** The keys this tool owns in a structured file, or `undefined` for a whole file. */

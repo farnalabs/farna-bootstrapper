@@ -1,0 +1,14 @@
+{
+  // Claude Code profile mode: exactly one persona is live and owns the four
+  // workspace surfaces the pinned renderer emits for this target. Switch the
+  // persona with `--persona <id>`.
+  "schemaVersion": 1,
+  "targets": {
+    "claudecode": { "active": "builder" }
+  },
+  "models": {
+    "standard": {
+      "claudecode": "claude-sonnet-4-5"
+    }
+  }
+}

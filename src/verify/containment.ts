@@ -5,8 +5,12 @@ import type { ResolvedPersona, ResolvedSource } from '../compose/resolve.js';
 import {
   AGENT_FILE_EXT,
   CLAUDE_AGENTS_DIR,
+  CLAUDE_INSTRUCTIONS_FILE,
+  CLAUDE_MCP_FILE,
+  CLAUDE_SETTINGS_FILE,
   DEFAULT_PERSONA_MODE,
   isOpencodeTarget,
+  MODE_PROFILE,
   OPENCODE_AGENTS_DIR,
   OPENCODE_COMMANDS_DIR,
   OPENCODE_CONFIG_FILE,
@@ -430,6 +434,24 @@ function expectedEnvReference(
 }
 
 /**
+ * The same reference as it reaches a Claude Code document. The materialiser
+ * authors rulesync's canonical `${NAME}`, and the Claude Code adapter keeps it
+ * verbatim, so `.mcp.json` carries the reference and never a value.
+ */
+function expectedTemplateEnvReference(
+  values: Record<string, string | { fromEnv: string }>,
+): Record<string, string> {
+  const converted: Record<string, string> = {};
+  for (const [key, value] of Object.entries(values)) {
+    if (typeof value === 'string') {
+      throw declaredNotEmitted('an MCP credential value is not a reference', { subject: key });
+    }
+    converted[key] = `\${${value.fromEnv}}`;
+  }
+  return converted;
+}
+
+/**
  * The MCP server map rulesync emits from the materialised source. Both OpenCode
  * targets use `type: local|remote`, a `command` array and the same
  * `environment` / `headers` maps; OpenCode 1.x additionally writes an explicit
@@ -438,7 +460,7 @@ function expectedEnvReference(
  * keys it directly under `mcp`, so the same expected map is wrapped differently
  * by the caller.
  */
-function expectedMcpServers(
+function expectedOpencodeMcpServers(
   source: ResolvedSource,
   target: OpencodeTarget,
 ): Record<string, ExpectedMcpServer> {
@@ -463,6 +485,41 @@ function expectedMcpServers(
       type: 'remote',
       url: resource.server.url,
       ...(target === 'opencodev1' ? { enabled: true } : {}),
+      ...(headers === undefined ? {} : { headers }),
+    };
+  }
+  return servers;
+}
+
+/**
+ * The `.mcp.json` server map the Claude Code adapter emits. Measured at
+ * rulesync 43.14.0: `stdio` keeps a string `command`, an `args` array and an
+ * `env` map; `http` keeps its `url` and `headers`; and the canonical `${NAME}`
+ * reference is carried verbatim rather than rewritten to `{env:NAME}`.
+ */
+function expectedClaudeMcpServers(source: ResolvedSource): Record<string, ExpectedMcpServer> {
+  const servers: Record<string, ExpectedMcpServer> = {};
+  for (const resource of source.mcp) {
+    if (resource.server.type === 'stdio') {
+      const env =
+        resource.server.env === undefined
+          ? undefined
+          : expectedTemplateEnvReference(resource.server.env);
+      servers[resource.id] = {
+        type: 'stdio',
+        command: resource.server.command,
+        ...(resource.server.args === undefined ? {} : { args: resource.server.args }),
+        ...(env === undefined ? {} : { env }),
+      };
+      continue;
+    }
+    const headers =
+      resource.server.headers === undefined
+        ? undefined
+        : expectedTemplateEnvReference(resource.server.headers);
+    servers[resource.id] = {
+      type: 'http',
+      url: resource.server.url,
       ...(headers === undefined ? {} : { headers }),
     };
   }
@@ -583,7 +640,21 @@ const HOOK_EVENT_BY_PHASE: Record<string, string> = {
   'before-tool': 'preToolUse',
   'after-tool': 'postToolUse',
   'session-start': 'sessionStart',
+  'session-end': 'sessionEnd',
   stop: 'stop',
+};
+
+/**
+ * The Claude Code event name for each declared phase, measured at rulesync
+ * 43.14.0. The renderer writes the PascalCase event under `.claude/settings.json`
+ * `hooks`; the OpenCode targets use the same canonical map in their plugin.
+ */
+const CLAUDE_HOOK_EVENT_BY_PHASE: Record<string, string> = {
+  'before-tool': 'PreToolUse',
+  'after-tool': 'PostToolUse',
+  'session-start': 'SessionStart',
+  'session-end': 'SessionEnd',
+  stop: 'Stop',
 };
 
 type HookAnchor = { index: number; event: string; registration: boolean };
@@ -874,7 +945,7 @@ async function verifyOpencodeWorkspace(
     if (mcp === null || typeof mcp !== 'object' || Array.isArray(mcp)) {
       throw declaredNotEmitted('opencode config mcp is not an object', { subject: path });
     }
-    const expected = expectedMcpServers(source, target);
+    const expected = expectedOpencodeMcpServers(source, target);
     let emitted: unknown;
     if (source.target === 'opencodev1') {
       // V1 is the flat map directly under `mcp`. An envelope here would be the
@@ -932,6 +1003,111 @@ async function verifyOpencodeWorkspace(
   return verified;
 }
 
+/** Parse a rendered structured document, refusing anything that is not a JSON object. */
+function parseJsonObject(text: string, subject: string): Record<string, unknown> {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    throw declaredNotEmitted(`${subject} is not valid JSON`, { subject });
+  }
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw declaredNotEmitted(`${subject} is not a JSON object`, { subject });
+  }
+  return parsed as Record<string, unknown>;
+}
+
+/**
+ * The `.claude/settings.json` `hooks` map the renderer emits for the carried
+ * hooks. Measured at rulesync 43.14.0: the event is PascalCase, and each entry
+ * is `{ matcher?, hooks: [{ type: "command", command }] }`. Only `hooks` is
+ * owned; `$schema` and `permissions` are the user's keys and are never compared.
+ */
+function expectedClaudeHookMap(source: ResolvedSource): Record<string, unknown> {
+  const hooks: Record<string, Array<Record<string, unknown>>> = {};
+  for (const hook of source.hooks) {
+    if (!hook.carried) {
+      continue;
+    }
+    const event = CLAUDE_HOOK_EVENT_BY_PHASE[hook.phase];
+    if (event === undefined) {
+      throw new Error(`internal invariant violated: carried hook phase ${hook.phase} has no event`);
+    }
+    const bucket = hooks[event] ?? [];
+    bucket.push({
+      ...(hook.matcher === undefined ? {} : { matcher: hook.matcher }),
+      hooks: [{ type: 'command', command: hook.command }],
+    });
+    hooks[event] = bucket;
+  }
+  return hooks;
+}
+
+/**
+ * The Claude Code workspace documents: the instruction region body, the MCP
+ * server map and the hooks map. Each is compared on the part this tool owns
+ * only, so a user's own `$schema` or a foreign key never becomes drift. The
+ * bytes returned are the bytes written.
+ */
+async function verifyClaudeWorkspace(
+  source: ResolvedSource,
+  outputRoot: string,
+): Promise<Map<string, string>> {
+  const verified = new Map<string, string>();
+  const live = source.personas[0];
+  if (source.mode !== MODE_PROFILE || live === undefined) {
+    throw new Error('internal invariant violated: a workspace verification needs one live persona');
+  }
+  if (live.rules.length > 0) {
+    const text = await readManagedFile(
+      join(outputRoot, CLAUDE_INSTRUCTIONS_FILE),
+      CLAUDE_INSTRUCTIONS_FILE,
+    );
+    const expected = personaBody(live);
+    if (text !== expected) {
+      throw declaredNotEmitted('emitted instruction text does not match the live persona', {
+        subject: CLAUDE_INSTRUCTIONS_FILE,
+        action: 'the renderer changed the instruction body; nothing was written',
+      });
+    }
+    verified.set(CLAUDE_INSTRUCTIONS_FILE, text);
+  }
+  if (source.mcp.length > 0) {
+    const text = await readManagedFile(join(outputRoot, CLAUDE_MCP_FILE), CLAUDE_MCP_FILE);
+    const document = parseJsonObject(text, CLAUDE_MCP_FILE);
+    const expected = expectedClaudeMcpServers(source);
+    if (!isDeepStrictEqual(document['mcpServers'], expected)) {
+      throw declaredNotEmitted(
+        `mcp servers are ${describe(document['mcpServers'])} but the source declares ${describe(expected)}`,
+        {
+          subject: CLAUDE_MCP_FILE,
+          action: 'the renderer dropped, invented or rewrote an MCP server; nothing was written',
+        },
+      );
+    }
+    verified.set(CLAUDE_MCP_FILE, text);
+  }
+  if (source.hooks.some((hook) => hook.carried)) {
+    const text = await readManagedFile(
+      join(outputRoot, CLAUDE_SETTINGS_FILE),
+      CLAUDE_SETTINGS_FILE,
+    );
+    const document = parseJsonObject(text, CLAUDE_SETTINGS_FILE);
+    const expected = expectedClaudeHookMap(source);
+    if (!isDeepStrictEqual(document['hooks'], expected)) {
+      throw declaredNotEmitted(
+        `settings hooks are ${describe(document['hooks'])} but the source declares ${describe(expected)}`,
+        {
+          subject: CLAUDE_SETTINGS_FILE,
+          action: 'the renderer dropped, invented or moved a hook; nothing was written',
+        },
+      );
+    }
+    verified.set(CLAUDE_SETTINGS_FILE, text);
+  }
+  return verified;
+}
+
 /**
  * The exact set of managed paths a target renders. The set is derived from the
  * plan, never from `RenderResult`: the renderer's own path list is what the
@@ -956,6 +1132,17 @@ export function expectedPaths(source: ResolvedSource): string[] {
     }
     if (source.hooks.some((hook) => hook.carried)) {
       paths.push(OPENCODE_HOOKS_PLUGIN);
+    }
+  } else if (source.mode === MODE_PROFILE) {
+    const live = source.personas[0];
+    if (live !== undefined && live.rules.length > 0) {
+      paths.push(CLAUDE_INSTRUCTIONS_FILE);
+    }
+    if (source.mcp.length > 0) {
+      paths.push(CLAUDE_MCP_FILE);
+    }
+    if (source.hooks.some((hook) => hook.carried)) {
+      paths.push(CLAUDE_SETTINGS_FILE);
     }
   }
   return paths.sort(compareCodepoints);
@@ -1040,6 +1227,10 @@ export async function verifyRender(
 
   if (isOpencodeTarget(source.target)) {
     for (const [path, text] of await verifyOpencodeWorkspace(source, outputRoot, source.target)) {
+      verified.set(path, text);
+    }
+  } else if (source.mode === MODE_PROFILE) {
+    for (const [path, text] of await verifyClaudeWorkspace(source, outputRoot)) {
       verified.set(path, text);
     }
   }

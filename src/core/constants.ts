@@ -138,13 +138,18 @@ export function isOpencodeTarget(target: SupportedTarget): target is OpencodeTar
 
 /**
  * The targets that support profile mode in this build. Profile mode needs a
- * workspace a single persona can own end to end; the OpenCode targets'
- * workspace resource kinds (`mcp`, `skill`, `command`, `hook`) make them the
- * first targets. Claude Code's only workspace-only capability is `command`, a
- * content capability that does not force a profile, so profile mode there is
- * later work and `active` is refused rather than silently ignored.
+ * workspace a single persona can own end to end. The OpenCode targets own
+ * `opencode.jsonc` plus the `.opencode/` trees; Claude Code owns `.mcp.json`,
+ * `.claude/settings.json` and the instruction region of `CLAUDE.md`. Both
+ * families carry `mcp` and `hook` only at the workspace level, so profile mode
+ * there is forced rather than chosen. A target whose only workspace capability
+ * is content would refuse `active` instead of silently ignoring it.
  */
-export const PROFILE_TARGETS: readonly SupportedTarget[] = [OPENCODE_TARGET, OPENCODE_V1_TARGET];
+export const PROFILE_TARGETS: readonly SupportedTarget[] = [
+  DEFAULT_TARGET,
+  OPENCODE_TARGET,
+  OPENCODE_V1_TARGET,
+];
 
 export function targetSupportsProfile(target: SupportedTarget): boolean {
   return PROFILE_TARGETS.includes(target);
@@ -153,15 +158,19 @@ export function targetSupportsProfile(target: SupportedTarget): boolean {
 /**
  * The capabilities that *force* profile mode rather than merely being carried
  * by it. Only a boundary capability the target can express at the workspace
- * level and nowhere else forces the mode: on OpenCode that is `mcp` and `hook`.
- * A `skill` or `command` is content the target could in principle drop with a
- * loss, so selecting profile mode for it is a choice and is reported as W109.
+ * level and nowhere else forces the mode: on every profile-capable target that
+ * is `mcp` and `hook`. A `skill` or `command` is content the target could in
+ * principle drop with a loss, so selecting profile mode for it is a choice and
+ * is reported as W109.
  */
 export const PROFILE_FORCING_KINDS: readonly Capability[] = ['mcp', 'hook'];
 
 /** The Claude Code directories, relative to the repository root. */
 export const CLAUDE_DIR = '.claude';
 export const CLAUDE_AGENTS_DIR = `${CLAUDE_DIR}/agents`;
+/** The two Claude Code workspace documents this build owns part of. */
+export const CLAUDE_MCP_FILE = '.mcp.json';
+export const CLAUDE_SETTINGS_FILE = `${CLAUDE_DIR}/settings.json`;
 
 /**
  * The marker syntax of a managed text region. A region is a pair of HTML
@@ -208,6 +217,8 @@ export const OPENCODE_HOOKS_PLUGIN = `${OPENCODE_PLUGINS_DIR}/rulesync-hooks.js`
 /** The rulesync source files a workspace resource kind needs. */
 export const RULESYNC_MCP_FILE = 'mcp.jsonc';
 export const RULESYNC_HOOKS_FILE = 'hooks.jsonc';
+/** The root rule file that carries a live persona's instruction text. */
+export const RULESYNC_ROOT_RULE_FILE = 'instructions.md';
 
 /**
  * The locations a target can own. `generate` may delete a lockfile-recorded
@@ -231,14 +242,15 @@ export const MANAGED_OUTPUT_DIRS: Readonly<Record<SupportedTarget, readonly stri
 };
 
 /**
- * Whole files at the repository root that a target can own. `CLAUDE.md` is a
- * file this tool owns a marked region of, not a whole file, but it is claimed
- * here all the same: the location-collision guard and orphan removal are both
- * path-based, so a region path that is not claimed could be silently shared by
- * two targets and could never be removed as an orphan.
+ * Files a target can own part or all of, claimed for the location-collision
+ * guard and orphan removal. `CLAUDE.md` is a region file and the two Claude Code
+ * workspace documents are structured files, but all three are claimed here all
+ * the same: the guard and orphan removal are both path-based, so a path that is
+ * not claimed could be silently shared by two targets and could never be
+ * removed as an orphan.
  */
 export const MANAGED_OUTPUT_FILES: Readonly<Record<SupportedTarget, readonly string[]>> = {
-  claudecode: [CLAUDE_INSTRUCTIONS_FILE],
+  claudecode: [CLAUDE_MCP_FILE, CLAUDE_SETTINGS_FILE, CLAUDE_INSTRUCTIONS_FILE],
   opencode: [OPENCODE_CONFIG_FILE],
   opencodev1: [OPENCODE_CONFIG_FILE],
 };
@@ -290,6 +302,9 @@ export const GITATTRIBUTES_LINES: readonly string[] = [
   // any persona and resource byte between two machines.
   `/${ROOT_DIR}/** text eol=lf`,
   `/${CLAUDE_AGENTS_DIR}/** text eol=lf`,
+  `/${CLAUDE_MCP_FILE} text eol=lf`,
+  `/${CLAUDE_SETTINGS_FILE} text eol=lf`,
+  `/${CLAUDE_INSTRUCTIONS_FILE} text eol=lf`,
   `/${OPENCODE_AGENTS_DIR}/** text eol=lf`,
   `/${OPENCODE_COMMANDS_DIR}/** text eol=lf`,
   `/${OPENCODE_SKILLS_DIR}/** text eol=lf`,
@@ -365,6 +380,19 @@ export const BOUNDARY_CAPABILITIES: readonly Capability[] = ['permission', 'hook
 
 /** The resource kinds the OpenCode targets carry only at the workspace level. */
 export const OPENCODE_WORKSPACE_KINDS: readonly Capability[] = ['mcp', 'skill', 'command', 'hook'];
+
+/**
+ * The resource kinds the Claude Code target carries only at the workspace level,
+ * and therefore only in profile mode. Skills and commands are refused in every
+ * mode (they are whole trees, not a structured file or an instruction region),
+ * so they are deliberately absent here.
+ */
+export const CLAUDE_WORKSPACE_KINDS: readonly Capability[] = ['mcp', 'hook'];
+
+/** The workspace-level resource kinds one target can carry in profile mode. */
+export function workspaceKindsOf(target: SupportedTarget): readonly Capability[] {
+  return isOpencodeTarget(target) ? OPENCODE_WORKSPACE_KINDS : CLAUDE_WORKSPACE_KINDS;
+}
 
 export type ExitCode = 0 | 1 | 2 | 3 | 4 | 5;
 

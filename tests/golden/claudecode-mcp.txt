@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "scan": {
+      "type": "stdio",
+      "command": "npx",
+      "args": [
+        "-y",
+        "example-security-mcp"
+      ],
+      "env": {
+        "EXAMPLE_TOKEN": "${EXAMPLE_TOKEN}"
+      }
+    }
+  },
+  "theme": "dark"
+}

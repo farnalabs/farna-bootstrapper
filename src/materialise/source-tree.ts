@@ -6,11 +6,14 @@ import {
   COMMANDS_DIR,
   DEFAULT_PERSONA_MODE,
   isOpencodeTarget,
+  MODE_PROFILE,
   OPENCODE_V1_TARGET,
   type OpencodeTarget,
   type PersonaMode,
+  RULES_DIR,
   RULESYNC_HOOKS_FILE,
   RULESYNC_MCP_FILE,
+  RULESYNC_ROOT_RULE_FILE,
   SKILL_FILE_NAME,
   SKILLS_DIR,
   type SupportedTarget,
@@ -166,12 +169,30 @@ export function opencodePersonaSourceFile(
   return `---\n${frontmatter}---\n\n${personaBody(persona)}`;
 }
 
-/** The rulesync features one render of this source needs, never a wildcard. */
+/**
+ * The rulesync features one render of this source needs, never a wildcard.
+ *
+ * In agent mode `claudecode` is one subagent per persona and nothing else: a
+ * shared instruction, MCP or hook block would leak one persona's content onto
+ * every other persona. Profile mode has one live persona, so its rule text, MCP
+ * servers and carried hooks are workspace-level and are authored when declared.
+ */
 export function renderFeatures(target: SupportedTarget, source: ResolvedSource): RenderFeature[] {
-  if (target === 'claudecode') {
-    return ['subagents'];
-  }
   const features: RenderFeature[] = ['subagents'];
+  if (target === 'claudecode') {
+    if (source.mode === MODE_PROFILE) {
+      if (source.personas.some((persona) => persona.rules.length > 0)) {
+        features.push('rules');
+      }
+      if (source.mcp.length > 0) {
+        features.push('mcp');
+      }
+      if (source.hooks.some((hook) => hook.carried)) {
+        features.push('hooks');
+      }
+    }
+    return features;
+  }
   if (source.mcp.length > 0) {
     features.push('mcp');
   }
@@ -215,7 +236,8 @@ function referenceRecord(
   return converted;
 }
 
-async function writeOpencodeMcp(sourceRoot: string, source: ResolvedSource): Promise<void> {
+/** Write the rulesync MCP source for the resolved servers. Target-neutral. */
+async function writeMcpSource(sourceRoot: string, source: ResolvedSource): Promise<void> {
   if (source.mcp.length === 0) {
     return;
   }
@@ -284,14 +306,22 @@ async function writeOpencodeCommands(sourceRoot: string, source: ResolvedSource)
   }
 }
 
+/**
+ * The rulesync canonical event for each declared phase. `session-end` is
+ * authored for Claude Code (the OpenCode targets mark the hook uncarried before
+ * it reaches this writer). The renderer maps the canonical names to each
+ * target's own spelling.
+ */
 const HOOK_EVENT_BY_PHASE: Record<string, string> = {
   'before-tool': 'preToolUse',
   'after-tool': 'postToolUse',
   'session-start': 'sessionStart',
+  'session-end': 'sessionEnd',
   stop: 'stop',
 };
 
-async function writeOpencodeHooks(sourceRoot: string, source: ResolvedSource): Promise<void> {
+/** Write the rulesync hooks source for the resolved carried hooks. Target-neutral. */
+async function writeHooksSource(sourceRoot: string, source: ResolvedSource): Promise<void> {
   const hooks: Record<string, Array<{ matcher?: string; command: string }>> = {};
   for (const hook of source.hooks) {
     if (!hook.carried) {
@@ -319,17 +349,38 @@ async function writeOpencodeHooks(sourceRoot: string, source: ResolvedSource): P
 }
 
 /**
+ * Write the live persona's instruction text as a root rule. Claude Code reads
+ * `CLAUDE.md` from it, so the rule body is the same composed body the agent
+ * file carries and the region is replaced as bytes, never re-wrapped.
+ */
+async function writeRootRule(sourceRoot: string, source: ResolvedSource): Promise<void> {
+  const persona = source.personas[0];
+  if (persona === undefined || persona.rules.length === 0) {
+    return;
+  }
+  const frontmatter = stringify({ root: true, targets: [source.target] }, { lineWidth: 0 });
+  await mkdir(join(sourceRoot, RULES_DIR), { recursive: true });
+  await writeFile(
+    join(sourceRoot, RULES_DIR, RULESYNC_ROOT_RULE_FILE),
+    `---\n${frontmatter}---\n\n${personaBody(persona)}`,
+    'utf8',
+  );
+}
+
+/**
  * Write the rulesync-shaped source tree into the stage. One target is rendered
  * per run, so the stage is already target-scoped.
  *
- * On Claude Code a persona is one subagent and nothing else is authored: a
- * shared permission, MCP or hook block would leak one persona's restriction
- * onto every other persona.
+ * On Claude Code agent mode a persona is one subagent and nothing else is
+ * authored: a shared instruction, MCP or hook block would leak one persona's
+ * content onto every other persona. Profile mode has exactly one live persona,
+ * so its instruction text, MCP servers and carried hooks are authored for the
+ * workspace surfaces the renderer emits for this target.
  *
  * On OpenCode the MCP server, skill, command and hook declarations are
  * workspace-level, so they are authored once from the union of the live
- * personas rather than per persona. Rules are never authored as a root file:
- * the per-agent body is the only rule carrier.
+ * personas rather than per persona. Rules are never authored as a root file
+ * there: the per-agent body is the only rule carrier.
  */
 export async function materialiseSourceTree(
   sourceRoot: string,
@@ -343,11 +394,17 @@ export async function materialiseSourceTree(
       : personaSourceFile(persona);
     await writeFile(join(subagents, `${persona.id}.md`), contents, 'utf8');
   }
-  if (!isOpencodeTarget(source.target)) {
+  if (isOpencodeTarget(source.target)) {
+    await writeMcpSource(sourceRoot, source);
+    await writeOpencodeSkills(sourceRoot, source);
+    await writeOpencodeCommands(sourceRoot, source);
+    await writeHooksSource(sourceRoot, source);
     return;
   }
-  await writeOpencodeMcp(sourceRoot, source);
-  await writeOpencodeSkills(sourceRoot, source);
-  await writeOpencodeCommands(sourceRoot, source);
-  await writeOpencodeHooks(sourceRoot, source);
+  if (source.mode !== MODE_PROFILE) {
+    return;
+  }
+  await writeRootRule(sourceRoot, source);
+  await writeMcpSource(sourceRoot, source);
+  await writeHooksSource(sourceRoot, source);
 }
