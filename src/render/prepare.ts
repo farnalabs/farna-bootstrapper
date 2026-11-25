@@ -9,7 +9,7 @@ import {
   targetSupportsProfile,
 } from '../core/constants.js';
 import { rendererMismatch } from '../core/errors.js';
-import { compareCodepoints } from '../core/json.js';
+import { compareCodepoints, sha256Hex } from '../core/json.js';
 import {
   buildLockfile,
   type LockfileRenderer,
@@ -23,6 +23,7 @@ import { loadSource, type SourceTree } from '../source/load.js';
 import { verifyRender } from '../verify/containment.js';
 import { integrityRecordOf } from './identity.js';
 import type { RendererIdentity, RenderTarget } from './port.js';
+import { assertNoRegionMarkers, normaliseRegionBody, regionIdOf } from './region.js';
 import { withStage } from './stage.js';
 import {
   parseStructuredDocument,
@@ -65,16 +66,36 @@ export type PreparedRender = {
 };
 
 /**
- * Record the ownership metadata of a structured file. The lockfile entry for
- * `opencode.jsonc` describes the owned subset, not the whole document, so the
- * lockfile stays source-derived and a user's own key never becomes drift.
+ * Record the ownership metadata of a structured or region file. The lockfile
+ * entry for either describes the owned subset, not the whole document, so the
+ * lockfile stays source-derived and a user's own key or prose never becomes
+ * drift.
+ *
+ * A region file's rendered bytes are the **body** to write, and the digest
+ * describes that body only. The markers are not in the renderer's output: they
+ * belong to the target file, and the merge writes them. A rendered body that
+ * already carries one is refused, because the merged file would then nest a
+ * region this tool cannot read back.
  *
  * A generated document that carries none of the owned keys is recorded as a
  * whole file, without `shape`. A `structured` entry whose `ownedKeys` is empty
  * is refused by the lockfile schema, so stamping the shape would produce a
  * document this tool cannot read back.
  */
-function annotateOwnership(file: RenderedFile): RenderedFile {
+export function annotateOwnership(file: RenderedFile): RenderedFile {
+  const regionId = regionIdOf(file.path);
+  if (regionId !== undefined) {
+    assertNoRegionMarkers(file.bytes, file.path);
+    const body = normaliseRegionBody(file.bytes);
+    return {
+      ...file,
+      bytes: body,
+      shape: 'region',
+      regionId,
+      ownedSha256: sha256Hex(body),
+      ownedSize: Buffer.byteLength(body),
+    };
+  }
   const ownedKeys = structuredOwnedKeys(file.path);
   if (ownedKeys === undefined) {
     return file;

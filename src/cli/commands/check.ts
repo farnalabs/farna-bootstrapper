@@ -13,10 +13,21 @@ import { FarnaError } from '../../core/errors.js';
 import { decodeUtf8, readBoundedBytes } from '../../core/fs.js';
 import { compareCodepoints } from '../../core/json.js';
 import { assertRealDirectory, containedTarget, lstatOrUndefined } from '../../core/paths.js';
-import { type RenderedFile, readLockfile } from '../../lock/lockfile.js';
+import {
+  entryKey,
+  type LockFileEntry,
+  type RenderedFile,
+  readLockfile,
+} from '../../lock/lockfile.js';
 import { verifyRendererIdentity } from '../../render/identity.js';
 import type { RenderTarget } from '../../render/port.js';
 import { prepareRender } from '../../render/prepare.js';
+import {
+  normaliseRegionBody,
+  parseManagedRegionBytes,
+  regionBody,
+  regionIdOf,
+} from '../../render/region.js';
 import { findSkillTreeExtras } from '../../render/root-cleanliness.js';
 import {
   canonicalOwnedSubset,
@@ -89,6 +100,146 @@ export function allCheckDrift(result: CheckResult): DriftItem[] {
 const MODIFIED_DETAIL = 'content differs from a fresh render';
 const MISSING_DETAIL = 'managed file is missing';
 const NOT_A_FILE_DETAIL = 'managed path is not a regular file';
+const REGION_MISSING_DETAIL = 'the managed region is missing';
+
+/**
+ * Compare one planned artefact against the working tree.
+ *
+ * A whole file is compared by bytes. A structured file is compared by its owned
+ * keys only. A region file is read, decoded strictly, parsed and compared by the
+ * body between its markers only: every byte outside the region is the user's, so
+ * editing it is not drift, while a missing or changed region is. A malformed,
+ * CRLF or non-UTF-8 region file is a typed F001 naming the line, because
+ * ownership cannot be determined safely; it is never reported as ordinary drift
+ * and never repaired.
+ */
+export async function compareManagedFile(
+  repoRoot: string,
+  file: RenderedFile,
+): Promise<DriftItem | undefined> {
+  const absolute = await containedTarget(repoRoot, file.path);
+  const stats = await lstatOrUndefined(absolute, file.path);
+  if (stats === undefined) {
+    return { code: DRIFT_CODE, path: file.path, kind: 'missing', detail: MISSING_DETAIL };
+  }
+  if (!stats.isFile() || stats.isSymbolicLink()) {
+    return {
+      code: DRIFT_CODE,
+      path: file.path,
+      kind: 'modified',
+      detail: NOT_A_FILE_DETAIL,
+    };
+  }
+
+  const regionId = regionIdOf(file.path);
+  if (regionId !== undefined) {
+    const existing = await readBoundedBytes(absolute, file.path, {
+      action: 'make the managed file readable and re-run check',
+      maxBytes: MANAGED_FILE_MAX_BYTES,
+    });
+    const parsed = parseManagedRegionBytes(existing, file.path, [regionId]);
+    const body = regionBody(parsed, regionId);
+    if (body === undefined) {
+      return {
+        code: DRIFT_CODE,
+        path: file.path,
+        kind: 'missing',
+        detail: REGION_MISSING_DETAIL,
+      };
+    }
+    if (body !== normaliseRegionBody(file.bytes)) {
+      return {
+        code: DRIFT_CODE,
+        path: file.path,
+        kind: 'modified',
+        detail: `region "${regionId}" differs from a fresh render`,
+      };
+    }
+    return undefined;
+  }
+
+  const ownedKeys = structuredOwnedKeys(file.path);
+  if (ownedKeys !== undefined) {
+    const existing = await readBoundedBytes(absolute, file.path, {
+      action: 'make the managed file readable and re-run check',
+      maxBytes: MANAGED_FILE_MAX_BYTES,
+    });
+    let existingOwned: string;
+    try {
+      existingOwned = canonicalOwnedSubset(
+        parseStructuredDocument(decodeUtf8(existing, file.path), file.path),
+        ownedKeys,
+      );
+    } catch (error) {
+      if (!(error instanceof FarnaError)) {
+        throw error;
+      }
+      return {
+        code: DRIFT_CODE,
+        path: file.path,
+        kind: 'modified',
+        detail: 'structured file no longer parses as a JSON object',
+      };
+    }
+    const generated = parseStructuredDocument(file.bytes, file.path);
+    if (existingOwned !== canonicalOwnedSubset(generated, ownedKeys)) {
+      return {
+        code: DRIFT_CODE,
+        path: file.path,
+        kind: 'modified',
+        detail: `owned key(s) ${ownedKeys.join(', ')} differ from a fresh render`,
+      };
+    }
+    return undefined;
+  }
+
+  const existing = await readBoundedBytes(absolute, file.path, {
+    action: 'make the managed file readable and re-run check',
+    maxBytes: MANAGED_FILE_MAX_BYTES,
+  });
+  if (!existing.equals(Buffer.from(file.bytes, 'utf8'))) {
+    return {
+      code: DRIFT_CODE,
+      path: file.path,
+      kind: 'modified',
+      detail: MODIFIED_DETAIL,
+    };
+  }
+  return undefined;
+}
+
+/** One recorded entry the source no longer produces, and the target that recorded it. */
+export type UnproducedEntry = { targetId: string; item: DriftItem };
+
+/**
+ * Every recorded entry the current source no longer produces, keyed by
+ * `entryKey`: a recorded region whose own key is still produced is not drift
+ * merely because another region of the same file was removed, and a recorded
+ * region the source no longer produces is drift even when the file remains for
+ * another region.
+ */
+export function unproducedEntryDrift(
+  recorded: readonly { targetId: string; files: readonly LockFileEntry[] }[],
+  expected: ReadonlySet<string>,
+): UnproducedEntry[] {
+  const drift: UnproducedEntry[] = [];
+  for (const { targetId, files } of recorded) {
+    for (const file of files) {
+      if (expected.has(entryKey(file))) {
+        continue;
+      }
+      const detail =
+        file.shape === 'region' && file.regionId !== undefined
+          ? `region "${file.regionId}" is recorded in the lockfile but no longer produced by this source`
+          : 'path is recorded in the lockfile but no longer produced by this source';
+      drift.push({
+        targetId,
+        item: { code: DRIFT_CODE, path: file.path, kind: 'unexpected', detail },
+      });
+    }
+  }
+  return drift;
+}
 
 /**
  * Regenerate into a disposable stage and compare the result with the working
@@ -108,7 +259,9 @@ const NOT_A_FILE_DETAIL = 'managed path is not a regular file';
  *
  * A `structured` file (`opencode.jsonc`) is compared by its owned keys only: a
  * user's `theme`, `$schema` or comment is theirs, so editing it is not drift;
- * editing the `mcp` value this tool wrote is.
+ * editing the `mcp` value this tool wrote is. A `region` file is compared by the
+ * body between its markers for the same reason: prose outside the region is the
+ * user's, and a malformed or non-LF file is a typed refusal rather than drift.
  *
  * The one unrecorded path `check` does report is an extra file inside a skill
  * directory this tool owns (recorded or planned), as `W107_OUTSIDE_OWNERSHIP`.
@@ -168,72 +321,6 @@ export async function runCheck(
   const digestChanged =
     lockfile?.configDigest !== undefined && lockfile.configDigest !== prepared.configDigest;
 
-  /** Compare one planned artefact against the working tree. */
-  async function compareFile(file: RenderedFile): Promise<DriftItem | undefined> {
-    const absolute = await containedTarget(repoRoot, file.path);
-    const stats = await lstatOrUndefined(absolute, file.path);
-    if (stats === undefined) {
-      return { code: DRIFT_CODE, path: file.path, kind: 'missing', detail: MISSING_DETAIL };
-    }
-    if (!stats.isFile() || stats.isSymbolicLink()) {
-      return {
-        code: DRIFT_CODE,
-        path: file.path,
-        kind: 'modified',
-        detail: NOT_A_FILE_DETAIL,
-      };
-    }
-
-    const ownedKeys = structuredOwnedKeys(file.path);
-    if (ownedKeys !== undefined) {
-      const existing = await readBoundedBytes(absolute, file.path, {
-        action: 'make the managed file readable and re-run check',
-        maxBytes: MANAGED_FILE_MAX_BYTES,
-      });
-      let existingOwned: string;
-      try {
-        existingOwned = canonicalOwnedSubset(
-          parseStructuredDocument(decodeUtf8(existing, file.path), file.path),
-          ownedKeys,
-        );
-      } catch (error) {
-        if (!(error instanceof FarnaError)) {
-          throw error;
-        }
-        return {
-          code: DRIFT_CODE,
-          path: file.path,
-          kind: 'modified',
-          detail: 'structured file no longer parses as a JSON object',
-        };
-      }
-      const generated = parseStructuredDocument(file.bytes, file.path);
-      if (existingOwned !== canonicalOwnedSubset(generated, ownedKeys)) {
-        return {
-          code: DRIFT_CODE,
-          path: file.path,
-          kind: 'modified',
-          detail: `owned key(s) ${ownedKeys.join(', ')} differ from a fresh render`,
-        };
-      }
-      return undefined;
-    }
-
-    const existing = await readBoundedBytes(absolute, file.path, {
-      action: 'make the managed file readable and re-run check',
-      maxBytes: MANAGED_FILE_MAX_BYTES,
-    });
-    if (!existing.equals(Buffer.from(file.bytes, 'utf8'))) {
-      return {
-        code: DRIFT_CODE,
-        path: file.path,
-        kind: 'modified',
-        detail: MODIFIED_DETAIL,
-      };
-    }
-    return undefined;
-  }
-
   // Every configured target is compared in its own section. A target's own
   // artefacts, its own skill-tree scan and its own mode stay together, so a
   // mixed run never has to be untangled by the reader.
@@ -241,7 +328,7 @@ export async function runCheck(
   for (const target of prepared.targets) {
     const drift: DriftItem[] = [];
     for (const file of target.files) {
-      const item = await compareFile(file);
+      const item = await compareManagedFile(repoRoot, file);
       if (item !== undefined) {
         drift.push(item);
       }
@@ -296,7 +383,7 @@ export async function runCheck(
       detail: 'version 1 record; run generate to upgrade it to version 2',
     });
   } else if (freshLockfile !== undefined) {
-    const item = await compareFile(freshLockfile);
+    const item = await compareManagedFile(repoRoot, freshLockfile);
     if (item !== undefined) {
       runDrift.push(item);
     } else {
@@ -304,31 +391,24 @@ export async function runCheck(
     }
   }
 
-  const expected = new Set(prepared.files.map((file) => file.path));
-  // A recorded path the current source no longer produces is drift whether or
+  const expected = new Set(prepared.files.map((file) => entryKey(file)));
+  // A recorded entry the current source no longer produces is drift whether or
   // not it is still on disk: removing the last declaration must not leave a
   // live config that `check` calls clean. Only the lockfile can name it; the
   // on-disk scan is deliberately gone, because an unrecorded path is not ours.
-  // The comparison is against the flat union of recorded files, so a path that
-  // another target still produces is not drift; the item is reported under the
+  // The comparison is against the keyed union of recorded entries, so a region
+  // another entry still produces is not drift; the item is reported under the
   // target that recorded it.
-  for (const [targetId, entry] of Object.entries(lockfile?.targets ?? {})) {
-    for (const file of entry.files) {
-      if (expected.has(file.path)) {
-        continue;
-      }
-      const item: DriftItem = {
-        code: DRIFT_CODE,
-        path: file.path,
-        kind: 'unexpected',
-        detail: 'path is recorded in the lockfile but no longer produced by this source',
-      };
-      const bucket = targets.find((target) => target.target === targetId);
-      if (bucket === undefined) {
-        runDrift.push(item);
-      } else {
-        bucket.drift.push(item);
-      }
+  const recordedTargets = Object.entries(lockfile?.targets ?? {}).map(([targetId, entry]) => ({
+    targetId,
+    files: entry.files,
+  }));
+  for (const { targetId, item } of unproducedEntryDrift(recordedTargets, expected)) {
+    const bucket = targets.find((target) => target.target === targetId);
+    if (bucket === undefined) {
+      runDrift.push(item);
+    } else {
+      bucket.drift.push(item);
     }
   }
 

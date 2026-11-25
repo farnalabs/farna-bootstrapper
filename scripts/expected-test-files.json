@@ -38,6 +38,8 @@
     "tests/unit/profile-mode.test.ts",
     "tests/unit/profile-ownership.test.ts",
     "tests/unit/redact.test.ts",
+    "tests/unit/region-lockfile.test.ts",
+    "tests/unit/region-pipeline.test.ts",
     "tests/unit/region.test.ts",
     "tests/unit/render-lock.test.ts",
     "tests/unit/renderer-identity.test.ts",

@@ -6,12 +6,19 @@ import {
   MANAGED_OUTPUT_FILES,
   SUPPORTED_TARGETS,
 } from '../core/constants.js';
-import { driftRefused, FarnaError, pathUnsafe, writeFailed } from '../core/errors.js';
+import {
+  driftRefused,
+  FarnaError,
+  invalidConfig,
+  pathUnsafe,
+  writeFailed,
+} from '../core/errors.js';
 import { decodeUtf8, describeFsError, readBoundedBytes } from '../core/fs.js';
 import { compareCodepoints, sha256Hex } from '../core/json.js';
 import { containedTarget, lstatOrUndefined } from '../core/paths.js';
-import type { LockFileEntry } from '../lock/lockfile.js';
+import { entryKey, type LockFileEntry } from '../lock/lockfile.js';
 import { assertSafeRelativePath, commitFiles } from './commit.js';
+import { type ParsedRegionFile, parseRegionText, regionBody, stripRegion } from './region.js';
 import {
   mergeStructuredText,
   ownedSubset,
@@ -49,6 +56,12 @@ import {
  * dropped, while a file left with nothing but the owned keys is removed. The
  * record is also dropped, without touching the file, once the user has already
  * removed the owned keys.
+ *
+ * A `region` entry owns the body between two marker lines. When the current
+ * source no longer produces it, the marker pair and the body are stripped and
+ * every other byte is kept; the file is removed only when nothing but
+ * whitespace remains. The body must still match the recorded digest, so a
+ * region the user edited is drift, not output this run may destroy.
  */
 
 /** True when one of the supported renderers can own this repository-relative path. */
@@ -74,6 +87,69 @@ type InspectedOrphan =
   | { kind: 'removable' }
   /** The file keeps the user's own keys; only the owned key(s) are deleted. */
   | { kind: 'rewrite'; bytes: string };
+
+/**
+ * Inspect one recorded region orphan. The marker pair and the body are removed
+ * only when the body still equals the recorded digest; the file itself is kept
+ * whenever any other content remains.
+ *
+ * `parseRegionText` is used rather than the plan-aware parser: the plan no
+ * longer knows this region, and the file may legitimately carry another region
+ * this run still owns. The grammar still refuses a structural problem, and a
+ * file this tool cannot read is drift rather than something to rewrite.
+ */
+async function inspectRegionOrphan(
+  absolute: string,
+  entry: LockFileEntry,
+): Promise<InspectedOrphan> {
+  const regionId = entry.regionId;
+  if (regionId === undefined) {
+    throw invalidConfig(`refusing to remove ${entry.path}: a region entry names no region id`, {
+      subject: entry.path,
+      action: 'delete the lockfile and re-run generate; a lockfile is derived from the source',
+    });
+  }
+  const bytes = await readBoundedBytes(absolute, entry.path, {
+    action: 'make the recorded file readable and re-run generate',
+    maxBytes: MANAGED_FILE_MAX_BYTES,
+  });
+  const text = decodeUtf8(bytes, entry.path);
+  let parsed: ParsedRegionFile;
+  try {
+    parsed = parseRegionText(text, entry.path);
+  } catch (error) {
+    throw driftRefused(
+      `refusing to remove ${entry.path}: it no longer carries a region this tool can read`,
+      {
+        subject: entry.path,
+        action:
+          'restore the recorded region, or move the file aside deliberately, then re-run generate',
+        cause: error,
+      },
+    );
+  }
+  const body = regionBody(parsed, regionId);
+  if (body === undefined) {
+    // The user already removed the region. The file is theirs now, so it is
+    // left alone and the record is dropped.
+    return { kind: 'already-removed' };
+  }
+  if (sha256Hex(body) !== entry.sha256) {
+    throw driftRefused(
+      `refusing to remove ${entry.path}: region "${regionId}" no longer matches the bytes recorded as owned`,
+      {
+        subject: entry.path,
+        action:
+          'restore the recorded region body, or move the file aside deliberately, then re-run generate',
+      },
+    );
+  }
+  const stripped = stripRegion(parsed, regionId);
+  if (stripped === undefined || !stripped.remaining) {
+    return { kind: 'removable' };
+  }
+  return { kind: 'rewrite', bytes: stripped.text };
+}
 
 /**
  * Inspect one recorded orphan. Shared by the preflight and the removal itself,
@@ -112,6 +188,10 @@ async function inspectOrphan(repoRoot: string, entry: LockFileEntry): Promise<In
       subject: path,
       action: 'remove the directory or special file deliberately, then re-run generate',
     });
+  }
+
+  if (entry.shape === 'region') {
+    return await inspectRegionOrphan(absolute, entry);
   }
 
   const ownedKeys = entry.shape === 'structured' ? entry.ownedKeys : undefined;
@@ -191,10 +271,11 @@ export type OrphanPlan = {
 };
 
 /**
- * Validate every recorded path the current plan no longer produces, and return
- * the action `generate` will take. Nothing is written here: a dry run and a
- * real run share this preflight, so the plan can never report an edit the write
- * path would refuse.
+ * Validate every recorded entry the current plan no longer produces, and return
+ * the action `generate` will take. `expected` holds entry keys, so a region that
+ * still exists for another entry is not removed with its sibling. Nothing is
+ * written here: a dry run and a real run share this preflight, so the plan can
+ * never report an edit the write path would refuse.
  */
 export async function planOrphans(
   repoRoot: string,
@@ -203,7 +284,9 @@ export async function planOrphans(
 ): Promise<OrphanPlan[]> {
   const orphans: OrphanPlan[] = [];
   for (const entry of recorded) {
-    if (entry.path === LOCK_PATH || expected.has(entry.path)) {
+    // `expected` holds entry keys, not paths: two regions of one file are two
+    // entries, so a surviving region never masks a removed one.
+    if (entry.path === LOCK_PATH || expected.has(entryKey(entry))) {
       continue;
     }
     const inspection = await inspectOrphan(repoRoot, entry);
@@ -213,7 +296,12 @@ export async function planOrphans(
       orphans.push({ entry, action: 'rewrite' });
     }
   }
-  return orphans.sort((a, b) => compareCodepoints(a.entry.path, b.entry.path));
+  return orphans.sort((a, b) => {
+    const byPath = compareCodepoints(a.entry.path, b.entry.path);
+    return byPath === 0
+      ? compareCodepoints(a.entry.regionId ?? '', b.entry.regionId ?? '')
+      : byPath;
+  });
 }
 
 export type RemovedOrphan = { path: string; status: 'removed' | 'updated' | 'missing' };

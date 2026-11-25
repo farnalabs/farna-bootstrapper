@@ -5,6 +5,8 @@ import { type ZodError, z } from 'zod';
 import type { ResolvedSource } from '../compose/resolve.js';
 import {
   type Capability,
+  ID_MAX_LENGTH,
+  ID_RE,
   LOCK_FILE,
   LOCK_PATH,
   LOCKFILE_MAX_BYTES,
@@ -26,11 +28,13 @@ import { decodeUtf8 } from '../core/fs.js';
 import { canonicalJsonFile, compareCodepoints, sha256Hex } from '../core/json.js';
 import { assertRealDirectory, assertRealFile } from '../core/paths.js';
 import { hasControlCharacters } from '../core/text.js';
+import { regionEntryKey } from '../render/region.js';
 import type { Warning } from '../report/warnings.js';
 
 /**
  * The ownership shape of a managed path. A `structured` file is merged key by
- * key, so its entry describes the owned subset rather than the whole file.
+ * key and a `region` file by the body between two marker lines, so both entries
+ * describe the owned subset rather than the whole file.
  */
 export type LockEntryShape = 'whole' | 'tree' | 'structured' | 'region';
 
@@ -40,7 +44,8 @@ export type LockFileEntry = {
   /**
    * The digest whose match proves the bytes are still ours. For a `whole` or
    * `tree` file it is the whole file; for a `structured` file it is the
-   * canonical owned subset, because the rest of that file is the user's.
+   * canonical owned subset and for a `region` file the body between the
+   * markers, because the rest of either file is the user's.
    */
   sha256: string;
   /** The byte length of the thing `sha256` describes. */
@@ -48,7 +53,28 @@ export type LockFileEntry = {
   shape?: LockEntryShape | undefined;
   /** The top-level keys this tool owns, for a `structured` file. */
   ownedKeys?: string[] | undefined;
+  /** The region id this tool owns at `path`, for a `region` file. */
+  regionId?: string | undefined;
 };
+
+/**
+ * The key a recorded-set comparison uses. A path alone no longer identifies a
+ * recorded file when two disjoint regions can share one path, so a region entry
+ * is keyed by its path and id and every other shape by its path. `path` alone
+ * stays the key for target ownership (`lockfileTargetOf`): one file has one
+ * owning target.
+ */
+export type EntryKeyed = {
+  path: string;
+  shape?: LockEntryShape | undefined;
+  regionId?: string | undefined;
+};
+
+export function entryKey(entry: EntryKeyed): string {
+  return entry.shape === 'region' && entry.regionId !== undefined
+    ? regionEntryKey(entry.path, entry.regionId)
+    : entry.path;
+}
 
 export type LockResource = {
   kind: 'rule' | 'permission' | 'mcp' | 'skill' | 'command' | 'hook';
@@ -82,14 +108,21 @@ export type LockfileRenderer = { name: string; version: string; integrity: strin
 export type RenderedFile = {
   /** Repository-relative path. */
   path: string;
+  /**
+   * The bytes to write. For a `region` file this is the **body** between the
+   * markers, never the whole file: the surrounding bytes are the user's and a
+   * merge preserves them.
+   */
   bytes: string;
   /** The ownership shape, when it is not a whole file. */
   shape?: LockEntryShape;
   /** The owned top-level keys, for a `structured` file. */
   ownedKeys?: string[];
-  /** The digest of the owned subset, for a `structured` file. */
+  /** The region id this file owns, for a `region` file. */
+  regionId?: string;
+  /** The digest of the owned subset or region body. */
   ownedSha256?: string;
-  /** The byte length of the owned subset, for a `structured` file. */
+  /** The byte length of the owned subset or region body. */
   ownedSize?: number;
 };
 
@@ -177,6 +210,12 @@ const managedPathSchema = z
   .string()
   .refine(isSafeManagedPath, 'must be a relative, escape-free, control-character-free path');
 
+/** The region id grammar is the persona and resource id grammar. */
+const regionIdSchema = z
+  .string()
+  .max(ID_MAX_LENGTH, `must be at most ${ID_MAX_LENGTH} characters`)
+  .regex(ID_RE, 'must be a lower-kebab-case id');
+
 const lockFileEntrySchema = z
   .strictObject({
     path: managedPathSchema,
@@ -184,8 +223,33 @@ const lockFileEntrySchema = z
     size: z.number().int().nonnegative(),
     shape: z.enum(['whole', 'tree', 'structured', 'region']).optional(),
     ownedKeys: z.array(z.string().min(1)).optional(),
+    regionId: regionIdSchema.optional(),
   })
   .superRefine((entry, context) => {
+    if (entry.shape === 'region') {
+      if (entry.regionId === undefined) {
+        context.addIssue({
+          code: 'custom',
+          path: ['regionId'],
+          message: 'a region entry names the region id it owns',
+        });
+      }
+      if (entry.ownedKeys !== undefined) {
+        context.addIssue({
+          code: 'custom',
+          path: ['ownedKeys'],
+          message: 'only a structured entry owns keys',
+        });
+      }
+      return;
+    }
+    if (entry.regionId !== undefined) {
+      context.addIssue({
+        code: 'custom',
+        path: ['regionId'],
+        message: 'only a region entry names a region id',
+      });
+    }
     if (entry.shape === 'structured') {
       if (entry.ownedKeys === undefined || entry.ownedKeys.length === 0) {
         context.addIssue({
@@ -329,34 +393,62 @@ function lockPersonasOf(source: ResolvedSource): LockPersona[] {
     .sort((a, b) => compareCodepoints(a.id, b.id));
 }
 
+/**
+ * One rendered file's lockfile entry.
+ *
+ * A `region` entry records the digest and size of the body between the markers,
+ * never of the whole file. `file.bytes` **is** that body for a region file, so
+ * the fallback digest is over the right bytes; a region shape without an id is
+ * an internal contradiction (the reader would refuse the document it produced),
+ * so it is refused here rather than recorded as a whole file the tool does not
+ * own.
+ */
+function lockEntryOf(file: RenderedFile): LockFileEntry {
+  if (file.shape === 'region') {
+    if (file.regionId === undefined) {
+      throw invalidConfig(`a region file must name its region id: ${file.path}`, {
+        subject: file.path,
+        action: 'record the region id this path owns; a region entry is unreadable without one',
+      });
+    }
+    return {
+      path: file.path,
+      regionId: file.regionId,
+      sha256: file.ownedSha256 ?? sha256Hex(file.bytes),
+      size: file.ownedSize ?? Buffer.byteLength(file.bytes),
+      shape: 'region',
+    };
+  }
+  // A `structured` entry must name the keys it owns; the reader refuses one
+  // with an empty `ownedKeys`. A file that declares the shape but owns no key
+  // (the generated document has none of them) is recorded whole instead, so
+  // everything this builder produces reads back. Any other shape is carried
+  // through unchanged.
+  const ownedStructured =
+    file.shape === 'structured' && file.ownedKeys !== undefined && file.ownedKeys.length > 0;
+  const shape: LockEntryShape | undefined = ownedStructured
+    ? 'structured'
+    : file.shape === 'structured'
+      ? undefined
+      : file.shape;
+  return {
+    path: file.path,
+    sha256: ownedStructured ? (file.ownedSha256 ?? sha256Hex(file.bytes)) : sha256Hex(file.bytes),
+    size: ownedStructured
+      ? (file.ownedSize ?? Buffer.byteLength(file.bytes))
+      : Buffer.byteLength(file.bytes),
+    ...(shape === undefined ? {} : { shape }),
+    ...(ownedStructured && file.ownedKeys !== undefined ? { ownedKeys: file.ownedKeys } : {}),
+  };
+}
+
 function lockFilesOf(files: readonly RenderedFile[]): LockFileEntry[] {
-  return files
-    .map((file) => {
-      // A `structured` entry must name the keys it owns; the reader refuses
-      // one with an empty `ownedKeys`. A file that declares the shape but owns
-      // no key (the generated document has none of them) is recorded whole
-      // instead, so everything this builder produces reads back. Any other
-      // shape is carried through unchanged.
-      const ownedStructured =
-        file.shape === 'structured' && file.ownedKeys !== undefined && file.ownedKeys.length > 0;
-      const shape: LockEntryShape | undefined = ownedStructured
-        ? 'structured'
-        : file.shape === 'structured'
-          ? undefined
-          : file.shape;
-      return {
-        path: file.path,
-        sha256: ownedStructured
-          ? (file.ownedSha256 ?? sha256Hex(file.bytes))
-          : sha256Hex(file.bytes),
-        size: ownedStructured
-          ? (file.ownedSize ?? Buffer.byteLength(file.bytes))
-          : Buffer.byteLength(file.bytes),
-        ...(shape === undefined ? {} : { shape }),
-        ...(ownedStructured && file.ownedKeys !== undefined ? { ownedKeys: file.ownedKeys } : {}),
-      };
-    })
-    .sort((a, b) => compareCodepoints(a.path, b.path));
+  return files.map(lockEntryOf).sort((a, b) => {
+    const byPath = compareCodepoints(a.path, b.path);
+    // Two regions of one file are two entries; the id orders them so the
+    // document is deterministic whichever order the plan produced them in.
+    return byPath === 0 ? compareCodepoints(a.regionId ?? '', b.regionId ?? '') : byPath;
+  });
 }
 
 /**
@@ -376,8 +468,9 @@ function lockFilesOf(files: readonly RenderedFile[]): LockFileEntry[] {
  * a tree whose source had not changed. The command still reports it. The
  * lockfile does not list itself.
  *
- * A `structured` file records the digest and size of its owned subset, never of
- * the whole file: the rest of that file is the user's, and recording it would
+ * A `structured` file records the digest and size of its owned subset, and a
+ * `region` file the digest and size of the body between its markers, never of
+ * the whole file: the rest of either file is the user's, and recording it would
  * make the lockfile depend on user content.
  */
 export function buildLockfile(

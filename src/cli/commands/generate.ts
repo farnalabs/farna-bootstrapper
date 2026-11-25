@@ -3,6 +3,7 @@ import { driftRefused, FarnaError } from '../../core/errors.js';
 import { decodeUtf8 } from '../../core/fs.js';
 import { compareCodepoints } from '../../core/json.js';
 import {
+  entryKey,
   type LockFileEntry,
   type Lockfile,
   lockfileFiles,
@@ -20,6 +21,7 @@ import { withGenerateLock } from '../../render/generate-lock.js';
 import { planOrphans, removeOrphans } from '../../render/orphans.js';
 import type { RenderTarget } from '../../render/port.js';
 import { type PreparedRender, prepareRender } from '../../render/prepare.js';
+import { mergeRegionText, regionEntryKey, regionIdOf } from '../../render/region.js';
 import { mergeStructuredText, structuredOwnedKeys } from '../../render/structured.js';
 import type { Warning } from '../../report/warnings.js';
 
@@ -80,7 +82,8 @@ export type GenerateResult = {
 };
 
 /**
- * What the committed lockfile proves this tool wrote. `paths` includes the
+ * What the committed lockfile proves this tool wrote. `keys` holds every
+ * recorded entry key (a path, or `path#region:<id>` for a region) plus the
  * lockfile itself, which is always owned and never records itself; `entries`
  * excludes it. A present but unreadable lockfile is a typed error from
  * `readLockfile`, never an empty record set: treating it as absent skipped
@@ -88,7 +91,7 @@ export type GenerateResult = {
  */
 type RecordedState = {
   lockfile: Lockfile | undefined;
-  paths: Set<string>;
+  keys: Set<string>;
   entries: readonly LockFileEntry[];
 };
 
@@ -97,7 +100,7 @@ async function recordedState(cwd: string): Promise<RecordedState> {
   const entries = lockfileFiles(lockfile);
   return {
     lockfile,
-    paths: new Set([LOCK_PATH, ...entries.map((file) => file.path)]),
+    keys: new Set([LOCK_PATH, ...entries.map((file) => entryKey(file))]),
     entries,
   };
 }
@@ -200,11 +203,17 @@ async function inspectPlan(
  * tool's own and only the record was lost. An unrecorded path that differs is
  * refused (F007) unless `--adopt` was passed, because taking it over would
  * destroy bytes this tool did not write.
+ *
+ * A region file is judged by its entry key and never by a whole-byte
+ * comparison: the file legitimately carries the user's bytes around the region,
+ * so it can never equal a fresh render, and a marker is not proof this tool
+ * wrote it. An existing unrecorded region file is refused unless `--adopt` was
+ * passed, even when its body already matches.
  */
-function assertOwnership(
+export function assertOwnership(
   files: PreparedRender['files'],
   inspected: Map<string, ManagedTarget>,
-  recorded: Set<string>,
+  recorded: ReadonlySet<string>,
   adopt: boolean,
 ): void {
   if (adopt) {
@@ -212,8 +221,18 @@ function assertOwnership(
   }
   for (const file of files) {
     const current = inspected.get(file.path)?.existing;
-    if (current === undefined || recorded.has(file.path)) {
+    if (current === undefined || recorded.has(entryKey(file))) {
       continue;
+    }
+    if (file.shape === 'region' && file.regionId !== undefined) {
+      throw driftRefused(
+        `refusing to write region "${file.regionId}" in ${file.path}: the file exists but is not recorded in the committed lockfile`,
+        {
+          subject: file.path,
+          action:
+            'run generate --adopt to take ownership of the existing managed output, or move it aside deliberately',
+        },
+      );
     }
     if (!current.equals(Buffer.from(file.bytes, 'utf8'))) {
       throw driftRefused(
@@ -229,25 +248,46 @@ function assertOwnership(
 }
 
 /**
- * The bytes this run will write for a structured file: the owned keys merged
- * into the user's document **in place**, preserving every other byte including
- * comments and whitespace.
+ * The bytes this run will write for a structured or region file: the owned keys
+ * or the region body merged into the user's document **in place**, preserving
+ * every other byte including comments, whitespace, a leading BOM and a missing
+ * final newline.
  *
- * The merge applies to a path in the committed lockfile and, with `--adopt`, to
- * an existing planned file the lockfile does not record. Any other file is
+ * The merge applies to an entry in the committed lockfile and, with `--adopt`,
+ * to an existing planned file the lockfile does not record. Any other file is
  * either absent (the fresh render is written) or was refused by
  * `assertOwnership`.
  */
-function mergeStructuredFiles(
+export function mergePlannedFiles(
   files: PreparedRender['files'],
   inspected: Map<string, ManagedTarget>,
-  recorded: Set<string>,
+  recorded: ReadonlySet<string>,
   adopt: boolean,
 ): Array<{ path: string; bytes: string }> {
   return files.map((file) => {
-    const ownedKeys = structuredOwnedKeys(file.path);
     const existing = inspected.get(file.path)?.existing;
-    const owned = recorded.has(file.path) || adopt;
+    if (file.shape === 'region') {
+      const regionId = file.regionId ?? regionIdOf(file.path);
+      if (regionId === undefined) {
+        throw driftRefused(`refusing to merge ${file.path}: the planned entry names no region id`, {
+          subject: file.path,
+          action:
+            'delete the lockfile and re-run generate; a region entry is derived from the source',
+        });
+      }
+      return {
+        path: file.path,
+        bytes: mergeRegionText(
+          existing === undefined ? undefined : decodeUtf8(existing, file.path),
+          regionId,
+          file.bytes,
+          file.path,
+          { owned: recorded.has(regionEntryKey(file.path, regionId)), adopt },
+        ),
+      };
+    }
+    const ownedKeys = structuredOwnedKeys(file.path);
+    const owned = recorded.has(entryKey(file)) || adopt;
     if (ownedKeys === undefined || existing === undefined || !owned) {
       return { path: file.path, bytes: file.bytes };
     }
@@ -335,11 +375,18 @@ export async function runGenerate(
     if (recorded.lockfile === undefined && existing.length > 0 && !adopt) {
       throw lockfileMissing(existing);
     }
-    assertOwnership(prepared.files, inspected, recorded.paths, adopt);
-    const adopted = existing.filter((path) => !recorded.paths.has(path));
-    const expected = new Set(prepared.files.map((file) => file.path));
+    assertOwnership(prepared.files, inspected, recorded.keys, adopt);
+    // Adoption is keyed like every other recorded-set comparison: a region file
+    // recorded as `path#region:<id>` is not adopted merely because its path is
+    // new to the plan.
+    const plannedKeys = new Map(prepared.files.map((file) => [file.path, entryKey(file)]));
+    const adopted = existing.filter((path) => {
+      const key = plannedKeys.get(path);
+      return key === undefined || !recorded.keys.has(key);
+    });
+    const expected = new Set(prepared.files.map((file) => entryKey(file)));
     const orphans = await planOrphans(options.cwd, recorded.entries, expected);
-    const planned = mergeStructuredFiles(prepared.files, inspected, recorded.paths, adopt);
+    const planned = mergePlannedFiles(prepared.files, inspected, recorded.keys, adopt);
 
     if (options.dryRun) {
       const files: GenerateFileStatus[] = [];
