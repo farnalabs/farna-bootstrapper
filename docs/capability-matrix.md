@@ -29,7 +29,7 @@ persona).
 
 | Target | Status | Reach | rule | model | permission | skill | command | mcp | hook | Evidence |
 |---|---|---|---|---|---|---|---|---|---|---|
-| `claudecode` | promised | subagent | [x] / [ ] | [x] / [ ] | [x] / [ ] | [ ] / [ ] | [ ] / [ ] | [ ] / [ ] | [ ] / [ ] | `tests/golden/builder-python.test.ts`, `tests/unit/loader.test.ts` |
+| `claudecode` | promised | subagent | [x] / [x] | [x] / [ ] | [x] / [ ] | [ ] / [ ] | [ ] / [ ] | [ ] / [x] | [ ] / [x] | `tests/golden/builder-python.test.ts`, `tests/golden/claudecode-profile.test.ts`, `tests/unit/loader.test.ts` |
 | `opencode` | promised | primary | [x] / [x] | [x] / [x] | [x] / [x] | [ ] / [x] | [ ] / [x] | [ ] / [x] | [ ] / [x] | `tests/golden/opencode.test.ts`, `tests/unit/profile-mode.test.ts` |
 | `opencodev1` | promised | primary | [x] / [x] | [x] / [x] | [x] / [x] | [ ] / [x] | [ ] / [x] | [ ] / [x] | [ ] / [x] | `tests/golden/opencode-v1.test.ts`, `tests/unit/opencode-v1-target.test.ts` |
 
@@ -40,13 +40,13 @@ artefact, and whether it can land at the workspace level where every persona see
 
 | Capability | agent | workspace | basis | Test | Consequence |
 |---|---|---|---|---|---|
-| `rule` | [x] native | [ ] dropped | emitted | `tests/golden/builder-python.test.ts` | profile mode is not supported on claudecode in this release, so no workspace-level rule is written |
-| `model` | [x] native | [ ] dropped | emitted | `tests/golden/builder-python.test.ts` | profile mode is not supported on claudecode in this release, so no workspace-level model is written |
-| `permission` | [x] native | [ ] dropped | emitted | `tests/golden/builder-python.test.ts` | profile mode is not supported on claudecode in this release, so no workspace-level permission is written |
-| `skill` | [ ] dropped | [ ] dropped | probe | `tests/unit/loader.test.ts` | claudecode does not carry skills in this release; a persona that references one is refused with F001 |
-| `command` | [ ] dropped | [ ] dropped | probe | `tests/unit/loader.test.ts` | claudecode does not carry commands in this release; a persona that references one is refused with F001 |
-| `mcp` | [ ] dropped | [ ] dropped | probe | `tests/unit/loader.test.ts` | claudecode does not carry MCP servers in this release; a persona that references one is refused with F001 |
-| `hook` | [ ] dropped | [ ] dropped | probe | `tests/unit/loader.test.ts` | claudecode does not carry hooks in this release; a persona that references one is refused with F001 |
+| `rule` | [x] native | [x] native | emitted | `tests/golden/claudecode-profile.test.ts` | - |
+| `model` | [x] native | [ ] dropped | emitted | `tests/golden/builder-python.test.ts` | Claude Code carries a model per agent, so it is written in the agent file and not at the workspace level |
+| `permission` | [x] native | [ ] dropped | emitted | `tests/golden/builder-python.test.ts` | Claude Code carries a permission per agent, so it is written in the agent file and not at the workspace level |
+| `skill` | [ ] dropped | [ ] dropped | probe | `tests/unit/loader.test.ts` | claudecode does not carry skills; a persona that references one is refused with F001 in every mode, because it is a whole tree and carrying it is a later slice |
+| `command` | [ ] dropped | [ ] dropped | probe | `tests/unit/loader.test.ts` | claudecode does not carry commands; a persona that references one is refused with F001 in every mode, because it is a whole tree and carrying it is a later slice |
+| `mcp` | [ ] dropped | [x] native | emitted | `tests/golden/claudecode-profile.test.ts` | claudecode configures MCP servers at the workspace level in .mcp.json, not per agent, so an agent mode persona loses its server; profile mode carries it |
+| `hook` | [ ] dropped | [x] native | emitted | `tests/golden/claudecode-profile.test.ts` | claudecode carries hooks at the workspace level in .claude/settings.json, so an agent mode persona loses its hook (W101, high); profile mode carries every phase except a matcher on stop |
 
 ### `opencode`
 

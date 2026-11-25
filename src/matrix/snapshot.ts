@@ -92,6 +92,7 @@ export const MATRIX_CAPABILITIES: readonly Capability[] = [
 ];
 
 const CLAUDE_TEST = 'tests/golden/builder-python.test.ts';
+const CLAUDE_PROFILE_TEST = 'tests/golden/claudecode-profile.test.ts';
 const OPENCODE_TEST = 'tests/golden/opencode.test.ts';
 const OPENCODE_V1_TEST = 'tests/golden/opencode-v1.test.ts';
 
@@ -127,12 +128,22 @@ function refused(consequence: string, testId: string): CapabilityCell {
   return cell('dropped', 'dropped', { basis: 'probe', testId, consequence });
 }
 
-function claudeWorkspaceDropped(capability: string): string {
-  return `profile mode is not supported on claudecode in this release, so no workspace-level ${capability} is written`;
+function claudeNotCarried(kind: string): string {
+  return `claudecode does not carry ${kind}; a persona that references one is refused with F001 in every mode, because it is a whole tree and carrying it is a later slice`;
 }
 
-function claudeNotCarried(kind: string): string {
-  return `claudecode does not carry ${kind} in this release; a persona that references one is refused with F001`;
+/** A capability Claude Code carries per agent and never at the workspace level. */
+function claudePerAgent(capability: string): string {
+  return `Claude Code carries ${capability} per agent, so it is written in the agent file and not at the workspace level`;
+}
+
+function claudeWorkspaceOnly(kind: string): string {
+  switch (kind) {
+    case 'mcp':
+      return 'claudecode configures MCP servers at the workspace level in .mcp.json, not per agent, so an agent mode persona loses its server; profile mode carries it';
+    default:
+      return 'claudecode carries hooks at the workspace level in .claude/settings.json, so an agent mode persona loses its hook (W101, high); profile mode carries every phase except a matcher on stop';
+  }
 }
 
 function opencodeWorkspaceOnly(kind: string, target: string): string {
@@ -201,22 +212,25 @@ function opencodePermissionKeys(
 
 function claudeCells(): Record<Capability, CapabilityCell> {
   return {
-    rule: cell('native', 'dropped', {
-      testId: CLAUDE_TEST,
-      consequence: claudeWorkspaceDropped('rule'),
-    }),
+    rule: cell('native', 'native', { testId: CLAUDE_PROFILE_TEST }),
     model: cell('native', 'dropped', {
       testId: CLAUDE_TEST,
-      consequence: claudeWorkspaceDropped('model'),
+      consequence: claudePerAgent('a model'),
     }),
     permission: cell('native', 'dropped', {
       testId: CLAUDE_TEST,
-      consequence: claudeWorkspaceDropped('permission'),
+      consequence: claudePerAgent('a permission'),
     }),
     skill: refused(claudeNotCarried('skills'), 'tests/unit/loader.test.ts'),
     command: refused(claudeNotCarried('commands'), 'tests/unit/loader.test.ts'),
-    mcp: refused(claudeNotCarried('MCP servers'), 'tests/unit/loader.test.ts'),
-    hook: refused(claudeNotCarried('hooks'), 'tests/unit/loader.test.ts'),
+    mcp: cell('dropped', 'native', {
+      testId: CLAUDE_PROFILE_TEST,
+      consequence: claudeWorkspaceOnly('mcp'),
+    }),
+    hook: cell('dropped', 'native', {
+      testId: CLAUDE_PROFILE_TEST,
+      consequence: claudeWorkspaceOnly('hook'),
+    }),
   };
 }
 

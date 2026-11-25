@@ -162,7 +162,7 @@ describe('the capability report', () => {
       expect(text).toContain(glyph);
     }
     expect(text).toContain('has no write category, so write is emitted as edit');
-    expect(text).toContain('profile mode is not supported on claudecode in this release');
+    expect(text).toContain('Claude Code carries a model per agent');
     expect(text).toContain('labels');
     expect(text).toContain('reach subagent');
     expect(text).toContain('report: ok');
