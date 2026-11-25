@@ -61,11 +61,8 @@ The ordered near-term work. Each item is a concrete outcome, not a theme.
    path where the pin matches the published version. When the next renderer version is published,
    confirm that it opens one issue, comments weekly while the pin stays behind, and closes that
    issue when the pin catches up.
-2. **Cut the next minor release.** The multi-target lockfile format (schema version 2) and the
-   per-target `generate`, `check` and `doctor` payloads are user-visible changes, so the release is
-   a minor rather than a patch. The release pull request bumps the version, adds the CHANGELOG entry
-   with the migration note, and follows [CONTRIBUTING](CONTRIBUTING.md#releasing); the design note
-   works from 0.2.0 by working assumption.
+
+The work under Later is ordered by intent, not committed; an item moves here when it is chosen next.
 
 ## Later
 
