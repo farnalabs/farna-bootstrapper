@@ -350,8 +350,9 @@ guidance adds it as an indented block under the action, so it may span several l
 carries `schemaVersion`, `command`, `ok` and `exitCode`; a success object also carries the
 command's own fields (`init` adds `root`, `configPath`, `created`, `updated` and `nextStep`), and a
 typed failure also carries `code`, `subject`, `message` and `detail` — `detail` is `null` when the
-failure has none, and when present it is the same multi-line block the human diagnostic prints.
-`--dry-run` compares each managed path with the
+failure has none; when present it holds the same lines the human diagnostic prints as an indented
+block, except that the human surface omits one trailing newline and the JSON field keeps the block
+exactly. `--dry-run` compares each managed path with the
 working tree, so `unchanged` and
 `would-write` are distinguished rather than every path being reported as a write. Its summary
 counts the `would-write` files, not the size of the plan: a tree that already matches reports
