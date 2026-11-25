@@ -2,9 +2,11 @@
 
 ## 1. Status and scope
 
-This is a design proposal, not shipped behaviour. Sections 1 to 8 describe current behaviour only
-where they cite the code; every change they propose is unimplemented. Section 9 is a plan and section
-10 records that the design has no open questions.
+This was a design proposal. Slice 1 and the slice-2 groundwork are on `main`: the page is generated
+with its CI staleness gate, and the permission-key cells name the test that observes them. The
+target waves the proposal describes remain unimplemented. Sections 1 to 8 describe current behaviour
+only where they cite the code; the rest is the record as written against the commit it was written
+for. Section 9 is a plan and section 10 records that the design has no open questions.
 
 It exists because two rules in [CONTRIBUTING.md](../CONTRIBUTING.md) make a proposal the precondition
 for this change:

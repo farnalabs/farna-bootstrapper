@@ -2,10 +2,10 @@
 
 ## 1. Status and scope
 
-This is a design proposal, not shipped behaviour. Nothing in this document is implemented. It
-records a change to the ownership model and a change to one target's profile mode, and every
-statement about the current code or about what the renderer emits was observed at the commit this
-note was written against.
+This was a design proposal. Slices 1 and 2 are on `main`, and slice 3 is the documentation change
+that describes them. The rest of this document is the record as written, and its statements about
+the current code or about what the renderer emits were observed at the commit this note was written
+against.
 
 ### The problem
 

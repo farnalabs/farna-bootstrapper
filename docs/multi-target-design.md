@@ -2,7 +2,8 @@
 
 ## 1. Status and scope
 
-This is a design proposal, not shipped behaviour. Nothing in this document is implemented. It exists
+This was a design proposal. It was implemented in 0.2.0. The rest of this document is the record as
+written, and its statements about the code describe the commit it was written against. It exists
 because [CONTRIBUTING.md](../CONTRIBUTING.md) makes the proposal a precondition for the change:
 
 > **Exactly one target per run.** A change that renders several targets in one invocation needs a
