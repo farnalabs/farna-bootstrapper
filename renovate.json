@@ -1,5 +1,9 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "schedule": ["before 6am on monday"],
+  "prConcurrentLimit": 1,
+  "prHourlyLimit": 1,
+  "separateMinorPatch": false,
   "packageRules": [
     {
       "matchPackageNames": ["node"],
@@ -20,6 +24,12 @@
       "matchPackageNames": ["@biomejs/biome"],
       "allowedVersions": "<3",
       "description": "Biome 2.6 is adopted. The configuration excludes Markdown prose and the renderer-input fixtures from the formatter, because those are not formatter-owned: the repository's docs are hand-maintained prose and the fixtures are test data whose bytes are renderer input."
+    },
+    {
+      "groupName": "all non-major dependencies",
+      "matchUpdateTypes": ["minor", "patch", "digest", "pin"],
+      "matchPackageNames": ["!rulesync"],
+      "description": "Routine updates are batched into one weekly pull request to reduce noise: the schedule raises them in a single Monday window, and prConcurrentLimit/prHourlyLimit keep at most one update pull request open. rulesync is excluded from this group because it is the pinned renderer whose emitted bytes are the product, so a renderer bump must be absorbed alone with its own golden diff - the absorb runbook is in CONTRIBUTING. Major updates are already separated by Renovate's default and are additionally capped or disabled by the rules above, so they stay on their own pull requests."
     }
   ]
 }
