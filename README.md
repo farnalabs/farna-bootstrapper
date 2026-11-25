@@ -353,12 +353,12 @@ working tree, so `unchanged` and
 counts the `would-write` files, not the size of the plan: a tree that already matches reports
 `would write 0 file(s), N unchanged`.
 
-`doctor` adds `target`, `mode`, `activePersona`, `notLive`, `configPath`, `counts`, `checks`,
-`personas` and `warnings`; each persona carries its `chain`, `mode`, `model` and every resolved
-resource with its `path`, `fromPersona` and `rank`. `report` adds `renderer` and `targets[]`, where
-each target carries `id`, `status`, `agentReach`, `capabilities` (the seven cells, each with
-`agent`, `workspace`, `basis`, `testId` and `consequence`) and `permissionKeys` (each with
-`emission`, `code` and `consequence`).
+`doctor` adds `configPath`, `targets[]` and `warnings`; each target entry carries `target`, `mode`,
+`activePersona`, `notLive`, `counts`, `checks` and `personas`, and each persona carries its `chain`,
+`mode`, `model` and every resolved resource with its `path`, `fromPersona` and `rank`. `report` adds
+`renderer` and `targets[]`, where each target carries `id`, `status`, `agentReach`, `capabilities`
+(the seven cells, each with `agent`, `workspace`, `basis`, `testId` and `consequence`) and
+`permissionKeys` (each with `emission`, `code` and `consequence`).
 
 A persona's rule text is joined into the body of its subagent, in canonical rule-id order, under a
 `## displayName` heading. The rule body itself is never re-wrapped or re-indented. There is no
@@ -560,10 +560,10 @@ you. Agent mode is the default when no active persona is set.
 materialised and verified: no other persona's agent file, MCP server, skill, command or hook is
 emitted, and the containment gate accepts only the active set. Every persona is still resolved, so
 a broken declaration anywhere in the source is still refused; only emission is scoped to the live
-persona. The lockfile records one `personas[]` entry, `mode: "profile"`, `activePersona: "<id>"` and
-`notLive: [<every other persona>]`; in agent mode `mode` is `"agent"`, `activePersona` is `null`
-and `notLive` is empty. `generate` and `check` print the not-live set, and `--json` carries it as
-`notLive`, so a deactivated persona is never silent.
+persona. That target's lockfile entry records one `personas[]` entry, `mode: "profile"`,
+`activePersona: "<id>"` and `notLive: [<every other persona>]`; in agent mode `mode` is `"agent"`,
+`activePersona` is `null` and `notLive` is empty. `generate` and `check` print the not-live set, and
+`--json` carries it as `notLive`, so a deactivated persona is never silent.
 
 Selecting profile mode with `active` or `--persona` when the live persona declares no capability
 that *requires* it (an MCP server or a hook, which OpenCode carries only at the workspace level) is
@@ -842,17 +842,19 @@ tests/
 scripts/              CI gates: the minimum test count, real-renderer suites and tarball contents
 ```
 
-`.farna/lock.json` records `schemaVersion`, `product` (name and version), `target` (`claudecode`,
-`opencode` or `opencodev1`), `mode` (`agent` or `profile`), `activePersona` (the persona id in profile mode, `null`
-in agent mode), the `renderer` identity, each **live** persona's composition base and resolved
-resource ids (each with the persona that contributed it, across every loaded kind), a persona
-digest, an order-sensitive permission digest, every source-derived warning, and the path, size and
-SHA-256 of every managed file. It does **not** list
-itself: the lockfile is built from the managed files before its own record is appended, so its own
-bytes are deliberately
-absent from `files`. It contains no timestamps, hostnames or absolute paths. A lockfile written
-by an earlier version that recorded `W114` in `warnings[]` is repaired by one `generate`, which
-drops the runtime record and rewrites the same source-derived document.
+`.farna/lock.json` is the version 2 document. At the top level it records `schemaVersion` (2),
+`product` (name and version), the `renderer` identity, `configDigest` and every source-derived
+warning. A `targets` map is keyed by target id; each entry records its `mode` (`agent` or
+`profile`), `activePersona` (the persona id in profile mode, `null` in agent mode), `notLive` (the
+resolved-but-not-live personas), each **live** persona's composition base and resolved resource ids
+(each with the persona that contributed it, across every loaded kind), a persona digest, an
+order-sensitive permission digest, and the path, size and SHA-256 of every managed file that target
+produced. `configDigest` and `warnings` stay run-level because every target shares the config and
+every warning record already names its target. It does **not** list itself: the lockfile is built
+from every target's managed files before its own record is appended, so its own bytes are
+deliberately absent from every target's `files`. It contains no timestamps, hostnames or absolute
+paths. A lockfile written by an earlier version that recorded `W114` in `warnings[]` is repaired by
+one `generate`, which drops the runtime record and rewrites the same source-derived document.
 
 The `renderer` record is the build's **pin** (`RENDERER_PIN`), not the integrity the local package
 manager wrote, and it is what `check` compares the installed package against. Two machines that
@@ -866,9 +868,10 @@ verification result part of the byte comparison, so `check` reported `F007_DRIFT
 
 The generated bytes are the product, so they must not depend on where or when the command ran.
 
-- **The lockfile is source-derived.** It records the product version, the target and mode, the live
-  persona (and the not-live set), each persona's composition and digests, the source warnings, and
-  each managed file's path, size and SHA-256. It records no timestamp, hostname, absolute path, user
+- **The lockfile is source-derived.** It records the product version, the renderer pin, the config
+  digest and the source warnings once, then a per-target entry with that target's mode, live persona
+  (and the not-live set), each live persona's composition and digests, and the path, size and
+  SHA-256 of every managed file it produced. It records no timestamp, hostname, absolute path, user
   name or process id.
 - **Ordering is canonical.** Personas and resources are sorted by kind and codepoint id before
   hashing or writing. Permission records are the one deliberate exception: they keep source order
@@ -1125,9 +1128,10 @@ rendered by the pinned renderer and verified before a byte is written.
   name every unmodelled tool, so the Claude Code allow-list opt-in has no faithful representation.
 - **Profile mode is OpenCode-only in this release.** `claudecode` refuses `active` rather than
   accepting a setting that does nothing.
-- **The lockfile field is `activePersona`.** `mode` is `agent` or `profile`; `notLive` records the
-  resolved-but-not-live personas. Both the mode and the selection are optional on read, so a
-  lockfile written before profile mode existed still parses and is normalised to agent mode.
+- **Each lockfile target entry records `activePersona`, `mode` and `notLive`.** `mode` is `agent` or
+  `profile`; `notLive` records the resolved-but-not-live personas. Both the mode and the selection
+  are optional on a version 1 read, so a lockfile written before profile mode existed still parses
+  and is normalised to agent mode.
 - **`opencode.jsonc` is structured, not whole-file.** It owns the `mcp` key only and edits it in
   place, preserving the user's own keys and comments.
 - **Orphan removal is limited to recorded regular files in managed locations.** A symlink, a
