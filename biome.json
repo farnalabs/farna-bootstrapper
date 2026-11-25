@@ -1,5 +1,5 @@
 {
-  "$schema": "https://biomejs.dev/schemas/2.3.5/schema.json",
+  "$schema": "https://biomejs.dev/schemas/2.6.9/schema.json",
   "files": {
     "includes": [
       "src/**",
@@ -7,13 +7,16 @@
       "scripts/**",
       "*.json",
       "*.jsonc",
-      "*.md",
       "!dist",
       "!node_modules",
       "!package-lock.json",
       "!vitest-report.json",
+      "!tests/fixtures",
       "!tests/golden/opencode-builder.md",
       "!tests/golden/opencode-v1-builder.md",
+      "!tests/golden/builder-python.md",
+      "!tests/golden/opencode-primary-builder.md",
+      "!tests/golden/opencode-v1-primary-builder.md",
       "!tests/golden/opencode-v1.jsonc",
       "!tests/golden/opencode-v1-hooks.js"
     ]
@@ -28,7 +31,7 @@
   "linter": {
     "enabled": true,
     "rules": {
-      "recommended": true,
+      "preset": "recommended",
       "suspicious": {
         "noExplicitAny": "error"
       },

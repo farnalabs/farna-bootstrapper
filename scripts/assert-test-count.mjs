@@ -173,9 +173,7 @@ for (const suite of REAL_RENDERER_SUITES) {
   const result = testResults.find((entry) =>
     // Vitest reports the platform path; a Windows checkout spells it with
     // backslashes, which must not make a suite look as though it never ran.
-    String(entry.name)
-      .replaceAll('\\', '/')
-      .endsWith(suite.suffix),
+    String(entry.name).replaceAll('\\', '/').endsWith(suite.suffix),
   );
   if (result === undefined) {
     failures.push(`real-renderer suite did not run: ${suite.suffix}`);
