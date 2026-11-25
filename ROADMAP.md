@@ -70,7 +70,9 @@ The larger work, deliberately not next, with the reason each one waits.
 
 - **A measured capability matrix for every harness the renderer supports, and a generated
   capability page.** Today the `report` command prints the measured matrix for the three supported
-  targets only, and the matrix is documentation rather than a generated page.
+  targets only, and the matrix is documentation rather than a generated page. [The design
+  note](docs/capability-matrix-design.md) proposes growing the matrix one verified target at a time
+  and generating the page from the report.
 - **Region ownership for shared instruction files (`AGENTS.md`, `CLAUDE.md`), and profile mode for
   Claude Code.** Both need a way to own part of a file, or a profile plan, that the current
   whole-file and `mcp`-key-only ownership model does not have.
