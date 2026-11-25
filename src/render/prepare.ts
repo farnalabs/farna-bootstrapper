@@ -1,6 +1,7 @@
 import { type ResolvedSource, resolveSource, type SourceSelection } from '../compose/resolve.js';
 import { loadConfig } from '../config/load.js';
 import type { Config } from '../config/schema.js';
+import { configuredTargets } from '../config/targets.js';
 import { DEFAULT_TARGET, LOCK_PATH, type SupportedTarget } from '../core/constants.js';
 import { rendererMismatch } from '../core/errors.js';
 import { compareCodepoints } from '../core/json.js';
@@ -30,15 +31,6 @@ import {
  * persona; angle brackets cannot collide with a valid persona id (`ID_RE`).
  */
 const RENDERER_WARNING_SUBJECT = '<renderer>';
-
-/**
- * Every configured target id, in codepoint order. The config schema admits one
- * target in this slice; the pipeline loops over this list anyway, so the
- * per-target path is the real path rather than a single-target special case.
- */
-export function configuredTargets(config: Config): SupportedTarget[] {
-  return (Object.keys(config.targets) as SupportedTarget[]).sort(compareCodepoints);
-}
 
 /** One target's resolved source and the verified bytes it produced. */
 export type PreparedTarget = {

@@ -14,6 +14,7 @@
     "tests/unit/capability-report.test.ts",
     "tests/unit/capture.test.ts",
     "tests/unit/check.test.ts",
+    "tests/unit/collision.test.ts",
     "tests/unit/commit-atomic.test.ts",
     "tests/unit/compose.test.ts",
     "tests/unit/doctor.test.ts",

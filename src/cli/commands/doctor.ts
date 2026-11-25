@@ -1,6 +1,7 @@
 import { type ResolvedPersona, resolveSource } from '../../compose/resolve.js';
 import { loadConfig } from '../../config/load.js';
 import type { Config } from '../../config/schema.js';
+import { configuredTargets } from '../../config/targets.js';
 import {
   type Capability,
   CONFIG_PATH,
@@ -9,7 +10,6 @@ import {
   ROOT_DIR,
   type SupportedTarget,
 } from '../../core/constants.js';
-import { configuredTargets } from '../../render/prepare.js';
 import { sortWarnings, type Warning } from '../../report/warnings.js';
 import { loadSource, type SourceTree } from '../../source/load.js';
 
