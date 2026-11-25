@@ -718,7 +718,7 @@ export function looksSecretShaped(value: string): boolean {
 }
 
 /**
- * A `{ fromEnv }` reference inside `args` cannot be expressed: rulesync 43.13.0
+ * A `{ fromEnv }` reference inside `args` cannot be expressed: rulesync 43.14.0
  * accepts only string arguments and copies them into the emitted command
  * verbatim, so a reference would reach the server as the literal text `${NAME}`
  * and silently not expand. Refusing is the honest outcome; `env` and `headers`

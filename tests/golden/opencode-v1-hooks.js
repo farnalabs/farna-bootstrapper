@@ -200,12 +200,13 @@ export const RulesyncHooksPlugin = async ({ directory }) => {
       } catch {
         return;
       }
-      const specific = parsed && typeof parsed === "object" ? parsed.hookSpecificOutput : undefined;
-      if (specific && typeof specific === "object" && specific.permissionDecision === "deny") {
+      if (!parsed || typeof parsed !== "object") return;
+      const specific = parsed.hookSpecificOutput;
+      const hasDecision = typeof specific === "object" && specific !== null && specific.permissionDecision !== undefined;
+      const reason = hasDecision ? specific.permissionDecisionReason : parsed.reason;
+      if (hasDecision ? specific.permissionDecision === "deny" : parsed.decision === "block") {
         throw new Error(
-          (typeof specific.permissionDecisionReason === "string" &&
-            sanitizeBlockReason(specific.permissionDecisionReason)) ||
-            "Blocked by a preToolUse hook.",
+          (typeof reason === "string" && sanitizeBlockReason(reason)) || "Blocked by a preToolUse hook.",
         );
       }
       return;

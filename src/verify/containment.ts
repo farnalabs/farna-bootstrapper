@@ -290,7 +290,7 @@ function permissionRecords(value: unknown): Array<Record<string, string>> | unde
 }
 
 /**
- * The V2 (`opencode`) per-agent file. Measured at rulesync 43.13.0: the
+ * The V2 (`opencode`) per-agent file. Measured at rulesync 43.14.0: the
  * frontmatter is `description`, `mode`, `model` (when declared) and
  * `permissions` (when the persona declares one), with no `name` key — OpenCode
  * 2.x names the agent from the file, and a stray V1 field would make the file
@@ -340,7 +340,7 @@ function verifyOpencodeV2Agent(
 }
 
 /**
- * The V1 (`opencodev1`) per-agent file. Measured at rulesync 43.13.0: the
+ * The V1 (`opencodev1`) per-agent file. Measured at rulesync 43.14.0: the
  * frontmatter is `name`, `description`, `mode`, `model` (when declared) and the
  * per-tool `permission` map (when the persona declares one). `temperature` and
  * `tools` are V1 keys this product does not author, so they must never appear;
@@ -602,7 +602,7 @@ type HookAnchorPattern = {
 
 /**
  * The V2 (`opencode`) plugin's registration anchors, measured at rulesync
- * 43.13.0: a tool hook (`ctx.tool.hook("execute.before"|"execute.after", ...)`)
+ * 43.14.0: a tool hook (`ctx.tool.hook("execute.before"|"execute.after", ...)`)
  * and an event hook whose `label: "<event>"` has no tool anchor.
  */
 const OPENCODE_V2_HOOK_ANCHORS: readonly HookAnchorPattern[] = [
@@ -617,7 +617,7 @@ const OPENCODE_V2_HOOK_ANCHORS: readonly HookAnchorPattern[] = [
 
 /**
  * The V1 (`opencodev1`) `RulesyncHooksPlugin` registration anchors, measured at
- * rulesync 43.13.0: the returned object keys `"tool.execute.before"` and
+ * rulesync 43.14.0: the returned object keys `"tool.execute.before"` and
  * `"tool.execute.after"`, and the event-loop branches
  * `event.type === "session.created"` / `event.type === "session.idle"`. The
  * V1 plugin also carries `label: "sessionStart"|"stop"|"postToolUse"` inside
@@ -638,7 +638,7 @@ const OPENCODE_V1_HOOK_ANCHORS: readonly HookAnchorPattern[] = [
 /**
  * The canonical (Claude Code) tool names rulesync rewrites inside a hook
  * matcher, and the id each OpenCode target reports at run time. Measured at
- * rulesync 43.13.0: OpenCode 1.x reports `read`/`write`/`edit` and calls its
+ * rulesync 43.14.0: OpenCode 1.x reports `read`/`write`/`edit` and calls its
  * shell tool `bash`, while OpenCode 2.x calls the same tool `shell`.
  */
 const OPENCODE_V1_HOOK_TOOL_NAMES: Readonly<Record<string, string>> = {
@@ -661,7 +661,7 @@ function opencodeHookToolNames(target: OpencodeTarget): Readonly<Record<string, 
 }
 
 /**
- * rulesync's whole-name tokenisation of a matcher, measured at 43.13.0: escapes
+ * rulesync's whole-name tokenisation of a matcher, measured at 43.14.0: escapes
  * and character classes are skipped, and a name is only a name at a word
  * boundary (or after an escaped word character).
  */
@@ -683,7 +683,7 @@ function replaceMatcherNames(matcher: string, names: Readonly<Record<string, str
 const PLAIN_TOOL_NAME_MATCHER = /^[A-Za-z0-9_]+(?:\|[A-Za-z0-9_]+)*$/;
 
 /**
- * The matcher rulesync emits for a declared one, measured at 43.13.0. Canonical
+ * The matcher rulesync emits for a declared one, measured at 43.14.0. Canonical
  * tool names are translated to the target's ids, and a pure name-list matcher
  * is anchored as `^(?:...)$` so `write` does not also match `todowrite`; a
  * regex-style matcher, or one with no translated name, is written as declared.

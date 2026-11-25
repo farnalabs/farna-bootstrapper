@@ -399,7 +399,7 @@ function sortResources(resources: ResolvedResource[]): ResolvedResource[] {
 
 /**
  * Why OpenCode cannot carry this hook, or `undefined` when it can. Measured at
- * rulesync 43.13.0: `session-end` has no OpenCode event, and a matcher is
+ * rulesync 43.14.0: `session-end` has no OpenCode event, and a matcher is
  * honoured only on the tool events (`preToolUse`/`postToolUse`).
  */
 function hookProblem(hook: ResolvedHook): string | undefined {

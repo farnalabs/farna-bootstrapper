@@ -65,7 +65,7 @@ is therefore a deliberate edit to that manifest; a memory of having added a test
 
 ## The renderer pin
 
-`rulesync` is pinned to exactly `43.13.0` with a tarball integrity, and **the emitted bytes are the
+`rulesync` is pinned to exactly `43.14.0` with a tarball integrity, and **the emitted bytes are the
 product**. Two rules follow:
 
 1. **One importer.** `src/render/upstream.ts` is the only module allowed to import `rulesync`

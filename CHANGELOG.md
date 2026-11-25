@@ -6,6 +6,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before 1.0.0, a minor
 release may contain a breaking change; every change of that kind is listed under **Changed**.
 
+## [Unreleased]
+
+### Changed
+
+- **Renderer pin moved to `rulesync` 43.14.0** (from `43.13.0`). One emitted artefact changes: the
+  V1 OpenCode hooks plugin (`.opencode/plugins/rulesync-hooks.js`). Its `preToolUse` stdout-result
+  parser now returns early when stdout does not parse to an object, reads
+  `hookSpecificOutput.permissionDecision` when that field is present, and otherwise falls back to
+  the legacy `decision: "block"` and `reason` fields, so a hook that reports its block in the older
+  shape is still honoured. The V2 OpenCode plugin carries the same parser change but is not
+  byte-pinned by a golden. Every other emitted artefact is byte-identical: the V1 and V2 agent
+  files, the V1 `opencode.jsonc`, the commands, the skills and the `claudecode` golden are
+  unchanged. The committed dogfood output is regenerated, and `.farna/lock.json` changes only in
+  its recorded renderer version and integrity; its schema stays version 2.
+
 ## [0.1.3] - 2026-11-24
 
 ### Added
@@ -170,6 +185,7 @@ output still matches the source.
   runner does not grant), the POSIX mode assertions, the FIFO cases and the install-layout suite are
   skipped on Windows; CI runs them on Linux.
 
+[Unreleased]: https://github.com/farnalabs/farna-bootstrapper/compare/v0.1.3...HEAD
 [0.1.3]: https://github.com/farnalabs/farna-bootstrapper/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/farnalabs/farna-bootstrapper/releases/tag/v0.1.2
 [0.1.1]: https://github.com/farnalabs/farna-bootstrapper/releases/tag/v0.1.1
