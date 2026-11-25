@@ -224,7 +224,8 @@ record then describes the tree. The point of the change is one run, one plan, on
 
 The plan computes, for each configured target, the set of managed locations that target can own, from
 `MANAGED_OUTPUT_DIRS` and `MANAGED_OUTPUT_FILES`. It unions those sets and refuses if any location is
-claimed by two targets. The refusal is a typed error and writes nothing. The harness-family rule is
+claimed by two targets. The refusal is `F005_CONFLICT` with exit 2, settled in 3.10, and it writes
+nothing. The harness-family rule is
 then a special case of one invariant: two OpenCode targets collide because their two location sets
 are equal, and no pair of target ids is named anywhere in the guard.
 
@@ -272,10 +273,10 @@ files, with recorded paths the plan no longer produces reported as drift.
 
 A version 1 lockfile whose config now names a second target makes `check` report that target's planned
 outputs as drift, because none of them is recorded. The config digest also changes when the config
-gains a target, so the lockfile path itself is reported as changed. `generate` records the new target
-and writes version 2. This is a one-time upgrade for an existing repository: the first `generate`
-after the tool upgrade rewrites `.farna/lock.json`, and that rewrite is committed like any other
-generated change.
+gains a target, so `check` reports `.farna/lock.json` with the source-or-config-changed detail rather
+than comparing that file's bytes. `generate` records the new target and writes version 2. This is a
+one-time upgrade for an existing repository: the first `generate` after the tool upgrade rewrites
+`.farna/lock.json`, and that rewrite is committed like any other generated change.
 
 **Consequence.** The reader has two branches, and the in-memory `Lockfile` type is always the version
 2 shape so every consumer (orphan planning, ownership checks, `check`'s recorded set) sees one form.
@@ -345,9 +346,9 @@ OpenCode target, and that reading would make the flag unusable in exactly that c
 
 ### 3.8 The CLI surface does not grow
 
-`generate`, `check` and `doctor` operate over every configured target. The human output gains a
-per-target section, and `--dry-run` and `--json` carry the per-target plan. No subcommand and no new
-option is added.
+`generate`, `check` and `doctor` operate over every configured target. The human output gains one
+section per target, settled in 3.11, and `--dry-run` and `--json` carry the per-target plan. No
+subcommand and no new option is added.
 
 **Consequence.** `GenerateResult`, `CheckResult` and `DoctorResult` each gain a per-target collection
 and lose their single `target`, `mode`, `activePersona` and `notLive` fields. A JSON consumer sees one
@@ -375,6 +376,55 @@ land in the release pull request, as CONTRIBUTING's Releasing section requires, 
 **Rejected alternative.** Ship it silently in a patch release. Rejected because a lockfile rewritten
 from version 1 to version 2 and a changed JSON payload are exactly the changes a reader needs to be
 told about.
+
+### 3.10 The location-collision refusal is `F005_CONFLICT` with exit 2
+
+`F005_CONFLICT` already exists: `conflict` in `src/core/errors.ts` raises it, and the README's
+exit-code table defines exit 2 as "a conflict between declarations", in this row:
+
+```text
+| `2` | a conflict between declarations | `F005_CONFLICT` |
+```
+
+Two targets' declarations claiming one location is exactly that, so the guard raises the existing
+code and no new code is added. The code is already used for the same shape elsewhere: two resource
+sources that disagree on one `(kind, id)`, two personas that disagree on one workspace resource, and
+two model classes in one composed set that resolve to different concrete models.
+
+**Consequence.** The guard raises `conflict(...)` and exits 2. One existing case changes its
+diagnostic: a config naming both OpenCode targets fails today as `F001_INVALID_CONFIG` with exit 1,
+raised by the `length === 1` refine in `src/config/schema.ts`, and after this change it fails as
+`F005_CONFLICT` with exit 2. The F001 path for that config is removed rather than left beside the
+guard, so one condition has one diagnostic. The README's exit-code table and the code tables in the
+Warnings and exit codes section are updated in the same slice that lands the guard (slice 2), and the
+changelog entry names the changed diagnostic.
+
+**Rejected alternative.** Keep `F001_INVALID_CONFIG` with exit 1 for this case. Rejected because it
+would either leave the schema refine in place as a second, hard-coded refusal beside the general
+guard, which is what 3.2 removes, or describe a conflict between two declarations as invalid input,
+when the exit-code table already gives that shape its own row and its own exit status.
+
+### 3.11 The human report prints one section per target
+
+Each configured target gets its own section, carrying its mode, its live persona (or the statement
+that every persona is live), its `notLive` set in profile mode, and the files it produced, left
+unchanged or removed.
+
+A mixed run has no single mode to print: a `claudecode` agent target and an `opencode` profile target
+would share one `target (mode)` line that describes neither. Script consumers read the `--json`
+payload rather than parsing the human text, so the human output does not have to remain one flat
+list. Keeping each target's mode adjacent to the files that target produced means a reader never has
+to join two lists to learn which mode wrote a file.
+
+**Consequence.** `formatGenerate`, `formatCheck` and `formatDoctor` in `src/report/format.ts` print a
+per-target section, and each target's summary line counts only that target's files. The snapshot
+tests for `formatGenerate` and `formatCheck` gain per-target fixtures in slice 1, including one mixed
+run with an agent target and a profile target.
+
+**Rejected alternative.** One flat file list with a target column. Rejected because the mode, the
+live persona and `notLive` belong to a target rather than a file, so a column would either repeat
+them on every row of that target or need a group header anyway, and in a mixed run the column hides
+the mode the reader most needs.
 
 ## 4. Data shapes
 
@@ -599,22 +649,29 @@ The sequence below is a `generate`. `check` shares steps 1 to 8 and compares ins
 ## 6. Failure modes and diagnostics
 
 **Two OpenCode targets are configured.** The collision guard runs at step 2, before any source is
-read. Nothing is written. The typed refusal names the shared locations, `.opencode/agents`,
-`.opencode/commands`, `.opencode/skills`, `.opencode/plugins` and `opencode.jsonc`, and says that the
-two OpenCode majors write the same locations. The proposed diagnostic code is `F005_CONFLICT`, with
-exit 2, because two targets' declarations claim one location; the alternative is discussed in
-section 10.
+read. Nothing is written. The refusal is `F005_CONFLICT` with exit 2, and it names the shared
+locations, `.opencode/agents`, `.opencode/commands`, `.opencode/skills`, `.opencode/plugins` and
+`opencode.jsonc`, and says that the two OpenCode majors write the same locations. This is the one
+existing case whose diagnostic changes: the same config fails today as `F001_INVALID_CONFIG` with
+exit 1 from the config schema refine, and fails after slice 2 as `F005_CONFLICT` with exit 2.
 
-**A path collision in general.** The same step and the same code. If a future target shares a
+**A path collision in general.** The same step, code and exit status. If a future target shares a
 location with an existing one, the message names the location and both target ids, and nothing is
 written. This case cannot arise with the three targets supported today beyond the OpenCode pair,
 which is why the guard's generality is proved by a direct unit test over a synthetic location table.
 
 **A version 1 lock with a second target now configured.** `check` reads and normalises the version 1
 document, resolves both configured targets, and reports every planned file for the new target as
-`missing`, plus the lockfile path as changed because the config digest moved. The human output shows
-the drift list under the new target's section. `generate` then writes the new target's files and the
-version 2 lockfile. Nothing is written by `check`.
+`missing`. It also reports one drift item at `.farna/lock.json` with kind `modified` and the detail
+"the source or config changed since the lockfile was written; re-run generate". That item is not a
+byte comparison of the lockfile. `prepareRender` appends the lockfile to the planned set with the
+bytes of a fresh render, and `runCheck` deliberately skips comparing those bytes when the recorded
+`configDigest` differs from the fresh one. What differs is the digest, because adding a target
+changes the raw bytes of `config.jsonc`, which `sourceConfigDigest` hashes. Were the digest equal,
+the bytes would be compared and would also differ, because a version 1 document is not the version 2
+document a fresh render produces. The human output shows each target's drift under that target's
+section. `generate` then writes the new target's files and the version 2 lockfile. Nothing is written
+by `check`.
 
 **A target is removed from the config.** `generate` resolves the remaining targets, and the removed
 target's recorded files are orphaned. Each is removed only if it is a recorded regular file in a
@@ -657,6 +714,9 @@ the change pass.
   accepted. One test over a synthetic table where a third target shares one directory with
   `claudecode`, proving the guard is not a hard-coded pair. One test that the refusal happens before
   any render by passing a renderer that throws if called.
+- **The collision diagnostic.** A config with both OpenCode targets is refused as `F005_CONFLICT`
+  with exit 2, while the config schema on its own accepts it, proving the refusal moved from the
+  schema refine to the guard and that only one refusal path exists.
 - **The version 1 reader.** A version 1 document is normalised into one target entry; the profile
   default from `activePersona` is kept; a profile document with no persona is still refused.
 - **The version 2 writer.** Target keys and every file list are canonically ordered, two writes of
@@ -669,6 +729,9 @@ the change pass.
   supports profile mode; refused with the target named when the persona does not resolve for it.
 - **Per-target orphan planning.** A recorded path for a target no longer in the config is planned
   for removal, and a recorded path that is still produced by another target is not.
+- **Per-target report formatting.** `formatGenerate`, `formatCheck` and `formatDoctor` print one
+  section per target with that target's mode and live persona, and a mixed run with an agent target
+  and a profile target prints both.
 
 ### Integration
 
@@ -719,6 +782,10 @@ calls it), `src/render/prepare.ts` (per-target prepare without the lock build),
 `src/report/format.ts`, `src/cli/program.ts` (the per-target payload), and the tests listed above
 that do not concern collisions.
 
+The `formatGenerate` and `formatCheck` snapshot fixtures gain their per-target cases here, including
+one mixed run with an agent target and a profile target, because slice 1 is where those formatters
+change.
+
 Exit criterion: with one configured target, `generate` writes a version 2 lockfile whose target
 entry reproduces the version 1 fields exactly; `check` passes against a version 1 lockfile and
 against the version 2 file it just wrote; `generate` upgrades a version 1 lockfile; every existing
@@ -730,16 +797,19 @@ in this repository.
 The config admits a second family. The location-collision guard lands. Agent mode only; a profile
 selection on any target is a separate slice.
 
-Files: `src/config/schema.ts` (the one-target refine becomes the location rule's job),
-`src/compose/resolve.ts` (resolve every configured target), a new module for the guard (a pure
-function plus its diagnostic), `src/cli/commands/generate.ts`, `src/cli/commands/check.ts`,
-`src/lock/lockfile.ts` (the flat recorded union over every target entry),
-`src/report/format.ts`, and the unit and integration tests for collisions and for N renders equal to
-N runs.
+Files: `src/config/schema.ts` (remove the `length === 1` refine, so the location rule is the only
+refusal), `src/compose/resolve.ts` (resolve every configured target), a new module for the guard (a
+pure function plus its diagnostic), `src/cli/commands/generate.ts`, `src/cli/commands/check.ts`,
+`src/lock/lockfile.ts` (the flat recorded union over every target entry), `src/report/format.ts`,
+`README.md` (the exit-code table and the code tables in the Warnings and exit codes section, plus
+every place in Targets and Supported targets that says a two-OpenCode config is `F001`), and the
+unit and integration tests for collisions, for the changed diagnostic and for N renders equal to N
+runs.
 
 Exit criterion: a config with `claudecode` and `opencode` in agent mode generates both, `check` passes,
-a config with both OpenCode targets is refused with zero writes, and removing the second target from
-the config removes its recorded output on the next `generate`.
+a config with both OpenCode targets is refused as `F005_CONFLICT` with exit 2 and zero writes, the
+config schema alone accepts that config, the README names `F005_CONFLICT` with exit 2 for it, and
+removing the second target from the config removes its recorded output on the next `generate`.
 
 ### Slice 3: multi-target profile mode and the `--persona` semantics
 
@@ -810,23 +880,3 @@ consumer does not have to handle two shapes.
 **The dogfood's OpenCode output surprises a reviewer.** Control: the slice 4 pull request names the
 new files and the regenerated lockfile, and CI's `check` proves the committed output matches the
 source.
-
-## 10. Open questions
-
-Two questions remain genuinely open. Each is a decision someone must make before the slice that
-depends on it lands.
-
-1. **Which diagnostic code does the location-collision refusal use?** The proposal is
-   `F005_CONFLICT` with exit 2, because two targets' declarations claim one location and
-   `F005_CONFLICT` is defined as a conflict between declarations. The alternative is
-   `F001_INVALID_CONFIG` with exit 1, which is what a two-OpenCode config produces today from the
-   schema refine, and which keeps the documented behaviour of that one case unchanged. The choice
-   matters because it is the one user-visible diagnostic this change moves. It is needed before
-   slice 2.
-
-2. **How should the human report present a mixed run?** The proposal is one section per target,
-   each with its own mode, live persona and file list, because a mixed run has no single mode to
-   print. The alternative is one flat file list with a target column, which reads better when both
-   targets are in agent mode and worse when their modes differ. The choice affects the snapshot
-   tests of `formatGenerate` and `formatCheck`. It is needed before slice 1, because slice 1 changes
-   those formatters.
