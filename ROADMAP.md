@@ -2,15 +2,14 @@
 
 `farna-bootstrapper` compiles named agent personas and their resources into the configuration a
 coding harness reads, and proves that the committed output still matches the source. The latest
-published release is **0.2.0** (2026-11-25).
+published release is **0.3.0** (2026-11-25).
 
 This is a pre-1.0 project. Everything below describes what exists today and what is intended next;
 it is not a promise of dates or a claim of production readiness.
 
 ## Shipped
 
-What the published 0.2.0 release does, plus the work that has landed on `main` since it and is not
-yet in a release. All of it is covered by the test suite and by CI.
+What the published 0.3.0 release does. All of it is covered by the test suite and by CI.
 
 - **Five commands.** `init`, `doctor`, `report`, `generate` and `check`. `doctor` validates a source
   without rendering or writing; `report` prints the measured capability matrix and reads no source;
@@ -77,9 +76,6 @@ The ordered near-term work. Each item is a concrete outcome, not a theme.
    path where the pin matches the published version. When the next renderer version is published,
    confirm that it opens one issue, comments weekly while the pin stays behind, and closes that
    issue when the pin catches up.
-2. **Cut the next minor release.** Region ownership, Claude Code profile mode and the generated
-   capability page are on `main` and not in a release. The next minor release carries them; the
-   CHANGELOG's `[Unreleased]` section is the draft of its entry.
 
 The work under Later is ordered by intent, not committed; an item moves here when it is chosen next.
 

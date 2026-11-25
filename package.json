@@ -1,6 +1,6 @@
 {
   "name": "farna-bootstrapper",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Compile named agent personas and resources into the configuration each coding harness reads, and prove that the output still matches the source.",
   "license": "MIT",
   "author": "Farnalabs Ltd",

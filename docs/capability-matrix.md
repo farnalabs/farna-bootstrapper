@@ -11,7 +11,7 @@ proves a refusal. The harness remains the authority on runtime behaviour.
 `unknown` is never a tick. A cell marked `[?]` was not measured, and an id in the not-measured
 list below carries no capability claim at all.
 
-Generated from farna-bootstrapper 0.2.0 against renderer rulesync 43.14.0, matrix schema version 1.
+Generated from farna-bootstrapper 0.3.0 against renderer rulesync 43.14.0, matrix schema version 1.
 
 ## Emissions
 
