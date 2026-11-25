@@ -60,7 +60,9 @@ The ordered near-term work. Each item is a concrete outcome, not a theme.
 2. **Multi-target rendering in one run, with a per-target lockfile and mode plan.** More than one
    configured target is refused today, and the lockfile, the mode plan and the write path are all
    per target. This is the design change that unblocks the OpenCode half of the self-dogfood and
-   the "one source, several harnesses" story.
+   the "one source, several harnesses" story. The design is proposed in
+   [the design note](docs/multi-target-design.md), which records the decisions, the data shapes and
+   the four delivery slices.
 3. **Extend the self-dogfood to the OpenCode half.** Generate this repository's OpenCode
    configuration from the same `.farna/` source it already uses for Claude Code. This follows item
    2, because it needs more than one target in a single run.
