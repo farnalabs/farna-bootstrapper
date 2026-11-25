@@ -1,7 +1,7 @@
 import { appendFile, readFile, rename, rm, symlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { runCheck } from '../../src/cli/commands/check.js';
+import { allCheckDrift, runCheck } from '../../src/cli/commands/check.js';
 import { runGenerate } from '../../src/cli/commands/generate.js';
 import { FakeRenderTarget } from '../support/fake-renderer.js';
 import { createEmptyTempDir, createTempRepo, hashTree } from '../support/temp-repo.js';
@@ -22,8 +22,8 @@ describe('check', () => {
       const result = await runCheck(repo.root, new FakeRenderTarget());
       expect(result.ok).toBe(true);
       expect(result.exitCode).toBe(0);
-      expect(result.drift).toEqual([]);
-      expect(result.checked).toContain('.claude/agents/builder.md');
+      expect(allCheckDrift(result)).toEqual([]);
+      expect(result.targets[0]?.checked).toContain('.claude/agents/builder.md');
       expect(await hashTree(repo.root)).toBe(before);
     } finally {
       await repo.cleanup();
@@ -38,7 +38,7 @@ describe('check', () => {
       const result = await runCheck(repo.root, new FakeRenderTarget());
       expect(result.ok).toBe(false);
       expect(result.exitCode).toBe(1);
-      expect(result.drift).toEqual([
+      expect(allCheckDrift(result)).toEqual([
         {
           code: 'F007_DRIFT',
           path: '.claude/agents/builder.md',
@@ -60,7 +60,7 @@ describe('check', () => {
       const result = await runCheck(repo.root, new FakeRenderTarget());
       expect(result.ok).toBe(false);
       expect(result.exitCode).toBe(1);
-      expect(result.drift.map((item) => [item.path, item.kind])).toEqual([
+      expect(allCheckDrift(result).map((item) => [item.path, item.kind])).toEqual([
         ['.claude/agents/reviewer.md', 'missing'],
       ]);
     } finally {
@@ -81,7 +81,7 @@ describe('check', () => {
       );
       const result = await runCheck(repo.root, new FakeRenderTarget());
       expect(result.ok).toBe(true);
-      expect(result.drift).toEqual([]);
+      expect(allCheckDrift(result)).toEqual([]);
     } finally {
       await repo.cleanup();
     }
@@ -93,7 +93,7 @@ describe('check', () => {
       await appendFile(join(repo.root, '.farna/lock.json'), '\n', 'utf8');
       const result = await runCheck(repo.root, new FakeRenderTarget());
       expect(result.ok).toBe(false);
-      expect(result.drift.map((item) => item.path)).toContain('.farna/lock.json');
+      expect(allCheckDrift(result).map((item) => item.path)).toContain('.farna/lock.json');
     } finally {
       await repo.cleanup();
     }
@@ -112,7 +112,7 @@ describe('check', () => {
         await symlink(target, join(repo.root, '.claude/agents/evil.md'), 'file');
         const result = await runCheck(repo.root, new FakeRenderTarget());
         expect(result.ok).toBe(true);
-        expect(result.drift).toEqual([]);
+        expect(allCheckDrift(result)).toEqual([]);
       } finally {
         await repo.cleanup();
         await outside.cleanup();
@@ -134,7 +134,7 @@ describe('check', () => {
         await symlink(target, managed, 'file');
         const result = await runCheck(repo.root, new FakeRenderTarget());
         expect(result.ok).toBe(false);
-        expect(result.drift).toEqual([
+        expect(allCheckDrift(result)).toEqual([
           {
             code: 'F007_DRIFT',
             path: '.claude/agents/builder.md',
@@ -174,7 +174,7 @@ describe('check', () => {
       }
       const result = await runCheck(repo.root, new FakeRenderTarget());
       expect(result.ok).toBe(true);
-      expect(result.drift).toEqual([]);
+      expect(allCheckDrift(result)).toEqual([]);
     } finally {
       await repo.cleanup();
     }
@@ -207,14 +207,15 @@ describe('check', () => {
 
       const check = await runCheck(repo.root, new FakeRenderTarget());
       expect(check.ok).toBe(false);
-      expect(check.drift.map((item) => item.path)).toContain('.claude/agents/builder.md');
+      expect(allCheckDrift(check).map((item) => item.path)).toContain('.claude/agents/builder.md');
 
       const regenerated = await runGenerate(
         { cwd: repo.root, dryRun: false },
         new FakeRenderTarget(),
       );
       expect(
-        regenerated.files.find((file) => file.path === '.claude/agents/builder.md')?.status,
+        regenerated.targets[0]?.files.find((file) => file.path === '.claude/agents/builder.md')
+          ?.status,
       ).toBe('written');
       expect((await readFile(managed)).equals(expected)).toBe(true);
     } finally {

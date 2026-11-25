@@ -40,14 +40,19 @@ describe('doctor', () => {
       expect(await hashTree(repo.root)).toBe(before);
       expect(result).toMatchObject({
         ok: true,
-        target: 'claudecode',
-        mode: 'agent',
-        activePersona: null,
         configPath: '.farna/config.jsonc',
-        counts: { personas: 2, live: 2, modelClasses: 1 },
+        targets: [
+          {
+            target: 'claudecode',
+            mode: 'agent',
+            activePersona: null,
+            counts: { personas: 2, live: 2, modelClasses: 1 },
+          },
+        ],
       });
-      expect(result.personas.map((persona) => persona.id)).toEqual(['builder', 'reviewer']);
-      expect(result.checks.map((check) => check.name)).toEqual([
+      const target = result.targets[0];
+      expect(target?.personas.map((persona) => persona.id)).toEqual(['builder', 'reviewer']);
+      expect(target?.checks.map((check) => check.name)).toEqual([
         'config schema',
         'source tree and paths',
         'personas and extends chains',
@@ -57,7 +62,7 @@ describe('doctor', () => {
         'permission categories and patterns',
         'secret references',
       ]);
-      expect(result.notLive).toEqual([]);
+      expect(target?.notLive).toEqual([]);
     } finally {
       await repo.cleanup();
     }
@@ -67,7 +72,9 @@ describe('doctor', () => {
     const repo = await createTempRepo('composed');
     try {
       const result = await runDoctor(repo.root);
-      const builderPython = result.personas.find((persona) => persona.id === 'builder-python');
+      const builderPython = result.targets[0]?.personas.find(
+        (persona) => persona.id === 'builder-python',
+      );
       expect(builderPython?.chain).toEqual(['builder', 'builder-python']);
 
       const inherited = builderPython?.resources.find(
@@ -92,14 +99,15 @@ describe('doctor', () => {
     const repo = await createTempRepo('profile');
     try {
       const result = await runDoctor(repo.root);
-      expect(result.mode).toBe('profile');
-      expect(result.activePersona).toBe('builder');
-      expect(result.personas.map((persona) => persona.id)).toEqual(['builder']);
-      expect(result.notLive).toEqual(['reviewer']);
-      expect(result.counts.personas).toBe(2);
-      expect(result.counts.live).toBe(1);
+      const target = result.targets[0];
+      expect(target?.mode).toBe('profile');
+      expect(target?.activePersona).toBe('builder');
+      expect(target?.personas.map((persona) => persona.id)).toEqual(['builder']);
+      expect(target?.notLive).toEqual(['reviewer']);
+      expect(target?.counts.personas).toBe(2);
+      expect(target?.counts.live).toBe(1);
       // The live persona's workspace kinds are reported, because profile mode emits them.
-      expect(result.personas[0]?.resources.map((resource) => resource.kind)).toEqual([
+      expect(target?.personas[0]?.resources.map((resource) => resource.kind)).toEqual([
         'rule',
         'permission',
         'mcp',

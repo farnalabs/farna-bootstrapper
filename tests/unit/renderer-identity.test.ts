@@ -12,7 +12,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { runCheck } from '../../src/cli/commands/check.js';
+import { allCheckDrift, runCheck } from '../../src/cli/commands/check.js';
 import { runGenerate } from '../../src/cli/commands/generate.js';
 import {
   LOCKFILE_MAX_BYTES,
@@ -227,14 +227,14 @@ describe('renderer identity verification', () => {
       );
       const verified = await runCheck(repo.root, new FakeRenderTarget({ kind: 'ok' }, PIN, PIN));
       expect(verified.ok).toBe(true);
-      expect(verified.drift).toHaveLength(0);
+      expect(allCheckDrift(verified)).toHaveLength(0);
       expect(verified.warnings.map((entry) => entry.code)).not.toContain(W114);
       const unverified = await runCheck(
         repo.root,
         new FakeRenderTarget({ kind: 'ok' }, WITHOUT_INTEGRITY, PIN),
       );
       expect(unverified.ok).toBe(true);
-      expect(unverified.drift).toHaveLength(0);
+      expect(allCheckDrift(unverified)).toHaveLength(0);
       expect(unverified.warnings.map((entry) => entry.code)).toContain(W114);
     } finally {
       await repo.cleanup();
@@ -273,7 +273,7 @@ describe('renderer identity verification', () => {
     try {
       const result = await runCheck(repo.root, new FakeRenderTarget({ kind: 'ok' }, IDENTITY));
       expect(result.ok).toBe(false);
-      expect(result.drift.map((item) => item.path)).toContain('.farna/lock.json');
+      expect(allCheckDrift(result).map((item) => item.path)).toContain('.farna/lock.json');
     } finally {
       await repo.cleanup();
     }

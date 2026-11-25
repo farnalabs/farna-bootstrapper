@@ -44,11 +44,14 @@ async function setTarget(repo: TempRepo, target: 'opencode' | 'opencodev1'): Pro
   await writeFile(path, text.replace(/"(?:opencode|opencodev1)":/g, `"${target}":`), 'utf8');
 }
 
-type LockShape = {
-  target: string;
+type LockTargetShape = {
   mode: string;
   activePersona: string | null;
   files: Array<{ path: string }>;
+};
+
+type LockShape = {
+  targets: Record<string, LockTargetShape>;
   warnings: Array<{ code: string }>;
 };
 
@@ -76,7 +79,7 @@ describe('opencodev1 target identity', () => {
   it('writes the same measured path set as the V2 target and records itself in the lockfile', async () => {
     const repo = await generated('profile-v1');
     try {
-      expect((await lockOf(repo)).target).toBe('opencodev1');
+      expect(Object.keys((await lockOf(repo)).targets)).toEqual(['opencodev1']);
       const files = (await listFiles(repo.root)).filter(
         (path) =>
           path.startsWith('.opencode/') || path === 'opencode.jsonc' || path === '.farna/lock.json',
@@ -232,8 +235,8 @@ describe('opencodev1 profile mode', () => {
 
       const check = await runCheck(repo.root, new UpstreamRenderTarget());
       expect(check.ok).toBe(true);
-      expect(check.mode).toBe('profile');
-      expect(check.activePersona).toBe('builder');
+      expect(check.targets[0]?.mode).toBe('profile');
+      expect(check.targets[0]?.activePersona).toBe('builder');
       expect(check.warnings.map((entry) => entry.code)).not.toContain('W101_CAPABILITY_DROPPED');
     } finally {
       await repo.cleanup();
@@ -247,15 +250,15 @@ describe('opencodev1 profile mode', () => {
         { cwd: repo.root, dryRun: false, persona: 'reviewer' },
         new UpstreamRenderTarget(),
       );
-      expect(result.activePersona).toBe('reviewer');
-      expect(result.removed.map((entry) => entry.path).sort()).toEqual([
+      expect(result.targets[0]?.activePersona).toBe('reviewer');
+      expect(result.targets[0]?.removed.map((entry) => entry.path).sort()).toEqual([
         '.opencode/agents/builder.md',
         '.opencode/commands/pytest.md',
         '.opencode/plugins/rulesync-hooks.js',
         '.opencode/skills/secure-review/SKILL.md',
         '.opencode/skills/secure-review/scripts/check.sh',
       ]);
-      expect(result.removed.every((entry) => entry.status === 'removed')).toBe(true);
+      expect(result.targets[0]?.removed.every((entry) => entry.status === 'removed')).toBe(true);
 
       const files = await listFiles(repo.root);
       expect(files).toContain('.opencode/agents/reviewer.md');
@@ -266,7 +269,7 @@ describe('opencodev1 profile mode', () => {
       expect(Object.keys(config.mcp)).toEqual(['docs']);
 
       const lock = await lockOf(repo);
-      expect(lock.activePersona).toBe('reviewer');
+      expect(Object.values(lock.targets)[0]?.activePersona).toBe('reviewer');
       // `--persona` is an override, never written back, so `check` needs it too.
       expect(
         (await runCheck(repo.root, new UpstreamRenderTarget(), { persona: 'reviewer' })).ok,
@@ -353,14 +356,15 @@ describe('opencodev1 and opencode v2 share paths', () => {
     const repo = await generated('profile-v1');
     try {
       const v1 = await lockOf(repo);
-      const v1Paths = v1.files.map((file) => file.path);
+      const v1Paths = Object.values(v1.targets)[0]?.files.map((file) => file.path) ?? [];
 
       await setTarget(repo, 'opencode');
       const toV2 = await runGenerate({ cwd: repo.root, dryRun: false }, new UpstreamRenderTarget());
-      expect(toV2.target).toBe('opencode');
-      expect(toV2.removed).toEqual([]);
-      expect((await lockOf(repo)).files.map((file) => file.path)).toEqual(v1Paths);
-      expect((await lockOf(repo)).target).toBe('opencode');
+      expect(toV2.targets[0]?.target).toBe('opencode');
+      expect(toV2.targets[0]?.removed).toEqual([]);
+      const v2Lock = await lockOf(repo);
+      expect(Object.values(v2Lock.targets)[0]?.files.map((file) => file.path)).toEqual(v1Paths);
+      expect(Object.keys(v2Lock.targets)).toEqual(['opencode']);
       const v2Agent = frontmatterOf(await readText(repo.root, '.opencode/agents/builder.md'));
       expect(v2Agent['name']).toBeUndefined();
       expect(v2Agent['permissions']).toBeDefined();
@@ -373,9 +377,11 @@ describe('opencodev1 and opencode v2 share paths', () => {
         { cwd: repo.root, dryRun: false },
         new UpstreamRenderTarget(),
       );
-      expect(backToV1.target).toBe('opencodev1');
-      expect(backToV1.removed).toEqual([]);
-      expect((await lockOf(repo)).files.map((file) => file.path)).toEqual(v1Paths);
+      expect(backToV1.targets[0]?.target).toBe('opencodev1');
+      expect(backToV1.targets[0]?.removed).toEqual([]);
+      expect(
+        Object.values((await lockOf(repo)).targets)[0]?.files.map((file) => file.path),
+      ).toEqual(v1Paths);
       const v1Agent = frontmatterOf(await readText(repo.root, '.opencode/agents/builder.md'));
       expect(v1Agent['name']).toBe('builder');
       expect(v1Agent['permission']).toBeDefined();

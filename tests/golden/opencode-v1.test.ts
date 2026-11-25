@@ -99,7 +99,7 @@ describe('opencodev1 golden output', () => {
       const check = await runCheck(repo.root, new UpstreamRenderTarget());
       expect(check.ok).toBe(true);
       expect(check.exitCode).toBe(0);
-      expect(check.target).toBe('opencodev1');
+      expect(check.targets[0]?.target).toBe('opencodev1');
       const codes = check.warnings.map((entry) => entry.code);
       expect(codes).toContain('W112_PERMISSION_LOSSY');
       expect(codes).not.toContain('W101_CAPABILITY_DROPPED');

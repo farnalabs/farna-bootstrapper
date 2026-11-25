@@ -1,5 +1,6 @@
 import { Command } from 'commander';
 import {
+  CLI_SCHEMA_VERSION,
   CONFIG_PATH,
   DRIFT_CODE,
   EXIT,
@@ -7,7 +8,6 @@ import {
   OPENCODE_V1_SUPPORTED_MAJOR,
   PRODUCT_NAME,
   PRODUCT_VERSION,
-  SCHEMA_VERSION,
 } from '../core/constants.js';
 import { FarnaError } from '../core/errors.js';
 import type { RenderTarget } from '../render/port.js';
@@ -20,7 +20,7 @@ import {
   formatInit,
   formatJson,
 } from '../report/format.js';
-import { runCheck } from './commands/check.js';
+import { allCheckDrift, runCheck } from './commands/check.js';
 import { runDoctor } from './commands/doctor.js';
 import { runGenerate } from './commands/generate.js';
 import { runInit } from './commands/init.js';
@@ -45,7 +45,7 @@ type CommandOutcome = {
 /** The one machine-readable failure object: the same keys for every command. */
 export function failureObject(command: string | null, error: FarnaError): Record<string, unknown> {
   return {
-    schemaVersion: SCHEMA_VERSION,
+    schemaVersion: CLI_SCHEMA_VERSION,
     command,
     ok: false,
     exitCode: error.exitCode,
@@ -61,7 +61,7 @@ export function unexpectedFailureObject(
   message: string,
 ): Record<string, unknown> {
   return {
-    schemaVersion: SCHEMA_VERSION,
+    schemaVersion: CLI_SCHEMA_VERSION,
     command,
     ok: false,
     exitCode: EXIT.invalidConfig,
@@ -158,7 +158,7 @@ remains the default.`,
         const result = await runInit(context.cwd);
         return {
           payload: {
-            schemaVersion: SCHEMA_VERSION,
+            schemaVersion: CLI_SCHEMA_VERSION,
             command: 'init',
             ...result,
             exitCode: EXIT.ok,
@@ -179,7 +179,7 @@ remains the default.`,
         const result = await runDoctor(context.cwd);
         return {
           payload: {
-            schemaVersion: SCHEMA_VERSION,
+            schemaVersion: CLI_SCHEMA_VERSION,
             command: 'doctor',
             ...result,
             exitCode: EXIT.ok,
@@ -231,7 +231,7 @@ remains the default.`,
           );
           return {
             payload: {
-              schemaVersion: SCHEMA_VERSION,
+              schemaVersion: CLI_SCHEMA_VERSION,
               command: 'generate',
               ...result,
               exitCode: EXIT.ok,
@@ -255,7 +255,7 @@ remains the default.`,
           ...(options.persona === undefined ? {} : { persona: options.persona }),
         });
         const payload: Record<string, unknown> = {
-          schemaVersion: SCHEMA_VERSION,
+          schemaVersion: CLI_SCHEMA_VERSION,
           command: 'check',
           ...result,
         };
@@ -267,7 +267,7 @@ remains the default.`,
           // path that sorts first must not decide what kind of failure the run
           // is.
           payload['code'] = DRIFT_CODE;
-          payload['subject'] = result.drift[0]?.path ?? null;
+          payload['subject'] = allCheckDrift(result)[0]?.path ?? null;
           payload['message'] = 'managed output drifted from a fresh render';
         }
         return { payload, text: formatCheck(result), exitCode: result.exitCode };

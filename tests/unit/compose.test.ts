@@ -91,15 +91,21 @@ describe('persona composition', () => {
       await runGenerate({ cwd: repo.root, dryRun: false }, new FakeRenderTarget());
       const lock = JSON.parse(await readText(repo.root, '.farna/lock.json')) as {
         schemaVersion: number;
-        personas: Array<{
-          id: string;
-          extends?: string;
-          permissionDigest: string;
-          resources: Array<{ kind: string; id: string; fromPersona: string }>;
-        }>;
+        targets: Record<
+          string,
+          {
+            personas: Array<{
+              id: string;
+              extends?: string;
+              permissionDigest: string;
+              resources: Array<{ kind: string; id: string; fromPersona: string }>;
+            }>;
+          }
+        >;
       };
-      expect(lock.schemaVersion).toBe(1);
-      const python = lock.personas.find((persona) => persona.id === 'builder-python');
+      expect(lock.schemaVersion).toBe(2);
+      const personas = lock.targets['claudecode']?.personas ?? [];
+      const python = personas.find((persona) => persona.id === 'builder-python');
       expect(python?.extends).toBe('builder');
       expect(python?.permissionDigest).toMatch(/^[0-9a-f]{64}$/);
       expect(python?.resources.map((resource) => `${resource.kind}/${resource.id}`)).toEqual([

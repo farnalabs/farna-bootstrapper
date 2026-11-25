@@ -1,5 +1,6 @@
 import { type ResolvedPersona, resolveSource } from '../../compose/resolve.js';
 import { loadConfig } from '../../config/load.js';
+import type { Config } from '../../config/schema.js';
 import {
   type Capability,
   CONFIG_PATH,
@@ -8,8 +9,9 @@ import {
   ROOT_DIR,
   type SupportedTarget,
 } from '../../core/constants.js';
-import type { Warning } from '../../report/warnings.js';
-import { loadSource } from '../../source/load.js';
+import { configuredTargets } from '../../render/prepare.js';
+import { sortWarnings, type Warning } from '../../report/warnings.js';
+import { loadSource, type SourceTree } from '../../source/load.js';
 
 /** One resolved resource with the attribution `doctor` prints. */
 export type DoctorResource = {
@@ -42,13 +44,12 @@ export type DoctorCheck = {
   detail: string;
 };
 
-export type DoctorResult = {
-  ok: true;
+/** One configured target's validation. */
+export type DoctorTargetResult = {
   target: SupportedTarget;
   mode: RenderMode;
   activePersona: string | null;
   notLive: string[];
-  configPath: string;
   counts: {
     /** Personas declared in the source, live or not. */
     personas: number;
@@ -60,6 +61,13 @@ export type DoctorResult = {
   };
   checks: DoctorCheck[];
   personas: DoctorPersona[];
+};
+
+export type DoctorResult = {
+  ok: true;
+  configPath: string;
+  /** One entry per configured target, in target-id order. */
+  targets: DoctorTargetResult[];
   warnings: Warning[];
 };
 
@@ -96,10 +104,15 @@ function doctorPersona(persona: ResolvedPersona): DoctorPersona {
  * A failure throws the loader's or resolver's own `FarnaError`, so the exit
  * code and the code are the ones `generate` would produce for the same source.
  */
-export async function runDoctor(repoRoot: string): Promise<DoctorResult> {
-  const config = await loadConfig(repoRoot);
-  const tree = await loadSource(repoRoot);
-  const source = resolveSource(tree, config);
+function doctorTarget(
+  tree: SourceTree,
+  config: Config,
+  target: SupportedTarget,
+): { result: DoctorTargetResult; warnings: Warning[] } {
+  // Resolve the target through a config scoped to that one id, so the loop is
+  // genuinely per target rather than reusing the run's first target.
+  const scoped: Config = { ...config, targets: { [target]: config.targets[target] ?? {} } };
+  const source = resolveSource(tree, scoped);
 
   const modelClasses = Object.keys(config.models ?? {}).length;
   const personas = source.personas.map(doctorPersona);
@@ -124,48 +137,82 @@ export async function runDoctor(repoRoot: string): Promise<DoctorResult> {
       : `${source.target}, agent mode, every persona live`;
 
   return {
-    ok: true,
-    target: source.target,
-    mode: source.mode,
-    activePersona: source.active,
-    notLive: source.notLive,
-    configPath: CONFIG_PATH,
-    counts: {
-      personas: tree.personas.length,
-      live: source.personas.length,
-      resourceReferences,
-      modelClasses,
-      warnings: source.warnings.length,
+    result: {
+      target: source.target,
+      mode: source.mode,
+      activePersona: source.active,
+      notLive: source.notLive,
+      counts: {
+        personas: tree.personas.length,
+        live: source.personas.length,
+        resourceReferences,
+        modelClasses,
+        warnings: source.warnings.length,
+      },
+      checks: [
+        { name: 'config schema', detail: CONFIG_PATH },
+        { name: 'source tree and paths', detail: ROOT_DIR },
+        {
+          name: 'personas and extends chains',
+          detail: `${tree.personas.length} persona(s) resolved, no cycle`,
+        },
+        {
+          name: 'resource references',
+          detail: `${resourceReferences} reference(s) across ${source.personas.length} live persona(s)`,
+        },
+        {
+          name: 'model map',
+          detail:
+            modelClasses === 0
+              ? 'no model class declared'
+              : `${modelClasses} model class(es) resolve for ${source.target}`,
+        },
+        { name: 'target and profile mode', detail: modeDetail },
+        {
+          name: 'permission categories and patterns',
+          detail: `${categories.size} categor(ies), ${patterns} pattern(s)`,
+        },
+        {
+          name: 'secret references',
+          detail: 'MCP credential fields are fromEnv or header references only',
+        },
+      ],
+      personas,
     },
-    checks: [
-      { name: 'config schema', detail: CONFIG_PATH },
-      { name: 'source tree and paths', detail: ROOT_DIR },
-      {
-        name: 'personas and extends chains',
-        detail: `${tree.personas.length} persona(s) resolved, no cycle`,
-      },
-      {
-        name: 'resource references',
-        detail: `${resourceReferences} reference(s) across ${source.personas.length} live persona(s)`,
-      },
-      {
-        name: 'model map',
-        detail:
-          modelClasses === 0
-            ? 'no model class declared'
-            : `${modelClasses} model class(es) resolve for ${source.target}`,
-      },
-      { name: 'target and profile mode', detail: modeDetail },
-      {
-        name: 'permission categories and patterns',
-        detail: `${categories.size} categor(ies), ${patterns} pattern(s)`,
-      },
-      {
-        name: 'secret references',
-        detail: 'MCP credential fields are fromEnv or header references only',
-      },
-    ],
-    personas,
     warnings: source.warnings,
+  };
+}
+
+/**
+ * Validate a `.farna` source without rendering or writing, for every configured
+ * target.
+ *
+ * The read → resolve half of `prepareRender` is reused wholesale: the config
+ * loader, the source loader and the resolver are the same ones `generate` and
+ * `check` run, so `doctor` cannot accept a source they refuse. Only the
+ * materialise → render → verify half is skipped, because a report that renders
+ * bytes would need the renderer and could mask a source error behind a render
+ * error.
+ *
+ * A failure throws the loader's or resolver's own `FarnaError`, so the exit
+ * code and the code are the ones `generate` would produce for the same source.
+ */
+export async function runDoctor(repoRoot: string): Promise<DoctorResult> {
+  const config = await loadConfig(repoRoot);
+  const tree = await loadSource(repoRoot);
+
+  const targets: DoctorTargetResult[] = [];
+  const warnings: Warning[] = [];
+  for (const target of configuredTargets(config)) {
+    const validated = doctorTarget(tree, config, target);
+    targets.push(validated.result);
+    warnings.push(...validated.warnings);
+  }
+
+  return {
+    ok: true,
+    configPath: CONFIG_PATH,
+    targets,
+    warnings: sortWarnings(warnings),
   };
 }

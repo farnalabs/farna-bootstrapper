@@ -4,10 +4,10 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { configSchema } from '../../src/config/schema.js';
 import {
+  CONFIG_SCHEMA_VERSION,
   DEFAULT_TARGET,
   PRODUCT_NAME,
   PRODUCT_VERSION,
-  SCHEMA_VERSION,
   SUPPORTED_TARGETS,
   WARNING_CODES,
 } from '../../src/core/constants.js';
@@ -39,8 +39,10 @@ describe('constants and package metadata', () => {
 
   it('validates the config schema version from the constant, not a literal', () => {
     expect(
-      configSchema.safeParse({ schemaVersion: SCHEMA_VERSION, targets: { [DEFAULT_TARGET]: {} } })
-        .success,
+      configSchema.safeParse({
+        schemaVersion: CONFIG_SCHEMA_VERSION,
+        targets: { [DEFAULT_TARGET]: {} },
+      }).success,
     ).toBe(true);
     expect(
       configSchema.safeParse({ schemaVersion: 2, targets: { [DEFAULT_TARGET]: {} } }).success,

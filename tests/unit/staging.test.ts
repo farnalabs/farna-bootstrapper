@@ -1,7 +1,7 @@
 import { lstat, mkdir, readFile, rename, utimes, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { runCheck } from '../../src/cli/commands/check.js';
+import { allCheckDrift, runCheck } from '../../src/cli/commands/check.js';
 import { runGenerate } from '../../src/cli/commands/generate.js';
 import { FarnaError } from '../../src/core/errors.js';
 import { commitFiles } from '../../src/render/commit.js';
@@ -40,7 +40,7 @@ describe('the staging namespace', () => {
 
       const check = await runCheck(repo.root, new FakeRenderTarget());
       expect(check.ok).toBe(true);
-      expect(check.drift).toEqual([]);
+      expect(allCheckDrift(check)).toEqual([]);
 
       const generated = await runGenerate(
         { cwd: repo.root, dryRun: false },
@@ -101,7 +101,7 @@ describe('the staging namespace', () => {
       );
       const check = await runCheck(repo.root, new FakeRenderTarget());
       expect(check.ok).toBe(true);
-      expect(check.drift).toEqual([]);
+      expect(allCheckDrift(check)).toEqual([]);
     } finally {
       await repo.cleanup();
     }

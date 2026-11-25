@@ -1,6 +1,7 @@
 import { type ResolvedSource, resolveSource, type SourceSelection } from '../compose/resolve.js';
 import { loadConfig } from '../config/load.js';
-import { DEFAULT_TARGET, LOCK_PATH } from '../core/constants.js';
+import type { Config } from '../config/schema.js';
+import { DEFAULT_TARGET, LOCK_PATH, type SupportedTarget } from '../core/constants.js';
 import { rendererMismatch } from '../core/errors.js';
 import { compareCodepoints } from '../core/json.js';
 import {
@@ -12,7 +13,7 @@ import {
 import { materialiseSourceTree, renderFeatures } from '../materialise/source-tree.js';
 import { sortWarnings, type Warning, warning } from '../report/warnings.js';
 import { sourceConfigDigest } from '../source/digest.js';
-import { loadSource } from '../source/load.js';
+import { loadSource, type SourceTree } from '../source/load.js';
 import { verifyRender } from '../verify/containment.js';
 import { integrityRecordOf } from './identity.js';
 import type { RendererIdentity, RenderTarget } from './port.js';
@@ -30,11 +31,30 @@ import {
  */
 const RENDERER_WARNING_SUBJECT = '<renderer>';
 
-export type PreparedRender = {
+/**
+ * Every configured target id, in codepoint order. The config schema admits one
+ * target in this slice; the pipeline loops over this list anyway, so the
+ * per-target path is the real path rather than a single-target special case.
+ */
+export function configuredTargets(config: Config): SupportedTarget[] {
+  return (Object.keys(config.targets) as SupportedTarget[]).sort(compareCodepoints);
+}
+
+/** One target's resolved source and the verified bytes it produced. */
+export type PreparedTarget = {
   source: ResolvedSource;
-  /** Every managed file, repository-relative, sorted. Includes the lockfile. */
+  /** Every managed file this target produced, repository-relative, sorted. Never the lockfile. */
   files: RenderedFile[];
   /** Source warnings plus any renderer-level warning, in the report's stable order. */
+  warnings: Warning[];
+};
+
+export type PreparedRender = {
+  /** One entry per configured target, in target-id order. */
+  targets: PreparedTarget[];
+  /** Every managed file across every target plus the lockfile, sorted. */
+  files: RenderedFile[];
+  /** Every target's warnings, in the report's stable order. */
   warnings: Warning[];
   /** Digest of the resolved config plus every persona and resource file. */
   configDigest: string;
@@ -137,21 +157,28 @@ function lockfileRenderer(renderer: RenderTarget): LockfileRenderer {
 }
 
 /**
- * The whole read → materialise → render → verify pipeline. Nothing is written
- * to the repository here; this returns the bytes that verification approved.
+ * The per-target half of the pipeline: resolve one target's source, then
+ * materialise, render and verify it into its own disposable stage. It returns
+ * the verified bytes and builds no lockfile. Nothing is written to the
+ * repository here.
+ *
+ * The target is resolved through a config scoped to that one id, so the loop in
+ * `prepareRender` is genuinely per target rather than passing the run's first
+ * target each time.
  */
-export async function prepareRender(
-  repoRoot: string,
+export async function prepareTarget(
   renderer: RenderTarget,
+  config: Config,
+  tree: SourceTree,
+  target: SupportedTarget,
   selection: SourceSelection = {},
-): Promise<PreparedRender> {
-  const config = await loadConfig(repoRoot);
-  const tree = await loadSource(repoRoot);
-  const source = resolveSource(tree, config, selection);
+): Promise<PreparedTarget> {
+  const scoped: Config = {
+    ...config,
+    targets: { [target]: config.targets[target] ?? {} },
+  };
+  const source = resolveSource(tree, scoped, selection);
   const warnings = sortWarnings([...source.warnings, ...rendererWarnings(renderer, source.target)]);
-  // Every source file, including a persona that is not live: an edit to a
-  // declaration no mode renders still has to be visible to `check`.
-  const configDigest = await sourceConfigDigest(repoRoot, config);
 
   return withStage(async (stage) => {
     await materialiseSourceTree(stage.sourceRoot, source);
@@ -169,20 +196,54 @@ export async function prepareRender(
     const files: RenderedFile[] = [...verified.entries()]
       .map(([path, bytes]) => annotateOwnership({ path, bytes }))
       .sort((a, b) => compareCodepoints(a.path, b.path));
-    // The lockfile records source-derived state only. A renderer-level warning
-    // such as `W114` is runtime verification evidence about THIS machine, so it
-    // is reported by the command but never written into the byte-compared
-    // artefact: a verified and an unverified machine with the same source must
-    // produce the same `.farna/lock.json`.
-    const lock = buildLockfile(
-      source,
-      lockfileRenderer(renderer),
-      files,
-      sortWarnings(source.warnings),
-      { configDigest, notLive: source.notLive },
-    );
-    files.push({ path: LOCK_PATH, bytes: serialiseLockfile(lock) });
-    files.sort((a, b) => compareCodepoints(a.path, b.path));
-    return { source, files, warnings, configDigest };
+    return { source, files, warnings };
   });
+}
+
+/**
+ * The whole read → materialise → render → verify pipeline over every configured
+ * target. Nothing is written to the repository here; this returns the bytes that
+ * verification approved.
+ *
+ * Every target renders into its own stage and passes its own containment gate.
+ * Only then is the run-level lockfile assembled and appended, so a failure in
+ * any target leaves the tree untouched.
+ */
+export async function prepareRender(
+  repoRoot: string,
+  renderer: RenderTarget,
+  selection: SourceSelection = {},
+): Promise<PreparedRender> {
+  const config = await loadConfig(repoRoot);
+  const tree = await loadSource(repoRoot);
+  // Every source file, including a persona that is not live: an edit to a
+  // declaration no mode renders still has to be visible to `check`.
+  const configDigest = await sourceConfigDigest(repoRoot, config);
+
+  const targets: PreparedTarget[] = [];
+  for (const target of configuredTargets(config)) {
+    targets.push(await prepareTarget(renderer, config, tree, target, selection));
+  }
+
+  // The lockfile records source-derived state only. A renderer-level warning
+  // such as `W114` is runtime verification evidence about THIS machine, so it
+  // is reported by the command but never written into the byte-compared
+  // artefact: a verified and an unverified machine with the same source must
+  // produce the same `.farna/lock.json`.
+  const lock = buildLockfile(
+    lockfileRenderer(renderer),
+    targets.map((target) => ({ source: target.source, files: target.files })),
+    sortWarnings(targets.flatMap((target) => target.source.warnings)),
+    { configDigest },
+  );
+  const files: RenderedFile[] = targets.flatMap((target) => target.files);
+  files.push({ path: LOCK_PATH, bytes: serialiseLockfile(lock) });
+  files.sort((a, b) => compareCodepoints(a.path, b.path));
+
+  return {
+    targets,
+    files,
+    warnings: sortWarnings(targets.flatMap((target) => target.warnings)),
+    configDigest,
+  };
 }

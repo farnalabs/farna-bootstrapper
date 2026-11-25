@@ -2,7 +2,13 @@ import { LOCK_PATH, type RenderMode } from '../../core/constants.js';
 import { driftRefused, FarnaError } from '../../core/errors.js';
 import { decodeUtf8 } from '../../core/fs.js';
 import { compareCodepoints } from '../../core/json.js';
-import { type LockFileEntry, type Lockfile, readLockfile } from '../../lock/lockfile.js';
+import {
+  type LockFileEntry,
+  type Lockfile,
+  lockfileFiles,
+  lockfileTargetOf,
+  readLockfile,
+} from '../../lock/lockfile.js';
 import {
   type CommitOperations,
   commitFiles,
@@ -37,24 +43,39 @@ export type GenerateOptions = {
 
 export type OrphanStatus = 'removed' | 'would-remove' | 'updated' | 'would-update' | 'missing';
 
-export type GenerateResult = {
-  ok: true;
+export type GenerateFileStatus = { path: string; status: FileStatus | 'would-write' };
+export type GenerateOrphan = { path: string; status: OrphanStatus };
+
+/** One configured target's plan and outcome. */
+export type GenerateTargetResult = {
   target: string;
   mode: RenderMode;
   activePersona: string | null;
   /** Personas resolved but not live. Empty in agent mode. */
   notLive: string[];
-  dryRun: boolean;
-  /** Paths taken over by `--adopt` (or, in a dry run, that would be). */
-  adopted: string[];
   personas: string[];
-  files: Array<{ path: string; status: FileStatus | 'would-write' }>;
+  files: GenerateFileStatus[];
   /**
-   * Recorded paths this run no longer produces. A whole file is removed; a
+   * Recorded paths this target no longer produces. A whole file is removed; a
    * structured file that still carries user keys is updated in place (its
    * owned key deleted) and the record dropped.
    */
-  removed: Array<{ path: string; status: OrphanStatus }>;
+  removed: GenerateOrphan[];
+};
+
+export type GenerateResult = {
+  ok: true;
+  dryRun: boolean;
+  /** Paths taken over by `--adopt` (or, in a dry run, that would be). */
+  adopted: string[];
+  /** One entry per configured target, in target-id order. */
+  targets: GenerateTargetResult[];
+  /**
+   * Run-level managed paths outside any target (the lockfile), and any recorded
+   * path whose target is no longer configured.
+   */
+  files: GenerateFileStatus[];
+  removed: GenerateOrphan[];
   warnings: Warning[];
 };
 
@@ -73,10 +94,60 @@ type RecordedState = {
 
 async function recordedState(cwd: string): Promise<RecordedState> {
   const lockfile = await readLockfile(cwd);
+  const entries = lockfileFiles(lockfile);
   return {
     lockfile,
-    paths: new Set([LOCK_PATH, ...(lockfile?.files.map((file) => file.path) ?? [])]),
-    entries: lockfile?.files ?? [],
+    paths: new Set([LOCK_PATH, ...entries.map((file) => file.path)]),
+    entries,
+  };
+}
+
+/**
+ * Assemble the per-target report from the run's flat status lists. A planned
+ * path belongs to the target that produced it; the lockfile and any orphan
+ * whose recording target is no longer configured stay run-level.
+ */
+function assembleResult(
+  prepared: PreparedRender,
+  lockfile: Lockfile | undefined,
+  files: readonly GenerateFileStatus[],
+  removed: readonly GenerateOrphan[],
+  adopted: readonly string[],
+  dryRun: boolean,
+): GenerateResult {
+  const targets: GenerateTargetResult[] = prepared.targets.map((target) => {
+    const paths = new Set(target.files.map((file) => file.path));
+    return {
+      target: target.source.target,
+      mode: target.source.mode,
+      activePersona: target.source.active,
+      notLive: target.source.notLive,
+      personas: target.source.personas.map((persona) => persona.id),
+      files: files.filter((file) => paths.has(file.path)),
+      removed: [],
+    };
+  });
+  const owned = new Set(
+    prepared.targets.flatMap((target) => target.files.map((file) => file.path)),
+  );
+  const runRemoved: GenerateOrphan[] = [];
+  for (const entry of removed) {
+    const owner = lockfileTargetOf(lockfile, entry.path);
+    const bucket = targets.find((target) => target.target === owner);
+    if (bucket === undefined) {
+      runRemoved.push(entry);
+    } else {
+      bucket.removed.push(entry);
+    }
+  }
+  return {
+    ok: true,
+    dryRun,
+    adopted: [...adopted],
+    targets,
+    files: files.filter((file) => !owned.has(file.path)),
+    removed: runRemoved,
+    warnings: prepared.warnings,
   };
 }
 
@@ -258,7 +329,6 @@ export async function runGenerate(
     const prepared = await prepareRender(options.cwd, renderer, {
       ...(options.persona === undefined ? {} : { persona: options.persona }),
     });
-    const personas = prepared.source.personas.map((persona) => persona.id);
     const recorded = await recordedState(options.cwd);
     const inspected = await inspectPlan(options.cwd, prepared.files);
     const existing = existingOutputs(prepared.files, inspected);
@@ -272,7 +342,7 @@ export async function runGenerate(
     const planned = mergeStructuredFiles(prepared.files, inspected, recorded.paths, adopt);
 
     if (options.dryRun) {
-      const files: GenerateResult['files'] = [];
+      const files: GenerateFileStatus[] = [];
       for (const file of planned) {
         // Compare bytes: decoded text can collapse an invalid byte and a genuine
         // U+FFFD to the same string, reporting "unchanged" for a file that needs
@@ -284,23 +354,18 @@ export async function runGenerate(
           status: matches ? 'unchanged' : 'would-write',
         });
       }
-      return {
-        ok: true,
-        target: prepared.source.target,
-        mode: prepared.source.mode,
-        activePersona: prepared.source.active,
-        notLive: prepared.source.notLive,
-        dryRun: true,
-        adopted,
-        personas,
+      return assembleResult(
+        prepared,
+        recorded.lockfile,
         files,
-        removed: orphans.map((orphan) => ({
+        orphans.map((orphan) => ({
           path: orphan.entry.path,
           status:
             orphan.action === 'remove' ? ('would-remove' as const) : ('would-update' as const),
         })),
-        warnings: prepared.warnings,
-      };
+        adopted,
+        true,
+      );
     }
 
     const removed = await removeOrphans(options.cwd, orphans);
@@ -310,18 +375,13 @@ export async function runGenerate(
     } catch (error) {
       throw commitFailure(error, removed);
     }
-    return {
-      ok: true,
-      target: prepared.source.target,
-      mode: prepared.source.mode,
-      activePersona: prepared.source.active,
-      notLive: prepared.source.notLive,
-      dryRun: false,
+    return assembleResult(
+      prepared,
+      recorded.lockfile,
+      committed.statuses,
+      removed.sort((a, b) => compareCodepoints(a.path, b.path)),
       adopted,
-      personas,
-      files: committed.statuses,
-      removed: removed.sort((a, b) => compareCodepoints(a.path, b.path)),
-      warnings: prepared.warnings,
-    };
+      false,
+    );
   });
 }

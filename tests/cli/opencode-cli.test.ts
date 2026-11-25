@@ -45,6 +45,30 @@ function arrayOf<T>(value: Record<string, unknown>, key: string): T[] {
   return array as T[];
 }
 
+type JsonTarget = {
+  target: string;
+  files: Array<{ path: string; status: string }>;
+  drift: Array<{ path: string; kind: string; code: string }>;
+};
+
+/** Every planned path across every target and the run-level lockfile. */
+function filesOf(value: Record<string, unknown>): Array<{ path: string; status: string }> {
+  return [
+    ...arrayOf<JsonTarget>(value, 'targets').flatMap((target) => target.files),
+    ...arrayOf<{ path: string; status: string }>(value, 'files'),
+  ].sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+}
+
+/** Every drift item across every target and the run, in path order. */
+function driftOf(
+  value: Record<string, unknown>,
+): Array<{ path: string; kind: string; code: string }> {
+  return [
+    ...arrayOf<JsonTarget>(value, 'targets').flatMap((target) => target.drift),
+    ...arrayOf<{ path: string; kind: string; code: string }>(value, 'drift'),
+  ].sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+}
+
 describe('the built CLI on the opencode target', () => {
   beforeAll(async () => {
     await execFileAsync(NPM, ['run', 'build'], { cwd: ROOT, timeout: 180_000 });
@@ -58,7 +82,7 @@ describe('the built CLI on the opencode target', () => {
       expect(result.code).toBe(1);
       const body = parseObject(result.stdout);
       expect(body).toMatchObject({
-        schemaVersion: 1,
+        schemaVersion: 2,
         command: 'generate',
         ok: false,
         exitCode: 1,
@@ -89,9 +113,7 @@ describe('the built CLI on the opencode target', () => {
       expect(drifted.code).toBe(1);
       const body = parseObject(drifted.stdout);
       expect(body).toMatchObject({ ok: false, exitCode: 1, code: 'F007_DRIFT' });
-      expect(arrayOf<{ path: string }>(body, 'drift').map((item) => item.path)).toContain(
-        '.opencode/agents/builder.md',
-      );
+      expect(driftOf(body).map((item) => item.path)).toContain('.opencode/agents/builder.md');
       // `check` drift is a result, not a typed error: stdout is the one JSON
       // document and stderr is empty, so a consumer reads the payload only.
       expect(drifted.stderr).toBe('');
@@ -107,16 +129,14 @@ describe('the built CLI on the opencode target', () => {
       expect(generated.code).toBe(0);
       const body = parseObject(generated.stdout);
       expect(body).toMatchObject({
-        schemaVersion: 1,
+        schemaVersion: 2,
         command: 'generate',
         ok: true,
         exitCode: 0,
-        target: 'opencode',
-        mode: 'profile',
-        activePersona: 'reviewer',
         dryRun: false,
+        targets: [{ target: 'opencode', mode: 'profile', activePersona: 'reviewer' }],
       });
-      const files = arrayOf<{ path: string }>(body, 'files').map((file) => file.path);
+      const files = filesOf(body).map((file) => file.path);
       expect(files).toContain('.opencode/agents/reviewer.md');
       expect(files).not.toContain('.opencode/agents/builder.md');
       expect(files).toContain('opencode.jsonc');
@@ -125,8 +145,7 @@ describe('the built CLI on the opencode target', () => {
       expect(clean.code).toBe(0);
       expect(parseObject(clean.stdout)).toMatchObject({
         ok: true,
-        mode: 'profile',
-        activePersona: 'reviewer',
+        targets: [{ mode: 'profile', activePersona: 'reviewer' }],
       });
     } finally {
       await repo.cleanup();
@@ -157,7 +176,7 @@ describe('the built CLI on the opencode target', () => {
       expect(result.code).toBe(1);
       const body = parseObject(result.stdout);
       expect(body['code']).toBe('F007_DRIFT');
-      const drift = arrayOf<{ code: string; path: string }>(body, 'drift');
+      const drift = driftOf(body);
       expect(drift[0]).toMatchObject({
         code: 'W107_OUTSIDE_OWNERSHIP',
         path: '.opencode/skills/secure-review/scripts/a-extra.sh',
@@ -216,8 +235,8 @@ describe('the built CLI on the opencode target', () => {
       const result = await runCli(repo.root, ['generate', '--dry-run', '--json']);
       expect(result.code).toBe(0);
       const body = parseObject(result.stdout);
-      expect(body).toMatchObject({ dryRun: true, target: 'opencode' });
-      const files = arrayOf<{ path: string; status: string }>(body, 'files');
+      expect(body).toMatchObject({ dryRun: true, targets: [{ target: 'opencode' }] });
+      const files = filesOf(body);
       expect(files.length).toBeGreaterThan(0);
       expect(files.every((file) => file.status === 'would-write')).toBe(true);
       expect(files.some((file) => file.path === 'opencode.jsonc')).toBe(false);

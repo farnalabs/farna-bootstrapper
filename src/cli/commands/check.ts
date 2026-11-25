@@ -13,7 +13,7 @@ import { FarnaError } from '../../core/errors.js';
 import { decodeUtf8, readBoundedBytes } from '../../core/fs.js';
 import { compareCodepoints } from '../../core/json.js';
 import { assertRealDirectory, containedTarget, lstatOrUndefined } from '../../core/paths.js';
-import { readLockfile } from '../../lock/lockfile.js';
+import { type RenderedFile, readLockfile } from '../../lock/lockfile.js';
 import { verifyRendererIdentity } from '../../render/identity.js';
 import type { RenderTarget } from '../../render/port.js';
 import { prepareRender } from '../../render/prepare.js';
@@ -40,18 +40,35 @@ export type CheckOptions = {
   persona?: string;
 };
 
-export type CheckResult = {
-  ok: boolean;
+/** One configured target's comparison. */
+export type CheckTargetResult = {
   target: string;
   mode: RenderMode;
   activePersona: string | null;
   /** Personas resolved but not live. Empty in agent mode. */
   notLive: string[];
-  exitCode: 0 | typeof EXIT.drift;
   checked: string[];
+  drift: DriftItem[];
+};
+
+export type CheckResult = {
+  ok: boolean;
+  exitCode: 0 | typeof EXIT.drift;
+  /** One entry per configured target, in target-id order. */
+  targets: CheckTargetResult[];
+  /** Run-level managed paths outside any target (the lockfile). */
+  checked: string[];
+  /** Run-level drift outside any target: the lockfile digest item. */
   drift: DriftItem[];
   warnings: Warning[];
 };
+
+/** Every drift item, across every target and the run, in path order. */
+export function allCheckDrift(result: CheckResult): DriftItem[] {
+  return [...result.targets.flatMap((target) => target.drift), ...result.drift].sort((a, b) =>
+    compareCodepoints(a.path, b.path),
+  );
+}
 
 /** The detail `check` prints for a whole file whose bytes changed. */
 const MODIFIED_DETAIL = 'content differs from a fresh render';
@@ -130,33 +147,26 @@ export async function runCheck(
       );
     }
   }
-  const drift: DriftItem[] = [];
-
   // A source change that renders no different byte — an edit to a persona that
   // is not live, a rule only that persona declares — is still a change to the
   // committed record. Comparing the digest is what makes it visible.
   const digestChanged =
     lockfile?.configDigest !== undefined && lockfile.configDigest !== prepared.configDigest;
 
-  for (const file of prepared.files) {
-    if (file.path === LOCK_PATH && digestChanged) {
-      // Reported below as the source-digest item, which names the cause.
-      continue;
-    }
+  /** Compare one planned artefact against the working tree. */
+  async function compareFile(file: RenderedFile): Promise<DriftItem | undefined> {
     const absolute = await containedTarget(repoRoot, file.path);
     const stats = await lstatOrUndefined(absolute, file.path);
     if (stats === undefined) {
-      drift.push({ code: DRIFT_CODE, path: file.path, kind: 'missing', detail: MISSING_DETAIL });
-      continue;
+      return { code: DRIFT_CODE, path: file.path, kind: 'missing', detail: MISSING_DETAIL };
     }
     if (!stats.isFile() || stats.isSymbolicLink()) {
-      drift.push({
+      return {
         code: DRIFT_CODE,
         path: file.path,
         kind: 'modified',
         detail: NOT_A_FILE_DETAIL,
-      });
-      continue;
+      };
     }
 
     const ownedKeys = structuredOwnedKeys(file.path);
@@ -175,24 +185,23 @@ export async function runCheck(
         if (!(error instanceof FarnaError)) {
           throw error;
         }
-        drift.push({
+        return {
           code: DRIFT_CODE,
           path: file.path,
           kind: 'modified',
           detail: 'structured file no longer parses as a JSON object',
-        });
-        continue;
+        };
       }
       const generated = parseStructuredDocument(file.bytes, file.path);
       if (existingOwned !== canonicalOwnedSubset(generated, ownedKeys)) {
-        drift.push({
+        return {
           code: DRIFT_CODE,
           path: file.path,
           kind: 'modified',
           detail: `owned key(s) ${ownedKeys.join(', ')} differ from a fresh render`,
-        });
+        };
       }
-      continue;
+      return undefined;
     }
 
     const existing = await readBoundedBytes(absolute, file.path, {
@@ -200,22 +209,71 @@ export async function runCheck(
       maxBytes: MANAGED_FILE_MAX_BYTES,
     });
     if (!existing.equals(Buffer.from(file.bytes, 'utf8'))) {
-      drift.push({
+      return {
         code: DRIFT_CODE,
         path: file.path,
         kind: 'modified',
         detail: MODIFIED_DETAIL,
-      });
+      };
     }
+    return undefined;
   }
 
+  // Every configured target is compared in its own section. A target's own
+  // artefacts, its own skill-tree scan and its own mode stay together, so a
+  // mixed run never has to be untangled by the reader.
+  const targets: CheckTargetResult[] = [];
+  for (const target of prepared.targets) {
+    const drift: DriftItem[] = [];
+    for (const file of target.files) {
+      const item = await compareFile(file);
+      if (item !== undefined) {
+        drift.push(item);
+      }
+    }
+    if (target.source.mode === MODE_PROFILE) {
+      const planned = new Set(target.files.map((file) => file.path));
+      const recordedEntries = lockfile?.targets[target.source.target]?.files ?? [];
+      for (const extra of await findSkillTreeExtras(repoRoot, planned, recordedEntries)) {
+        drift.push({
+          code: OUTSIDE_OWNERSHIP_CODE,
+          path: extra.path,
+          kind: 'unexpected',
+          detail: extra.symbolicLink
+            ? 'an unrecorded symbolic link is inside a managed skill directory'
+            : 'an unrecorded file is inside a managed skill directory',
+        });
+      }
+    }
+    targets.push({
+      target: target.source.target,
+      mode: target.source.mode,
+      activePersona: target.source.active,
+      notLive: target.source.notLive,
+      checked: target.files.map((file) => file.path),
+      drift,
+    });
+  }
+
+  // The lockfile belongs to the run, not to one target: compare its bytes once
+  // unless the digest changed, in which case the digest item reports the cause.
+  const runDrift: DriftItem[] = [];
+  const freshLockfile = prepared.files.find((file) => file.path === LOCK_PATH);
   if (digestChanged) {
-    drift.push({
+    runDrift.push({
       code: DRIFT_CODE,
       path: LOCK_PATH,
       kind: 'modified',
       detail: 'the source or config changed since the lockfile was written; re-run generate',
     });
+  } else if (lockfile?.readVersion !== 1 && freshLockfile !== undefined) {
+    // A version 1 document is the migration case: `check` continues to pass on
+    // its bytes until the next `generate` rewrites them as version 2, so the
+    // format upgrade itself is never reported as drift.
+    const item = await compareFile(freshLockfile);
+    if (item !== undefined) {
+      runDrift.push(item);
+    }
   }
 
   const expected = new Set(prepared.files.map((file) => file.path));
@@ -223,43 +281,41 @@ export async function runCheck(
   // not it is still on disk: removing the last declaration must not leave a
   // live config that `check` calls clean. Only the lockfile can name it; the
   // on-disk scan is deliberately gone, because an unrecorded path is not ours.
-  const recorded = new Set(lockfile?.files.map((file) => file.path) ?? []);
-  for (const path of recorded) {
-    if (expected.has(path)) {
-      continue;
-    }
-    drift.push({
-      code: DRIFT_CODE,
-      path,
-      kind: 'unexpected',
-      detail: 'path is recorded in the lockfile but no longer produced by this source',
-    });
-  }
-
-  if (prepared.source.mode === MODE_PROFILE) {
-    const recordedEntries = lockfile?.files ?? [];
-    for (const extra of await findSkillTreeExtras(repoRoot, expected, recordedEntries)) {
-      drift.push({
-        code: OUTSIDE_OWNERSHIP_CODE,
-        path: extra.path,
+  // The comparison is against the flat union of recorded files, so a path that
+  // another target still produces is not drift; the item is reported under the
+  // target that recorded it.
+  for (const [targetId, entry] of Object.entries(lockfile?.targets ?? {})) {
+    for (const file of entry.files) {
+      if (expected.has(file.path)) {
+        continue;
+      }
+      const item: DriftItem = {
+        code: DRIFT_CODE,
+        path: file.path,
         kind: 'unexpected',
-        detail: extra.symbolicLink
-          ? 'an unrecorded symbolic link is inside a managed skill directory'
-          : 'an unrecorded file is inside a managed skill directory',
-      });
+        detail: 'path is recorded in the lockfile but no longer produced by this source',
+      };
+      const bucket = targets.find((target) => target.target === targetId);
+      if (bucket === undefined) {
+        runDrift.push(item);
+      } else {
+        bucket.drift.push(item);
+      }
     }
   }
 
-  drift.sort((a, b) => compareCodepoints(a.path, b.path));
+  for (const target of targets) {
+    target.drift.sort((a, b) => compareCodepoints(a.path, b.path));
+  }
+  runDrift.sort((a, b) => compareCodepoints(a.path, b.path));
+  const allDrift = [...targets.flatMap((target) => target.drift), ...runDrift];
+
   return {
-    ok: drift.length === 0,
-    target: prepared.source.target,
-    mode: prepared.source.mode,
-    activePersona: prepared.source.active,
-    notLive: prepared.source.notLive,
-    exitCode: drift.length === 0 ? EXIT.ok : EXIT.drift,
-    checked: prepared.files.map((file) => file.path),
-    drift,
+    ok: allDrift.length === 0,
+    exitCode: allDrift.length === 0 ? EXIT.ok : EXIT.drift,
+    targets,
+    checked: [LOCK_PATH],
+    drift: runDrift,
     warnings: prepared.warnings,
   };
 }

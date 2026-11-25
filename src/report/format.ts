@@ -57,105 +57,155 @@ export function formatInit(result: InitResult): string {
   return `${lines.join('\n')}\n`;
 }
 
-export function formatGenerate(result: GenerateResult): string {
-  const pending = result.files.filter(
-    (file) => file.status === 'would-write' || file.status === 'written',
-  ).length;
-  const unchanged = result.files.length - pending;
-  const removals = result.removed.filter(
-    (entry) => entry.status === 'removed' || entry.status === 'would-remove',
-  ).length;
-  const updates = result.removed.filter(
-    (entry) => entry.status === 'updated' || entry.status === 'would-update',
-  ).length;
-  const updated = updates === 0 ? '' : `, ${updates}${result.dryRun ? ' would be' : ''} updated`;
-  // A dry-run says how many files it WOULD write, never the size of the plan:
-  // "would write 3 file(s)" when every file already matches is a false claim.
-  const summary = result.dryRun
-    ? `would write ${pending} file(s), ${unchanged} unchanged, ${removals} would be removed${updated}`
-    : `managed ${pending} file(s), ${unchanged} unchanged, ${removals} removed${updated}`;
-  const lines = ['farna-bootstrapper generate'];
-  lines.push(`  target ${result.target} (${modeLabel(result.mode, result.activePersona)})`);
-  const notLive = notLiveLine(result.mode, result.notLive);
-  if (notLive !== undefined) {
-    lines.push(notLive);
+/**
+ * The run-level paths (the lockfile, and any orphan whose recording target is no
+ * longer configured) belong to no target, so they follow the target sections
+ * under their own heading rather than being attributed to one of them.
+ */
+function runLevelLines(
+  files: readonly { path: string; status: string }[],
+  removed: readonly { path: string; status: string }[],
+): string[] {
+  if (files.length === 0 && removed.length === 0) {
+    return [];
   }
-  lines.push(`  personas ${result.personas.map(escapeControlCharacters).join(', ')}`);
-  lines.push(`  ${summary}`);
-  for (const file of result.files) {
+  const lines = ['  run-level'];
+  for (const file of files) {
     lines.push(`  ${file.status.padEnd(STATUS_WIDTH)} ${escapeControlCharacters(file.path)}`);
   }
-  for (const orphan of result.removed) {
+  for (const orphan of removed) {
     lines.push(`  ${orphan.status.padEnd(STATUS_WIDTH)} ${escapeControlCharacters(orphan.path)}`);
   }
+  return lines;
+}
+
+export function formatGenerate(result: GenerateResult): string {
+  const lines = ['farna-bootstrapper generate'];
+  for (const target of result.targets) {
+    const pending = target.files.filter(
+      (file) => file.status === 'would-write' || file.status === 'written',
+    ).length;
+    const unchanged = target.files.length - pending;
+    const removals = target.removed.filter(
+      (entry) => entry.status === 'removed' || entry.status === 'would-remove',
+    ).length;
+    const updates = target.removed.filter(
+      (entry) => entry.status === 'updated' || entry.status === 'would-update',
+    ).length;
+    const updated = updates === 0 ? '' : `, ${updates}${result.dryRun ? ' would be' : ''} updated`;
+    // A dry-run says how many files it WOULD write, never the size of the plan:
+    // "would write 3 file(s)" when every file already matches is a false claim.
+    // Each target's summary counts only that target's files.
+    const summary = result.dryRun
+      ? `would write ${pending} file(s), ${unchanged} unchanged, ${removals} would be removed${updated}`
+      : `managed ${pending} file(s), ${unchanged} unchanged, ${removals} removed${updated}`;
+    lines.push(`  target ${target.target} (${modeLabel(target.mode, target.activePersona)})`);
+    const notLive = notLiveLine(target.mode, target.notLive);
+    if (notLive !== undefined) {
+      lines.push(notLive);
+    }
+    lines.push(`  personas ${target.personas.map(escapeControlCharacters).join(', ')}`);
+    lines.push(`  ${summary}`);
+    for (const file of target.files) {
+      lines.push(`  ${file.status.padEnd(STATUS_WIDTH)} ${escapeControlCharacters(file.path)}`);
+    }
+    for (const orphan of target.removed) {
+      lines.push(`  ${orphan.status.padEnd(STATUS_WIDTH)} ${escapeControlCharacters(orphan.path)}`);
+    }
+  }
+  lines.push(...runLevelLines(result.files, result.removed));
   lines.push(...warningLines(result.warnings));
   return `${lines.join('\n')}\n`;
 }
 
 export function formatCheck(result: CheckResult): string {
   const lines = ['farna-bootstrapper check'];
-  lines.push(`  target ${result.target} (${modeLabel(result.mode, result.activePersona)})`);
-  const notLive = notLiveLine(result.mode, result.notLive);
-  if (notLive !== undefined) {
-    lines.push(notLive);
+  for (const target of result.targets) {
+    lines.push(`  target ${target.target} (${modeLabel(target.mode, target.activePersona)})`);
+    const notLive = notLiveLine(target.mode, target.notLive);
+    if (notLive !== undefined) {
+      lines.push(notLive);
+    }
+    if (target.drift.length === 0) {
+      lines.push(`  ${target.checked.length} managed file(s) match a fresh render`);
+    } else {
+      lines.push(`  ${target.drift.length} drifted path(s)`);
+      for (const item of target.drift) {
+        lines.push(
+          `  ${item.kind.padEnd(STATUS_WIDTH)} ${escapeControlCharacters(item.path)} (${item.detail})`,
+        );
+      }
+    }
   }
-  if (result.ok) {
-    lines.push(`  ${result.checked.length} managed file(s) match a fresh render`);
-    lines.push(...warningLines(result.warnings));
-    lines.push('', 'check: clean');
-    return `${lines.join('\n')}\n`;
-  }
-  lines.push(`  ${result.drift.length} drifted path(s)`);
-  for (const item of result.drift) {
-    lines.push(
-      `  ${item.kind.padEnd(STATUS_WIDTH)} ${escapeControlCharacters(item.path)} (${item.detail})`,
-    );
+  if (result.drift.length === 0) {
+    if (result.checked.length > 0) {
+      lines.push('  run-level');
+      lines.push(`  ${result.checked.length} managed file(s) match a fresh render`);
+    }
+  } else {
+    lines.push('  run-level');
+    lines.push(`  ${result.drift.length} drifted path(s)`);
+    for (const item of result.drift) {
+      lines.push(
+        `  ${item.kind.padEnd(STATUS_WIDTH)} ${escapeControlCharacters(item.path)} (${item.detail})`,
+      );
+    }
   }
   lines.push(...warningLines(result.warnings));
-  lines.push('', 'check: drift');
+  lines.push('', result.ok ? 'check: clean' : 'check: drift');
   return `${lines.join('\n')}\n`;
 }
 
 /**
  * The validation report. Every check listed here ran to completion: `doctor`
  * fails at the first error and never prints a partial success, so a check name
- * in this section is evidence the check did not fail.
+ * in this section is evidence the check did not fail. Each target has its own
+ * section, because its mode, live persona and counts are properties of that
+ * target rather than of the run.
  */
 export function formatDoctor(result: DoctorResult): string {
   const lines = ['farna-bootstrapper doctor'];
   lines.push(`  source    ${escapeControlCharacters(result.configPath)}`);
-  lines.push(
-    `  target    ${escapeControlCharacters(result.target)} (${modeLabel(result.mode, result.activePersona)})`,
-  );
-  lines.push(`  personas  ${result.counts.personas} in source, ${result.counts.live} live`);
-  const notLive = notLiveLine(result.mode, result.notLive);
-  if (notLive !== undefined) {
-    lines.push(notLive);
+  for (const target of result.targets) {
+    lines.push(
+      `  target    ${escapeControlCharacters(target.target)} (${modeLabel(target.mode, target.activePersona)})`,
+    );
+    lines.push(`  personas  ${target.counts.personas} in source, ${target.counts.live} live`);
+    const notLive = notLiveLine(target.mode, target.notLive);
+    if (notLive !== undefined) {
+      lines.push(`    ${notLive.trimStart()}`);
+    }
+    lines.push(`  checks    ${target.checks.length} ok`);
   }
-  lines.push(`  checks    ${result.checks.length} ok`);
   lines.push(`  warnings  ${result.warnings.length}`);
 
   lines.push('', 'checks');
-  for (const check of result.checks) {
-    lines.push(`  ok  ${check.name.padEnd(36)}${escapeControlCharacters(check.detail)}`);
+  for (const target of result.targets) {
+    lines.push(`  ${escapeControlCharacters(target.target)}`);
+    for (const check of target.checks) {
+      lines.push(`    ok  ${check.name.padEnd(36)}${escapeControlCharacters(check.detail)}`);
+    }
   }
 
   lines.push('', 'personas');
-  for (const persona of result.personas) {
-    lines.push(`  ${escapeControlCharacters(persona.id)}`);
-    lines.push(`    chain      ${persona.chain.map(escapeControlCharacters).join(' -> ')}`);
-    lines.push(`    mode       ${persona.mode ?? 'subagent (default)'}`);
-    lines.push(
-      `    model      ${persona.model === null ? '<none>' : escapeControlCharacters(persona.model)}`,
-    );
-    for (const resource of persona.resources) {
-      const from =
-        resource.fromPersona === persona.id
-          ? ''
-          : ` (from ${escapeControlCharacters(resource.fromPersona)}, rank ${resource.rank})`;
+  for (const target of result.targets) {
+    lines.push(`  ${escapeControlCharacters(target.target)}`);
+    for (const persona of target.personas) {
+      lines.push(`    ${escapeControlCharacters(persona.id)}`);
+      lines.push(`      chain      ${persona.chain.map(escapeControlCharacters).join(' -> ')}`);
+      lines.push(`      mode       ${persona.mode ?? 'subagent (default)'}`);
       lines.push(
-        `    resource   ${`${resource.kind}/${resource.id}`.padEnd(28)}${escapeControlCharacters(resource.path)}${from}`,
+        `      model      ${persona.model === null ? '<none>' : escapeControlCharacters(persona.model)}`,
       );
+      for (const resource of persona.resources) {
+        const from =
+          resource.fromPersona === persona.id
+            ? ''
+            : ` (from ${escapeControlCharacters(resource.fromPersona)}, rank ${resource.rank})`;
+        lines.push(
+          `      resource   ${`${resource.kind}/${resource.id}`.padEnd(28)}${escapeControlCharacters(resource.path)}${from}`,
+        );
+      }
     }
   }
 

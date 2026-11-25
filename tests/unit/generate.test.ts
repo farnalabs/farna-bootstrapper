@@ -6,19 +6,39 @@ import { formatGenerate } from '../../src/report/format.js';
 import { FakeRenderTarget } from '../support/fake-renderer.js';
 import { createTempRepo, hashTree, readText } from '../support/temp-repo.js';
 
+type GeneratedShape = {
+  targets: Array<{
+    personas: string[];
+    files: Array<{ path: string; status: string }>;
+  }>;
+  files: Array<{ path: string; status: string }>;
+};
+
+/** Every planned path across every target and the run-level lockfile, in path order. */
+function allFiles(result: GeneratedShape): Array<{ path: string; status: string }> {
+  return [...result.targets.flatMap((target) => target.files), ...result.files].sort((a, b) =>
+    a.path < b.path ? -1 : a.path > b.path ? 1 : 0,
+  );
+}
+
+/** Every live persona across every target. */
+function allPersonas(result: GeneratedShape): string[] {
+  return result.targets.flatMap((target) => target.personas);
+}
+
 describe('generate with the injected renderer', () => {
   it('writes one agent file per persona with its own rule text', async () => {
     const repo = await createTempRepo();
     try {
       const result = await runGenerate({ cwd: repo.root, dryRun: false }, new FakeRenderTarget());
 
-      expect(result.personas).toEqual(['builder', 'reviewer']);
-      expect(result.files.map((file) => file.path)).toEqual([
+      expect(allPersonas(result)).toEqual(['builder', 'reviewer']);
+      expect(allFiles(result).map((file) => file.path)).toEqual([
         '.claude/agents/builder.md',
         '.claude/agents/reviewer.md',
         '.farna/lock.json',
       ]);
-      expect(result.files.every((file) => file.status === 'written')).toBe(true);
+      expect(allFiles(result).every((file) => file.status === 'written')).toBe(true);
 
       const builder = await readText(repo.root, '.claude/agents/builder.md');
       const reviewer = await readText(repo.root, '.claude/agents/reviewer.md');
@@ -45,19 +65,25 @@ describe('generate with the injected renderer', () => {
       const lock = JSON.parse(await readText(repo.root, '.farna/lock.json')) as {
         schemaVersion: number;
         renderer: { name: string; version: string };
-        personas: Array<{ id: string }>;
-        files: Array<{ path: string; sha256: string; size: number }>;
+        targets: Record<
+          string,
+          {
+            personas: Array<{ id: string }>;
+            files: Array<{ path: string; sha256: string; size: number }>;
+          }
+        >;
       };
-      expect(lock.schemaVersion).toBe(1);
+      expect(lock.schemaVersion).toBe(2);
       expect(lock.renderer.name).toBe('fake-renderer');
       expect(lock.renderer.version).toBe('0.0.0-test');
-      expect(lock.personas.map((persona) => persona.id)).toEqual(['builder', 'reviewer']);
-      expect(lock.files.map((file) => file.path)).toEqual([
+      const target = lock.targets['claudecode'];
+      expect(target?.personas.map((persona) => persona.id)).toEqual(['builder', 'reviewer']);
+      expect(target?.files.map((file) => file.path)).toEqual([
         '.claude/agents/builder.md',
         '.claude/agents/reviewer.md',
       ]);
-      expect(lock.files.every((file) => file.sha256.length === 64)).toBe(true);
-      expect(lock.files.every((file) => file.size > 0)).toBe(true);
+      expect(target?.files.every((file) => file.sha256.length === 64)).toBe(true);
+      expect(target?.files.every((file) => file.size > 0)).toBe(true);
     } finally {
       await repo.cleanup();
     }
@@ -82,12 +108,12 @@ describe('generate with the injected renderer', () => {
       const before = await hashTree(repo.root);
       const result = await runGenerate({ cwd: repo.root, dryRun: true }, new FakeRenderTarget());
       expect(result.dryRun).toBe(true);
-      expect(result.files.map((file) => file.path)).toEqual([
+      expect(allFiles(result).map((file) => file.path)).toEqual([
         '.claude/agents/builder.md',
         '.claude/agents/reviewer.md',
         '.farna/lock.json',
       ]);
-      expect(result.files.every((file) => file.status === 'would-write')).toBe(true);
+      expect(allFiles(result).every((file) => file.status === 'would-write')).toBe(true);
       expect(await hashTree(repo.root)).toBe(before);
     } finally {
       await repo.cleanup();
@@ -99,11 +125,11 @@ describe('generate with the injected renderer', () => {
     try {
       await runGenerate({ cwd: repo.root, dryRun: false }, new FakeRenderTarget());
       const clean = await runGenerate({ cwd: repo.root, dryRun: true }, new FakeRenderTarget());
-      expect(formatGenerate(clean)).toContain('would write 0 file(s), 3 unchanged');
+      expect(formatGenerate(clean)).toContain('would write 0 file(s), 2 unchanged');
 
       await appendFile(join(repo.root, '.claude/agents/reviewer.md'), ' ', 'utf8');
       const drifted = await runGenerate({ cwd: repo.root, dryRun: true }, new FakeRenderTarget());
-      expect(formatGenerate(drifted)).toContain('would write 1 file(s), 2 unchanged');
+      expect(formatGenerate(drifted)).toContain('would write 1 file(s), 1 unchanged');
     } finally {
       await repo.cleanup();
     }
@@ -115,7 +141,7 @@ describe('generate with the injected renderer', () => {
       await runGenerate({ cwd: repo.root, dryRun: false }, new FakeRenderTarget());
       const before = await hashTree(repo.root);
       const result = await runGenerate({ cwd: repo.root, dryRun: true }, new FakeRenderTarget());
-      expect(result.files.map((file) => file.status)).toEqual([
+      expect(allFiles(result).map((file) => file.status)).toEqual([
         'unchanged',
         'unchanged',
         'unchanged',
@@ -133,7 +159,7 @@ describe('generate with the injected renderer', () => {
       await appendFile(join(repo.root, '.claude/agents/reviewer.md'), ' ', 'utf8');
       const before = await hashTree(repo.root);
       const result = await runGenerate({ cwd: repo.root, dryRun: true }, new FakeRenderTarget());
-      const changed = result.files.filter((file) => file.status === 'would-write');
+      const changed = allFiles(result).filter((file) => file.status === 'would-write');
       expect(changed.map((file) => file.path)).toEqual(['.claude/agents/reviewer.md']);
       expect(await hashTree(repo.root)).toBe(before);
     } finally {
@@ -148,7 +174,7 @@ describe('generate with the injected renderer', () => {
       const source = await readFile(personaPath, 'utf8');
       await writeFile(personaPath, source.replace('model: standard\n', ''), 'utf8');
       const result = await runGenerate({ cwd: repo.root, dryRun: false }, new FakeRenderTarget());
-      expect(result.personas).toEqual(['builder', 'reviewer']);
+      expect(allPersonas(result)).toEqual(['builder', 'reviewer']);
       const builder = await readText(repo.root, '.claude/agents/builder.md');
       expect(builder).not.toContain('model:');
     } finally {

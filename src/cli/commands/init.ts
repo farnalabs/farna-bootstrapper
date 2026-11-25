@@ -6,6 +6,7 @@ import {
   COMMANDS_DIR,
   CONFIG_FILE,
   CONFIG_PATH,
+  CONFIG_SCHEMA_VERSION,
   DEFAULT_TARGET,
   GITATTRIBUTES_LINES,
   GITIGNORE_LINES,
@@ -23,7 +24,6 @@ import {
   ROOT_DIR,
   RULE_FILE_EXT,
   RULES_DIR,
-  SCHEMA_VERSION,
   SKILL_FILE_NAME,
   SKILLS_DIR,
   STAGING_INFIX,
@@ -53,7 +53,7 @@ export type InitResult = {
 export function configTemplate(): string {
   return `{
   // Farna Bootstrapper source root. Generated files are committed.
-  "schemaVersion": ${SCHEMA_VERSION},
+  "schemaVersion": ${CONFIG_SCHEMA_VERSION},
   "targets": {
     "${DEFAULT_TARGET}": {}
   }

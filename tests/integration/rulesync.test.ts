@@ -1,7 +1,7 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { runCheck } from '../../src/cli/commands/check.js';
+import { allCheckDrift, runCheck } from '../../src/cli/commands/check.js';
 import { runGenerate } from '../../src/cli/commands/generate.js';
 import { installedRendererIdentity } from '../../src/render/identity.js';
 import { RENDERER_PIN, UpstreamRenderTarget } from '../../src/render/upstream.js';
@@ -34,11 +34,9 @@ describe('rulesync integration', () => {
         { cwd: repo.root, dryRun: false },
         new UpstreamRenderTarget(),
       );
-      expect(result.files.map((file) => file.path)).toEqual([
-        '.claude/agents/builder.md',
-        '.claude/agents/reviewer.md',
-        '.farna/lock.json',
-      ]);
+      expect(
+        [...(result.targets[0]?.files ?? []), ...result.files].map((file) => file.path).sort(),
+      ).toEqual(['.claude/agents/builder.md', '.claude/agents/reviewer.md', '.farna/lock.json']);
 
       const builder = await readText(repo.root, '.claude/agents/builder.md');
       const reviewer = await readText(repo.root, '.claude/agents/reviewer.md');
@@ -124,7 +122,11 @@ describe('rulesync integration', () => {
         { cwd: repo.root, dryRun: false },
         new UpstreamRenderTarget(),
       );
-      expect(result.files.every((file) => file.status === 'written')).toBe(true);
+      expect(
+        [...(result.targets[0]?.files ?? []), ...result.files].every(
+          (file) => file.status === 'written',
+        ),
+      ).toBe(true);
       const builder = await readText(repo.root, '.claude/agents/builder.md');
       expect(builder).toContain('name: builder');
       // The renderer changed the process working directory for its call; it
@@ -173,7 +175,9 @@ describe('rulesync integration', () => {
       const drifted = await runCheck(repo.root, new UpstreamRenderTarget());
       expect(drifted.ok).toBe(false);
       expect(drifted.exitCode).toBe(1);
-      expect(drifted.drift.map((item) => item.path)).toContain('.claude/agents/reviewer.md');
+      expect(allCheckDrift(drifted).map((item) => item.path)).toContain(
+        '.claude/agents/reviewer.md',
+      );
       expect(await hashTree(repo.root)).not.toBe(before);
     } finally {
       await repo.cleanup();

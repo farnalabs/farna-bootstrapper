@@ -573,7 +573,7 @@ describe('source loader', () => {
       const source = await loadSource(repo.root);
       expect(source.personas.map((persona) => persona.id)).not.toContain('.DS_Store');
       const result = await runGenerate({ cwd: repo.root, dryRun: false }, new FakeRenderTarget());
-      expect(result.personas).toEqual(['builder', 'builder-python', 'reviewer']);
+      expect(result.targets[0]?.personas).toEqual(['builder', 'builder-python', 'reviewer']);
     } finally {
       await repo.cleanup();
     }
@@ -594,7 +594,7 @@ describe('source loader', () => {
       expect(source.permissions).toEqual([]);
 
       const result = await runGenerate({ cwd: repo.root, dryRun: false }, new FakeRenderTarget());
-      expect(result.personas).toEqual([]);
+      expect(result.targets[0]?.personas).toEqual([]);
       const check = await runCheck(repo.root, new FakeRenderTarget());
       expect(check.ok).toBe(true);
     } finally {

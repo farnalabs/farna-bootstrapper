@@ -2,7 +2,7 @@ import { appendFile, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/pro
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { parseDocument } from 'yaml';
-import { runCheck } from '../../src/cli/commands/check.js';
+import { allCheckDrift, runCheck } from '../../src/cli/commands/check.js';
 import { runGenerate } from '../../src/cli/commands/generate.js';
 import { FarnaError } from '../../src/core/errors.js';
 import type { RenderRequest, RenderResult } from '../../src/render/port.js';
@@ -63,8 +63,10 @@ describe('opencode target', () => {
         { cwd: repo.root, dryRun: false },
         new UpstreamRenderTarget(),
       );
-      expect(result.target).toBe('opencode');
-      expect(result.files.map((file) => file.path)).toEqual([
+      expect(result.targets[0]?.target).toBe('opencode');
+      expect(
+        [...(result.targets[0]?.files ?? []), ...result.files].map((file) => file.path).sort(),
+      ).toEqual([
         '.farna/lock.json',
         '.opencode/agents/builder.md',
         '.opencode/agents/reviewer.md',
@@ -180,19 +182,24 @@ describe('opencode target', () => {
     const repo = await generated();
     try {
       const lock = JSON.parse(await readText(repo.root, '.farna/lock.json')) as {
-        target: string;
-        files: Array<{ path: string; sha256: string; size: number }>;
-        personas: Array<{ id: string; resources: Array<{ kind: string; id: string }> }>;
+        targets: Record<
+          string,
+          {
+            files: Array<{ path: string; sha256: string; size: number }>;
+            personas: Array<{ id: string; resources: Array<{ kind: string; id: string }> }>;
+          }
+        >;
         warnings: Array<{ code: string; capability?: string; message: string }>;
       };
-      expect(lock.target).toBe('opencode');
-      expect(lock.files.map((file) => file.path)).toEqual([
+      expect(Object.keys(lock.targets)).toEqual(['opencode']);
+      const target = lock.targets['opencode'];
+      expect(target?.files.map((file) => file.path)).toEqual([
         '.opencode/agents/builder.md',
         '.opencode/agents/reviewer.md',
       ]);
-      expect(lock.files.every((file) => /^[0-9a-f]{64}$/.test(file.sha256))).toBe(true);
+      expect(target?.files.every((file) => /^[0-9a-f]{64}$/.test(file.sha256))).toBe(true);
       expect(
-        lock.personas[0]?.resources.map((resource) => `${resource.kind}/${resource.id}`),
+        target?.personas[0]?.resources.map((resource) => `${resource.kind}/${resource.id}`),
       ).toEqual(['rule/house-style', 'permission/builder-default']);
       const codes = lock.warnings.map((entry) => entry.code);
       expect(codes).toContain('W112_PERMISSION_LOSSY');
@@ -323,12 +330,14 @@ describe('opencode target', () => {
       await appendFile(join(repo.root, '.opencode/agents/builder.md'), '\nmanual\n', 'utf8');
       let check = await runCheck(repo.root, new UpstreamRenderTarget());
       expect(check.ok).toBe(false);
-      expect(check.drift.map((item) => item.path)).toContain('.opencode/agents/builder.md');
+      expect(allCheckDrift(check).map((item) => item.path)).toContain(
+        '.opencode/agents/builder.md',
+      );
       await writeFile(join(repo.root, '.opencode/agents/builder.md'), agent, 'utf8');
 
       await appendFile(join(repo.root, '.farna/lock.json'), '\n', 'utf8');
       check = await runCheck(repo.root, new UpstreamRenderTarget());
-      expect(check.drift.map((item) => item.path)).toContain('.farna/lock.json');
+      expect(allCheckDrift(check).map((item) => item.path)).toContain('.farna/lock.json');
     } finally {
       await repo.cleanup();
     }
@@ -340,7 +349,7 @@ describe('opencode target', () => {
       const agent = await readFile(join(repo.root, '.opencode/agents/reviewer.md'), 'utf8');
       await rm(join(repo.root, '.opencode/agents/reviewer.md'));
       let check = await runCheck(repo.root, new UpstreamRenderTarget());
-      expect(check.drift.map((item) => [item.path, item.kind])).toEqual([
+      expect(allCheckDrift(check).map((item) => [item.path, item.kind])).toEqual([
         ['.opencode/agents/reviewer.md', 'missing'],
       ]);
       await writeFile(join(repo.root, '.opencode/agents/reviewer.md'), agent, 'utf8');
@@ -349,7 +358,7 @@ describe('opencode target', () => {
       await writeFile(join(repo.root, '.opencode/agents/extra.md'), 'stray\n', 'utf8');
       check = await runCheck(repo.root, new UpstreamRenderTarget());
       expect(check.ok).toBe(true);
-      expect(check.drift).toEqual([]);
+      expect(allCheckDrift(check)).toEqual([]);
     } finally {
       await repo.cleanup();
     }
@@ -371,7 +380,7 @@ describe('opencode target', () => {
       const check = await runCheck(repo.root, new UpstreamRenderTarget());
       expect(check.ok).toBe(true);
       expect(check.exitCode).toBe(0);
-      expect(check.drift).toEqual([]);
+      expect(allCheckDrift(check)).toEqual([]);
     } finally {
       await repo.cleanup();
     }
@@ -382,9 +391,13 @@ describe('opencode target', () => {
     try {
       const before = await readText(repo.root, '.farna/lock.json');
       const lock = JSON.parse(before) as {
-        files: Array<{ path: string; sha256: string; size: number }>;
+        targets: Record<string, { files: Array<{ path: string; sha256: string; size: number }> }>;
       };
-      lock.files.push({ path: 'opencode.jsonc', sha256: '0'.repeat(64), size: 0 });
+      const entry = lock.targets['opencode'];
+      if (entry === undefined) {
+        throw new Error('expected an opencode target entry');
+      }
+      entry.files.push({ path: 'opencode.jsonc', sha256: '0'.repeat(64), size: 0 });
       await writeFile(
         join(repo.root, '.farna/lock.json'),
         `${JSON.stringify(lock, null, 2)}\n`,
@@ -393,7 +406,7 @@ describe('opencode target', () => {
       await writeFile(join(repo.root, 'opencode.jsonc'), '{ "mcp": {} }\n', 'utf8');
       const check = await runCheck(repo.root, new UpstreamRenderTarget());
       expect(check.ok).toBe(false);
-      expect(check.drift).toContainEqual({
+      expect(allCheckDrift(check)).toContainEqual({
         code: 'F007_DRIFT',
         path: 'opencode.jsonc',
         kind: 'unexpected',
@@ -669,7 +682,7 @@ describe('opencode path guards', () => {
       await symlink(victim, path, 'file');
       const check = await runCheck(repo.root, new UpstreamRenderTarget());
       expect(check.ok).toBe(false);
-      expect(check.drift).toEqual([
+      expect(allCheckDrift(check)).toEqual([
         {
           code: 'F007_DRIFT',
           path: '.opencode/agents/reviewer.md',

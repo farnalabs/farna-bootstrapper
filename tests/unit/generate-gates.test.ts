@@ -277,7 +277,7 @@ describe('render gates', () => {
         'utf8',
       );
       const result = await runGenerate({ cwd: repo.root, dryRun: false }, new FakeRenderTarget());
-      expect(result.personas).toEqual(['builder', 'empty', 'reviewer']);
+      expect(result.targets[0]?.personas).toEqual(['builder', 'empty', 'reviewer']);
       const empty = await readText(repo.root, '.claude/agents/empty.md');
       expect(empty).toContain('name: empty');
       const check = await runCheck(repo.root, new FakeRenderTarget());
@@ -334,7 +334,7 @@ describe('render gates', () => {
         'utf8',
       );
       const result = await runGenerate({ cwd: repo.root, dryRun: false }, new FakeRenderTarget());
-      expect(result.personas).toEqual(['builder', 'reviewer']);
+      expect(result.targets[0]?.personas).toEqual(['builder', 'reviewer']);
 
       const builder = await readText(repo.root, '.claude/agents/builder.md');
       const reviewer = await readText(repo.root, '.claude/agents/reviewer.md');

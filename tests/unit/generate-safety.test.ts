@@ -64,14 +64,41 @@ class GatedRenderTarget implements RenderTarget {
   }
 }
 
-function parseLock(text: string): {
+type LockTargetDocument = {
   mode?: string;
   activePersona?: string | null;
   notLive?: string[];
-  configDigest?: string;
   files: Array<Record<string, unknown> & { path: string }>;
+};
+
+function parseLock(text: string): {
+  schemaVersion: number;
+  configDigest?: string;
+  targets: Record<string, LockTargetDocument>;
 } {
   return JSON.parse(text) as ReturnType<typeof parseLock>;
+}
+
+/** The single target entry of a one-target run. */
+function targetOf(document: ReturnType<typeof parseLock>): LockTargetDocument {
+  const [entry] = Object.values(document.targets);
+  if (entry === undefined) {
+    throw new Error('expected one target entry');
+  }
+  return entry;
+}
+
+/** Every generated path across every target entry. */
+function lockPaths(document: ReturnType<typeof parseLock>): string[] {
+  return Object.values(document.targets).flatMap((entry) => entry.files.map((file) => file.path));
+}
+
+/** Every removed path across every target and the run. */
+function allRemoved(result: {
+  targets: Array<{ removed: Array<{ path: string; status: string }> }>;
+  removed: Array<{ path: string; status: string }>;
+}): Array<{ path: string; status: string }> {
+  return [...result.targets.flatMap((target) => target.removed), ...result.removed];
 }
 
 async function writeLock(repo: TempRepo, pid: number | undefined): Promise<void> {
@@ -293,7 +320,7 @@ describe('removal honesty', () => {
     try {
       const lockPath = join(repo.root, '.farna/lock.json');
       const document = parseLock(await readFile(lockPath, 'utf8'));
-      document.files.push({ path: 'notes.txt', sha256: '0'.repeat(64), size: 0 });
+      targetOf(document).files.push({ path: 'notes.txt', sha256: '0'.repeat(64), size: 0 });
       await writeFile(lockPath, `${JSON.stringify(document, null, 2)}\n`, 'utf8');
 
       await setActive(repo, 'reviewer');
@@ -303,7 +330,7 @@ describe('removal honesty', () => {
       );
       expect(result.ok).toBe(true);
       const rewritten = parseLock(await readFile(lockPath, 'utf8'));
-      expect(rewritten.files.map((file) => file.path)).not.toContain('notes.txt');
+      expect(lockPaths(rewritten)).not.toContain('notes.txt');
     } finally {
       await repo.cleanup();
     }
@@ -313,8 +340,9 @@ describe('removal honesty', () => {
     const repo = await generated();
     try {
       const lock = await readLockfile(repo.root);
-      const first = lock?.files.find((file) => file.path === '.opencode/agents/builder.md');
-      const second = lock?.files.find((file) => file.path === '.opencode/commands/pytest.md');
+      const recordings = Object.values(lock?.targets ?? {}).flatMap((target) => target.files);
+      const first = recordings.find((file) => file.path === '.opencode/agents/builder.md');
+      const second = recordings.find((file) => file.path === '.opencode/commands/pytest.md');
       expect(first).toBeDefined();
       expect(second).toBeDefined();
       // A directory in the way fails the second removal after the first lands.
@@ -346,7 +374,9 @@ describe('removal honesty', () => {
     const repo = await generated();
     try {
       const lock = await readLockfile(repo.root);
-      const entry = lock?.files.find((file) => file.path === '.opencode/agents/builder.md');
+      const entry = Object.values(lock?.targets ?? {})
+        .flatMap((target) => target.files)
+        .find((file) => file.path === '.opencode/agents/builder.md');
       expect(entry).toBeDefined();
       // The file changes after the preflight would have run.
       await writeFile(
@@ -396,7 +426,7 @@ describe('removal honesty', () => {
         new UpstreamRenderTarget(),
       );
       expect(result.ok).toBe(true);
-      expect(result.removed).toContainEqual({ path: 'opencode.jsonc', status: 'updated' });
+      expect(allRemoved(result)).toContainEqual({ path: 'opencode.jsonc', status: 'updated' });
       const after = await readFile(configPath, 'utf8');
       expect(after).toContain('// keep me');
       expect(after).not.toContain('"mcp"');
@@ -404,7 +434,7 @@ describe('removal honesty', () => {
         theme: 'dark',
       });
       const lock = parseLock(await readFile(join(repo.root, '.farna/lock.json'), 'utf8'));
-      expect(lock.files.map((file) => file.path)).not.toContain('opencode.jsonc');
+      expect(lockPaths(lock)).not.toContain('opencode.jsonc');
 
       const check = await runCheck(repo.root, new UpstreamRenderTarget());
       expect(check.ok).toBe(true);
@@ -419,19 +449,32 @@ describe('legacy lockfiles', () => {
     const repo = await generated();
     try {
       const lockPath = join(repo.root, '.farna/lock.json');
-      const document = parseLock(await readFile(lockPath, 'utf8'));
-      delete document.mode;
-      delete document.activePersona;
-      delete document.notLive;
-      delete document.configDigest;
-      await writeFile(lockPath, `${JSON.stringify(document, null, 2)}\n`, 'utf8');
+      const document = JSON.parse(await readFile(lockPath, 'utf8')) as Record<string, unknown>;
+      const targets = document['targets'] as Record<string, Record<string, unknown>>;
+      const entry = targets['opencode'];
+      if (entry === undefined) {
+        throw new Error('expected an opencode target entry');
+      }
+      delete entry['mode'];
+      delete entry['activePersona'];
+      delete entry['notLive'];
+      delete document['configDigest'];
+      const version1 = {
+        schemaVersion: 1,
+        product: document['product'],
+        target: 'opencode',
+        ...entry,
+        renderer: document['renderer'],
+        warnings: document['warnings'],
+      };
+      await writeFile(lockPath, `${JSON.stringify(version1, null, 2)}\n`, 'utf8');
 
       await setActive(repo, 'reviewer');
       const result = await runGenerate(
         { cwd: repo.root, dryRun: false },
         new UpstreamRenderTarget(),
       );
-      const removed = result.removed.map((entry) => entry.path);
+      const removed = allRemoved(result).map((entry) => entry.path);
       expect(removed).toContain('.opencode/agents/builder.md');
       expect(removed).toContain('.opencode/commands/pytest.md');
       await expect(lstat(join(repo.root, '.opencode/agents/builder.md'))).rejects.toMatchObject({
@@ -439,9 +482,10 @@ describe('legacy lockfiles', () => {
       });
 
       const rewritten = parseLock(await readFile(lockPath, 'utf8'));
-      expect(rewritten.mode).toBe('profile');
-      expect(rewritten.activePersona).toBe('reviewer');
-      expect(rewritten.notLive).toEqual(['builder']);
+      expect(rewritten.schemaVersion).toBe(2);
+      expect(targetOf(rewritten).mode).toBe('profile');
+      expect(targetOf(rewritten).activePersona).toBe('reviewer');
+      expect(targetOf(rewritten).notLive).toEqual(['builder']);
     } finally {
       await repo.cleanup();
     }

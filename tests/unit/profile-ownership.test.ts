@@ -1,7 +1,7 @@
 import { appendFile, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { runCheck } from '../../src/cli/commands/check.js';
+import { allCheckDrift, runCheck } from '../../src/cli/commands/check.js';
 import { runGenerate } from '../../src/cli/commands/generate.js';
 import { runInit } from '../../src/cli/commands/init.js';
 import { OUTSIDE_OWNERSHIP_CODE } from '../../src/core/constants.js';
@@ -39,6 +39,16 @@ async function jsonOf(repo: TempRepo, path: string): Promise<Record<string, unkn
   return parseJsonc<Record<string, unknown>>(await readText(repo.root, path), { subject: path });
 }
 
+/** Every generated path across every target and the run-level lockfile. */
+function allGeneratedFiles(result: {
+  targets: Array<{ files: Array<{ path: string }> }>;
+  files: Array<{ path: string }>;
+}): string[] {
+  return [...result.targets.flatMap((target) => target.files), ...result.files]
+    .map((file) => file.path)
+    .sort();
+}
+
 describe('structured ownership of opencode.jsonc', () => {
   it("preserves the user's comments, whitespace and foreign keys across generate", async () => {
     const repo = await generated();
@@ -58,14 +68,18 @@ describe('structured ownership of opencode.jsonc', () => {
       await writeFile(join(repo.root, 'opencode.jsonc'), withComments, 'utf8');
 
       const foreignEdit = await runCheck(repo.root, new UpstreamRenderTarget());
-      expect(foreignEdit.drift).toEqual([]);
+      expect(allCheckDrift(foreignEdit)).toEqual([]);
       expect(foreignEdit.ok).toBe(true);
 
       const again = await runGenerate(
         { cwd: repo.root, dryRun: false },
         new UpstreamRenderTarget(),
       );
-      expect(again.files.find((file) => file.path === 'opencode.jsonc')?.status).toBe('unchanged');
+      expect(
+        [...(again.targets[0]?.files ?? []), ...again.files].find(
+          (file) => file.path === 'opencode.jsonc',
+        )?.status,
+      ).toBe('unchanged');
       const after = await readText(repo.root, 'opencode.jsonc');
       expect(after).toBe(withComments);
       expect(after).toContain("// the user's own header comment");
@@ -96,7 +110,7 @@ describe('structured ownership of opencode.jsonc', () => {
 
       const check = await runCheck(repo.root, new UpstreamRenderTarget());
       expect(check.ok).toBe(false);
-      expect(check.drift).toContainEqual({
+      expect(allCheckDrift(check)).toContainEqual({
         code: 'F007_DRIFT',
         path: 'opencode.jsonc',
         kind: 'modified',
@@ -138,9 +152,12 @@ describe('structured ownership of opencode.jsonc', () => {
       // The lockfile exists and records the other managed outputs, but not
       // this path: the file is the user's until they opt in with --adopt.
       const lock = await jsonOf(repo, '.farna/lock.json');
-      lock['files'] = (lock['files'] as Array<Record<string, unknown>>).filter(
-        (file) => file['path'] !== 'opencode.jsonc',
-      );
+      const targets = lock['targets'] as Record<string, { files: Array<Record<string, unknown>> }>;
+      const entry = targets['opencode'];
+      if (entry === undefined) {
+        throw new Error('expected an opencode target entry');
+      }
+      entry.files = entry.files.filter((file) => file['path'] !== 'opencode.jsonc');
       await writeFile(
         join(repo.root, '.farna/lock.json'),
         `${JSON.stringify(lock, null, 2)}\n`,
@@ -273,9 +290,8 @@ describe('structured ownership of opencode.jsonc', () => {
       await runGenerate({ cwd: second.root, dryRun: false }, new UpstreamRenderTarget());
 
       const lock = await jsonOf(first, '.farna/lock.json');
-      const entry = (lock['files'] as Array<Record<string, unknown>>).find(
-        (file) => file['path'] === 'opencode.jsonc',
-      );
+      const targets = lock['targets'] as Record<string, { files: Array<Record<string, unknown>> }>;
+      const entry = targets['opencode']?.files.find((file) => file['path'] === 'opencode.jsonc');
       expect(entry).toMatchObject({ shape: 'structured', ownedKeys: ['mcp'] });
       expect(await readText(first.root, '.farna/lock.json')).toBe(
         await readText(second.root, '.farna/lock.json'),
@@ -348,7 +364,9 @@ describe('a missing lockfile', () => {
       await writeFile(join(repo.root, staging), 'partial write\n', 'utf8');
       const check = await runCheck(repo.root, new UpstreamRenderTarget());
       expect(check.ok).toBe(true);
-      expect(check.drift.filter((item) => item.code === OUTSIDE_OWNERSHIP_CODE)).toEqual([]);
+      expect(allCheckDrift(check).filter((item) => item.code === OUTSIDE_OWNERSHIP_CODE)).toEqual(
+        [],
+      );
     } finally {
       await repo.cleanup();
     }
@@ -369,7 +387,8 @@ describe('a missing lockfile', () => {
       expect(adopted.ok).toBe(true);
       expect(await readText(repo.root, '.opencode/commands/custom.md')).toBe(customText);
       const lock = await jsonOf(repo, '.farna/lock.json');
-      expect((lock['files'] as Array<{ path: string }>).map((file) => file.path)).not.toContain(
+      const targets = lock['targets'] as Record<string, { files: Array<{ path: string }> }>;
+      expect((targets['opencode']?.files ?? []).map((file) => file.path)).not.toContain(
         '.opencode/commands/custom.md',
       );
 
@@ -386,10 +405,11 @@ describe('profile mode reports the personas it deactivates', () => {
     const repo = await generated();
     try {
       const lock = await jsonOf(repo, '.farna/lock.json');
-      expect(lock['notLive']).toEqual(['reviewer']);
+      const targets = lock['targets'] as Record<string, { notLive: string[] }>;
+      expect(targets['opencode']?.notLive).toEqual(['reviewer']);
 
       const check = await runCheck(repo.root, new UpstreamRenderTarget());
-      expect(check.notLive).toEqual(['reviewer']);
+      expect(check.targets[0]?.notLive).toEqual(['reviewer']);
       const report = formatCheck(check);
       expect(report).toContain('not live reviewer');
 
@@ -437,8 +457,8 @@ describe('profile mode reports the personas it deactivates', () => {
         { cwd: repo.root, dryRun: false },
         new UpstreamRenderTarget(),
       );
-      expect(result.mode).toBe('profile');
-      expect(result.notLive).toEqual(['reviewer']);
+      expect(result.targets[0]?.mode).toBe('profile');
+      expect(result.targets[0]?.notLive).toEqual(['reviewer']);
       const choice = result.warnings.find((entry) => entry.code === 'W109_PROFILE_BY_CHOICE');
       expect(choice).toMatchObject({
         code: 'W109_PROFILE_BY_CHOICE',
@@ -492,8 +512,8 @@ describe('profile mode reports the personas it deactivates', () => {
         { cwd: repo.root, dryRun: false },
         new UpstreamRenderTarget(),
       );
-      expect(result.activePersona).toBe('builder');
-      expect(result.notLive).toEqual(['reviewer']);
+      expect(result.targets[0]?.activePersona).toBe('builder');
+      expect(result.targets[0]?.notLive).toEqual(['reviewer']);
       expect(result.warnings).toEqual(
         expect.arrayContaining([
           expect.objectContaining({ code: 'W109_PROFILE_BY_CHOICE', persona: 'builder' }),
@@ -526,7 +546,7 @@ describe('profile mode reports the personas it deactivates', () => {
         { cwd: repo.root, dryRun: false },
         new UpstreamRenderTarget(),
       );
-      expect(result.personas).toEqual(['builder']);
+      expect(result.targets[0]?.personas).toEqual(['builder']);
       const loss = result.warnings.find((entry) => entry.code === 'W101_CAPABILITY_DROPPED');
       expect(loss).toMatchObject({
         code: 'W101_CAPABILITY_DROPPED',
@@ -581,7 +601,7 @@ describe('source digest', () => {
 
       const check = await runCheck(repo.root, new UpstreamRenderTarget());
       expect(check.ok).toBe(false);
-      expect(check.drift).toContainEqual({
+      expect(allCheckDrift(check)).toContainEqual({
         code: 'F007_DRIFT',
         path: '.farna/lock.json',
         kind: 'modified',
@@ -603,7 +623,7 @@ it('fails check when only a config comment changes', async () => {
     await appendFile(join(repo.root, '.farna/config.jsonc'), '\n// a new comment\n', 'utf8');
     const check = await runCheck(repo.root, new UpstreamRenderTarget());
     expect(check.ok).toBe(false);
-    expect(check.drift).toContainEqual({
+    expect(allCheckDrift(check)).toContainEqual({
       code: 'F007_DRIFT',
       path: '.farna/lock.json',
       kind: 'modified',
@@ -629,7 +649,7 @@ it('fails check when a parsed config value changes', async () => {
     );
     const check = await runCheck(repo.root, new UpstreamRenderTarget());
     expect(check.ok).toBe(false);
-    expect(check.drift.map((item) => item.path)).toContain('.farna/lock.json');
+    expect(allCheckDrift(check).map((item) => item.path)).toContain('.farna/lock.json');
   } finally {
     await repo.cleanup();
   }
@@ -691,9 +711,9 @@ describe('init to profile to check', () => {
         { cwd: repo.root, dryRun: false },
         new UpstreamRenderTarget(),
       );
-      expect(generated.mode).toBe('profile');
-      expect(generated.activePersona).toBe('builder');
-      expect(generated.files.map((file) => file.path)).toEqual([
+      expect(generated.targets[0]?.mode).toBe('profile');
+      expect(generated.targets[0]?.activePersona).toBe('builder');
+      expect(allGeneratedFiles(generated)).toEqual([
         '.farna/lock.json',
         '.opencode/agents/builder.md',
         'opencode.jsonc',
@@ -787,18 +807,24 @@ describe('reporting', () => {
   it('aligns every status column and includes removals in the summary', () => {
     const report = formatGenerate({
       ok: true,
-      target: 'opencode',
-      mode: 'profile',
-      activePersona: 'reviewer',
-      notLive: ['builder'],
       dryRun: false,
       adopted: [],
-      personas: ['reviewer'],
-      files: [{ path: '.opencode/agents/reviewer.md', status: 'written' }],
-      removed: [
-        { path: '.opencode/agents/builder.md', status: 'removed' },
-        { path: '.opencode/plugins/rulesync-hooks.js', status: 'missing' },
+      targets: [
+        {
+          target: 'opencode',
+          mode: 'profile',
+          activePersona: 'reviewer',
+          notLive: ['builder'],
+          personas: ['reviewer'],
+          files: [{ path: '.opencode/agents/reviewer.md', status: 'written' }],
+          removed: [
+            { path: '.opencode/agents/builder.md', status: 'removed' },
+            { path: '.opencode/plugins/rulesync-hooks.js', status: 'missing' },
+          ],
+        },
       ],
+      files: [],
+      removed: [],
       warnings: [],
     });
     expect(report).toContain('managed 1 file(s), 0 unchanged, 1 removed');
@@ -913,11 +939,17 @@ describe('reporting', () => {
   it('escapes a control character in a printed warning message', async () => {
     const report = formatCheck({
       ok: true,
-      target: 'opencode',
-      mode: 'profile',
-      activePersona: 'builder',
-      notLive: [],
       exitCode: 0,
+      targets: [
+        {
+          target: 'opencode',
+          mode: 'profile',
+          activePersona: 'builder',
+          notLive: [],
+          checked: [],
+          drift: [],
+        },
+      ],
       checked: [],
       drift: [],
       warnings: [

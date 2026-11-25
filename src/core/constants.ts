@@ -7,8 +7,22 @@
 
 export const PRODUCT_NAME = 'farna-bootstrapper';
 export const PRODUCT_VERSION = '0.1.3';
-/** The one source/schema version this build understands. */
-export const SCHEMA_VERSION = 1 as const;
+
+/**
+ * The source config format: `.farna/config.jsonc` and the value `init` writes.
+ * It is unrelated to the lockfile and to the CLI payload, which each have their
+ * own version below; one number for three formats made every change to one look
+ * like a change to all three.
+ */
+export const CONFIG_SCHEMA_VERSION = 1 as const;
+/**
+ * The `.farna/lock.json` document. A version 1 document is still read and
+ * normalised to the version 2 in-memory shape; writing always produces version
+ * 2, so the first `generate` after an upgrade rewrites the file.
+ */
+export const LOCKFILE_SCHEMA_VERSION = 2 as const;
+/** The `--json` payload envelope every command emits. */
+export const CLI_SCHEMA_VERSION = 2 as const;
 
 /**
  * The OpenCode major each OpenCode target is measured against. `opencode` is

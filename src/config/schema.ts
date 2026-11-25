@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { ID_RE, SCHEMA_VERSION, SUPPORTED_TARGETS } from '../core/constants.js';
+import { CONFIG_SCHEMA_VERSION, ID_RE, SUPPORTED_TARGETS } from '../core/constants.js';
 
 /**
  * One configured target. `active` selects profile mode: exactly that persona is
@@ -15,7 +15,7 @@ const targetConfigSchema = z.strictObject({
 export const configSchema = z
   .strictObject({
     $schema: z.string().optional(),
-    schemaVersion: z.literal(SCHEMA_VERSION),
+    schemaVersion: z.literal(CONFIG_SCHEMA_VERSION),
     targets: z
       .record(z.string(), targetConfigSchema)
       .refine((targets) => Object.keys(targets).length >= 1, 'at least one target is required')

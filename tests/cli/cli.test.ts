@@ -44,14 +44,34 @@ function parseObject(stdout: string): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
+type JsonTarget = {
+  target: string;
+  files: Array<{ path: string; status: string }>;
+  drift: Array<{ path: string; kind: string; code: string }>;
+  checks?: unknown[];
+  personas?: unknown[];
+};
+
+function targetsOf(value: Record<string, unknown>): JsonTarget[] {
+  const targets = value['targets'];
+  if (!Array.isArray(targets)) {
+    throw new Error('expected a per-target array');
+  }
+  return targets as JsonTarget[];
+}
+
+/** Every planned path across every target and the run-level lockfile, in path order. */
 function filesOf(value: Record<string, unknown>): Array<{ path: string; status: string }> {
   const files = value['files'];
   if (!Array.isArray(files)) {
     throw new Error('expected a files array');
   }
-  return files as Array<{ path: string; status: string }>;
+  return [...targetsOf(value).flatMap((target) => target.files), ...files].sort((a, b) =>
+    a.path < b.path ? -1 : a.path > b.path ? 1 : 0,
+  ) as Array<{ path: string; status: string }>;
 }
 
+/** Every drift item across every target and the run, in path order. */
 function driftOf(
   value: Record<string, unknown>,
 ): Array<{ path: string; kind: string; code: string }> {
@@ -59,7 +79,9 @@ function driftOf(
   if (!Array.isArray(drift)) {
     throw new Error('expected a drift array');
   }
-  return drift as Array<{ path: string; kind: string; code: string }>;
+  return [...targetsOf(value).flatMap((target) => target.drift), ...drift].sort((a, b) =>
+    a.path < b.path ? -1 : a.path > b.path ? 1 : 0,
+  ) as Array<{ path: string; kind: string; code: string }>;
 }
 
 async function generated(fixture = 'demo'): Promise<TempRepo> {
@@ -90,7 +112,7 @@ describe('the built CLI', () => {
       expect(result.stderr).toBe('');
       const body = parseObject(result.stdout);
       expect(body).toMatchObject({
-        schemaVersion: 1,
+        schemaVersion: 2,
         command: 'generate',
         ok: true,
         exitCode: 0,
@@ -103,6 +125,40 @@ describe('the built CLI', () => {
         '.farna/lock.json',
       ]);
       expect(filesOf(body).every((file) => file.status === 'written')).toBe(true);
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
+  it('emits one per-target entry in the JSON payload and one per-target section in the text', async () => {
+    const repo = await createTempRepo();
+    try {
+      const json = await runCli(repo.root, ['generate', '--dry-run', '--json']);
+      expect(json.code).toBe(0);
+      const body = parseObject(json.stdout);
+      const targets = targetsOf(body);
+      expect(targets).toHaveLength(1);
+      expect(targets[0]).toMatchObject({
+        target: 'claudecode',
+        mode: 'agent',
+        activePersona: null,
+        notLive: [],
+      });
+      expect(targets[0]?.files.map((file) => file.path)).toContain('.claude/agents/builder.md');
+      // The lockfile belongs to the run, not to a target.
+      const runFiles = body['files'];
+      if (!Array.isArray(runFiles)) {
+        throw new Error('expected a run-level files array');
+      }
+      expect((runFiles as Array<{ path: string }>).map((file) => file.path)).toEqual([
+        '.farna/lock.json',
+      ]);
+
+      const human = await runCli(repo.root, ['generate', '--dry-run']);
+      expect(human.code).toBe(0);
+      expect(human.stdout).toContain('target claudecode (agent mode)');
+      expect(human.stdout).toContain('run-level');
+      expect(human.stdout).toContain('.farna/lock.json');
     } finally {
       await repo.cleanup();
     }
@@ -151,7 +207,7 @@ describe('the built CLI', () => {
       expect(result.code).toBe(1);
       const body = parseObject(result.stdout);
       expect(body).toMatchObject({
-        schemaVersion: 1,
+        schemaVersion: 2,
         command: 'generate',
         ok: false,
         exitCode: 1,
@@ -292,7 +348,7 @@ describe('the built CLI', () => {
       const clean = await runCli(repo.root, ['check', '--json']);
       expect(clean.code).toBe(0);
       expect(parseObject(clean.stdout)).toMatchObject({
-        schemaVersion: 1,
+        schemaVersion: 2,
         command: 'check',
         ok: true,
         exitCode: 0,
@@ -355,7 +411,7 @@ describe('the built CLI', () => {
       expect(result.code).toBe(1);
       const body = parseObject(result.stdout);
       expect(body).toMatchObject({
-        schemaVersion: 1,
+        schemaVersion: 2,
         command: 'generate',
         ok: false,
         exitCode: 1,
@@ -377,16 +433,16 @@ describe('the built CLI', () => {
       expect(result.stderr).toBe('');
       const body = parseObject(result.stdout);
       expect(body).toMatchObject({
-        schemaVersion: 1,
+        schemaVersion: 2,
         command: 'doctor',
         ok: true,
         exitCode: 0,
-        target: 'claudecode',
-        mode: 'agent',
         configPath: '.farna/config.jsonc',
+        targets: [{ target: 'claudecode', mode: 'agent' }],
       });
-      expect(Array.isArray(body['checks'])).toBe(true);
-      expect(Array.isArray(body['personas'])).toBe(true);
+      const doctorTarget = targetsOf(body)[0];
+      expect(Array.isArray(doctorTarget?.checks)).toBe(true);
+      expect(Array.isArray(doctorTarget?.personas)).toBe(true);
       // doctor writes nothing at all, not even a lockfile or a stage.
       expect(await hashTree(repo.root)).toBe(before);
     } finally {
@@ -458,7 +514,7 @@ describe('the built CLI', () => {
       expect(result.code).toBe(1);
       const body = parseObject(result.stdout);
       expect(body).toMatchObject({
-        schemaVersion: 1,
+        schemaVersion: 2,
         command: 'nope',
         ok: false,
         exitCode: 1,

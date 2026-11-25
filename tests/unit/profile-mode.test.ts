@@ -1,7 +1,7 @@
 import { appendFile, lstat, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { runCheck } from '../../src/cli/commands/check.js';
+import { allCheckDrift, runCheck } from '../../src/cli/commands/check.js';
 import { runGenerate } from '../../src/cli/commands/generate.js';
 import { FarnaError } from '../../src/core/errors.js';
 import type {
@@ -83,12 +83,17 @@ async function expectProfileFailure(
   return failure as FarnaError;
 }
 
-type LockShape = {
-  target: string;
+type LockTargetShape = {
   mode: string;
   activePersona: string | null;
+  notLive: string[];
   personas: Array<{ id: string }>;
   files: Array<{ path: string }>;
+};
+
+type LockShape = {
+  schemaVersion: number;
+  targets: Record<string, LockTargetShape>;
   warnings: Array<{ code: string }>;
 };
 
@@ -96,16 +101,36 @@ async function lockOf(repo: TempRepo): Promise<LockShape> {
   return JSON.parse(await readText(repo.root, '.farna/lock.json')) as LockShape;
 }
 
+/** Every generated path across every target and the run-level lockfile. */
+function allGeneratedFiles(result: {
+  targets: Array<{ files: Array<{ path: string }> }>;
+  files: Array<{ path: string }>;
+}): string[] {
+  return [...result.targets.flatMap((target) => target.files), ...result.files]
+    .map((file) => file.path)
+    .sort();
+}
+
+/** The single target entry of a one-target run. */
+function targetOf(lock: LockShape): LockTargetShape {
+  const [entry] = Object.values(lock.targets);
+  if (entry === undefined) {
+    throw new Error('expected one target entry');
+  }
+  return entry;
+}
+
 describe('profile mode', () => {
   it('records the computed mode and the active persona in the lockfile', async () => {
     const repo = await generated();
     try {
       const lock = await lockOf(repo);
-      expect(lock.target).toBe('opencode');
-      expect(lock.mode).toBe('profile');
-      expect(lock.activePersona).toBe('builder');
-      expect(lock.personas.map((persona) => persona.id)).toEqual(['builder']);
-      expect(lock.files.map((file) => file.path)).toEqual(
+      expect(Object.keys(lock.targets)).toEqual(['opencode']);
+      const target = targetOf(lock);
+      expect(target.mode).toBe('profile');
+      expect(target.activePersona).toBe('builder');
+      expect(target.personas.map((persona) => persona.id)).toEqual(['builder']);
+      expect(target.files.map((file) => file.path)).toEqual(
         BUILDER_PROFILE_FILES.filter((path) => path !== '.farna/lock.json'),
       );
     } finally {
@@ -120,14 +145,16 @@ describe('profile mode', () => {
         { cwd: repo.root, dryRun: false },
         new UpstreamRenderTarget(),
       );
-      expect(result.mode).toBe('profile');
-      expect(result.activePersona).toBe('builder');
-      expect(result.personas).toEqual(['builder']);
-      expect(result.files.map((file) => file.path)).toEqual(BUILDER_PROFILE_FILES);
+      expect(result.targets[0]?.mode).toBe('profile');
+      expect(result.targets[0]?.activePersona).toBe('builder');
+      expect(result.targets[0]?.personas).toEqual(['builder']);
+      expect(allGeneratedFiles(result)).toEqual(BUILDER_PROFILE_FILES);
       // The profile is the repository root, never a cache directory or a
       // subdirectory below another config.
-      expect(result.files.every((file) => !file.path.startsWith('../'))).toBe(true);
-      expect(result.files.every((file) => !file.path.startsWith('.farna/profiles/'))).toBe(true);
+      expect(allGeneratedFiles(result).every((path) => !path.startsWith('../'))).toBe(true);
+      expect(allGeneratedFiles(result).every((path) => !path.startsWith('.farna/profiles/'))).toBe(
+        true,
+      );
       await expect(lstat(join(repo.root, '.farna/profiles'))).rejects.toMatchObject({
         code: 'ENOENT',
       });
@@ -190,15 +217,18 @@ describe('profile mode', () => {
       const clean = await runCheck(repo.root, new UpstreamRenderTarget());
       expect(clean.ok).toBe(true);
       expect(clean.exitCode).toBe(0);
-      expect(clean.mode).toBe('profile');
-      expect(clean.activePersona).toBe('builder');
-      expect(clean.checked).toEqual(BUILDER_PROFILE_FILES);
+      expect(clean.targets[0]?.mode).toBe('profile');
+      expect(clean.targets[0]?.activePersona).toBe('builder');
+      expect(clean.checked).toEqual(['.farna/lock.json']);
+      expect(clean.targets[0]?.checked).toEqual(
+        BUILDER_PROFILE_FILES.filter((path) => path !== '.farna/lock.json'),
+      );
 
       const original = await readText(repo.root, '.opencode/commands/pytest.md');
       await appendFile(join(repo.root, '.opencode/commands/pytest.md'), '\nmanual\n', 'utf8');
       const drifted = await runCheck(repo.root, new UpstreamRenderTarget());
       expect(drifted.ok).toBe(false);
-      expect(drifted.drift).toEqual([
+      expect(allCheckDrift(drifted)).toEqual([
         {
           code: 'F007_DRIFT',
           path: '.opencode/commands/pytest.md',
@@ -235,15 +265,18 @@ describe('profile mode', () => {
         { cwd: repo.root, dryRun: false, persona: 'reviewer' },
         new UpstreamRenderTarget(),
       );
-      expect(result.activePersona).toBe('reviewer');
-      expect(result.personas).toEqual(['reviewer']);
-      expect(result.files.map((file) => file.path)).toEqual([
+      expect(result.targets[0]?.activePersona).toBe('reviewer');
+      expect(result.targets[0]?.personas).toEqual(['reviewer']);
+      expect(allGeneratedFiles(result)).toEqual([
         '.farna/lock.json',
         '.opencode/agents/reviewer.md',
         '.opencode/commands/review-triage.md',
         'opencode.jsonc',
       ]);
-      expect(await lockOf(repo)).toMatchObject({ mode: 'profile', activePersona: 'reviewer' });
+      expect(targetOf(await lockOf(repo))).toMatchObject({
+        mode: 'profile',
+        activePersona: 'reviewer',
+      });
       const config = await readText(repo.root, 'opencode.jsonc');
       expect(config).toContain('docs');
       expect(config).not.toContain('scan');
@@ -255,7 +288,7 @@ describe('profile mode', () => {
       // reviewer profile is drift: a stale artefact and missing builder files.
       const withoutOverride = await runCheck(repo.root, new UpstreamRenderTarget());
       expect(withoutOverride.ok).toBe(false);
-      const paths = withoutOverride.drift.map((item) => `${item.kind}:${item.path}`);
+      const paths = allCheckDrift(withoutOverride).map((item) => `${item.kind}:${item.path}`);
       expect(paths).toContain('missing:.opencode/agents/builder.md');
       expect(paths).toContain('unexpected:.opencode/agents/reviewer.md');
     } finally {
@@ -271,8 +304,8 @@ describe('profile mode', () => {
         { cwd: repo.root, dryRun: false },
         new UpstreamRenderTarget(),
       );
-      expect(switched.activePersona).toBe('reviewer');
-      expect(switched.removed).toEqual(
+      expect(switched.targets[0]?.activePersona).toBe('reviewer');
+      expect(switched.targets[0]?.removed).toEqual(
         BUILDER_ORPHANS.map((path) => ({ path, status: 'removed' })),
       );
 
@@ -300,7 +333,7 @@ describe('profile mode', () => {
 
       const check = await runCheck(repo.root, new UpstreamRenderTarget());
       expect(check.ok).toBe(true);
-      expect(check.activePersona).toBe('reviewer');
+      expect(check.targets[0]?.activePersona).toBe('reviewer');
     } finally {
       await repo.cleanup();
     }
@@ -317,7 +350,7 @@ describe('profile mode', () => {
         { cwd: repo.root, dryRun: false },
         new UpstreamRenderTarget(),
       );
-      expect(result.removed).toEqual([{ path: 'opencode.jsonc', status: 'removed' }]);
+      expect(result.targets[0]?.removed).toEqual([{ path: 'opencode.jsonc', status: 'removed' }]);
       const files = await listFiles(repo.root);
       expect(files).not.toContain('opencode.jsonc');
       expect(files).toContain('.opencode/agents/builder.md');
@@ -351,7 +384,7 @@ describe('profile mode', () => {
         { cwd: repo.root, dryRun: false },
         new UpstreamRenderTarget(),
       );
-      expect(result.removed).toEqual([{ path: 'opencode.jsonc', status: 'removed' }]);
+      expect(result.targets[0]?.removed).toEqual([{ path: 'opencode.jsonc', status: 'removed' }]);
       const files = await listFiles(repo.root);
       expect(files).not.toContain('opencode.jsonc');
       expect((await runCheck(repo.root, new UpstreamRenderTarget())).ok).toBe(true);
@@ -371,7 +404,7 @@ describe('profile mode', () => {
         { cwd: repo.root, dryRun: false },
         new UpstreamRenderTarget(),
       );
-      expect(result.removed).toEqual([
+      expect(result.targets[0]?.removed).toEqual([
         { path: '.opencode/skills/secure-review/SKILL.md', status: 'removed' },
         { path: '.opencode/skills/secure-review/scripts/check.sh', status: 'removed' },
       ]);
@@ -396,7 +429,7 @@ describe('profile mode', () => {
         new UpstreamRenderTarget(),
       );
       expect(result.dryRun).toBe(true);
-      expect(result.removed).toEqual(
+      expect(result.targets[0]?.removed).toEqual(
         BUILDER_ORPHANS.map((path) => ({ path, status: 'would-remove' })),
       );
       expect(await hashTree(repo.root)).toBe(before);
@@ -485,12 +518,14 @@ describe('profile mode', () => {
       const check = await runCheck(repo.root, new UpstreamRenderTarget());
       expect(check.ok).toBe(false);
       expect(check.exitCode).toBe(1);
-      const unexpected = check.drift
+      const unexpected = allCheckDrift(check)
         .filter((item) => item.kind === 'unexpected')
         .map((item) => item.path);
       expect(unexpected).toEqual(BUILDER_ORPHANS);
-      expect(check.drift.map((item) => item.path)).not.toContain('.opencode/commands/custom.md');
-      expect(check.drift).toContainEqual({
+      expect(allCheckDrift(check).map((item) => item.path)).not.toContain(
+        '.opencode/commands/custom.md',
+      );
+      expect(allCheckDrift(check)).toContainEqual({
         code: 'F007_DRIFT',
         path: '.opencode/agents/builder.md',
         kind: 'unexpected',
