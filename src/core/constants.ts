@@ -164,6 +164,36 @@ export const CLAUDE_DIR = '.claude';
 export const CLAUDE_AGENTS_DIR = `${CLAUDE_DIR}/agents`;
 
 /**
+ * The marker syntax of a managed text region. A region is a pair of HTML
+ * comment lines, which is valid Markdown and invisible when the document is
+ * rendered. A marker is a complete line whose content is exactly
+ * `<!-- farna:begin <id> -->` or `<!-- farna:end <id> -->`, with no leading or
+ * trailing whitespace; the id grammar is `ID_RE` and `ID_MAX_LENGTH` below.
+ * The constants are the only spelling of the syntax: `src/render/region.ts`
+ * builds every marker from them and refuses any other line that contains the
+ * prefix.
+ */
+export const REGION_MARKER_PREFIX = '<!-- farna:';
+export const REGION_BEGIN_WORD = 'begin';
+export const REGION_END_WORD = 'end';
+export const REGION_MARKER_SUFFIX = ' -->';
+
+/**
+ * The one shared instruction file this build can own part of, and the region id
+ * it owns inside it. A region path is claimed by one target (see
+ * `MANAGED_OUTPUT_FILES`), so two targets can never own two regions of one
+ * file. Slice 1 names the path but no shipped target emits it yet: the source
+ * gate (`renderFeatures`, `expectedPaths`) still refuses the declarations that
+ * would produce it.
+ */
+export const CLAUDE_INSTRUCTIONS_FILE = 'CLAUDE.md';
+export const CLAUDE_INSTRUCTIONS_REGION = 'claude-instructions';
+/** The region id owned at each managed path. A path absent here is not a region. */
+export const REGION_OUTPUTS: Readonly<Record<string, string>> = {
+  [CLAUDE_INSTRUCTIONS_FILE]: CLAUDE_INSTRUCTIONS_REGION,
+};
+
+/**
  * The OpenCode paths this slice writes, relative to the repository root.
  * `commands` is plural and the workspace config is `opencode.jsonc`, both
  * measured at rulesync 43.14.0.
@@ -200,9 +230,15 @@ export const MANAGED_OUTPUT_DIRS: Readonly<Record<SupportedTarget, readonly stri
   opencodev1: OPENCODE_OUTPUT_DIRS,
 };
 
-/** Whole files at the repository root that a target can own. */
+/**
+ * Whole files at the repository root that a target can own. `CLAUDE.md` is a
+ * file this tool owns a marked region of, not a whole file, but it is claimed
+ * here all the same: the location-collision guard and orphan removal are both
+ * path-based, so a region path that is not claimed could be silently shared by
+ * two targets and could never be removed as an orphan.
+ */
 export const MANAGED_OUTPUT_FILES: Readonly<Record<SupportedTarget, readonly string[]>> = {
-  claudecode: [],
+  claudecode: [CLAUDE_INSTRUCTIONS_FILE],
   opencode: [OPENCODE_CONFIG_FILE],
   opencodev1: [OPENCODE_CONFIG_FILE],
 };
