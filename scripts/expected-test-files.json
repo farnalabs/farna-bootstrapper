@@ -28,6 +28,7 @@
     "tests/unit/json.test.ts",
     "tests/unit/loader.test.ts",
     "tests/unit/lockfile.test.ts",
+    "tests/unit/multi-target.test.ts",
     "tests/unit/opencode-target.test.ts",
     "tests/unit/opencode-v1-target.test.ts",
     "tests/unit/path-safety.test.ts",

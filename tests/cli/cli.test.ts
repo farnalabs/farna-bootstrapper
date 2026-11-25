@@ -278,6 +278,31 @@ describe('the built CLI', () => {
     }
   });
 
+  it('refuses two OpenCode targets as F005_CONFLICT with exit 2 and writes nothing', async () => {
+    const repo = await createTempRepo('opencode');
+    try {
+      await writeFile(
+        join(repo.root, '.farna/config.jsonc'),
+        '{"schemaVersion":1,"targets":{"opencode":{},"opencodev1":{}}}\n',
+        'utf8',
+      );
+      const before = await hashTree(repo.root);
+      const result = await runCli(repo.root, ['generate', '--json']);
+      expect(result.code).toBe(2);
+      const body = parseObject(result.stdout);
+      expect(body).toMatchObject({
+        command: 'generate',
+        ok: false,
+        exitCode: 2,
+        code: 'F005_CONFLICT',
+      });
+      expect(String(body['message'])).toContain('.opencode/agents (opencode, opencodev1)');
+      expect(await hashTree(repo.root)).toBe(before);
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
   it('emits a JSON failure object for F011 with exit 3', async () => {
     const repo = await createTempRepo('composed');
     try {

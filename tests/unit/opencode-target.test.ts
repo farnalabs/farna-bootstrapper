@@ -485,21 +485,40 @@ describe('opencode target', () => {
     }
   });
 
-  it('refuses two configured targets rather than silently picking one', async () => {
+  it('renders claudecode together with opencode when both are configured', async () => {
     const repo = await createTempRepo('opencode');
     try {
       await writeFile(
         join(repo.root, '.farna/config.jsonc'),
-        '{"schemaVersion":1,"targets":{"claudecode":{},"opencode":{}}}\n',
+        [
+          '{',
+          '  "schemaVersion": 1,',
+          '  "targets": { "claudecode": {}, "opencode": {} },',
+          '  "models": {',
+          '    "standard": {',
+          '      "claudecode": "claude-sonnet-4-5",',
+          '      "opencode": "anthropic/claude-sonnet-4-5"',
+          '    }',
+          '  }',
+          '}',
+          '',
+        ].join('\n'),
         'utf8',
       );
-      await expect(
-        runGenerate({ cwd: repo.root, dryRun: false }, new UpstreamRenderTarget()),
-      ).rejects.toMatchObject({ code: 'F001_INVALID_CONFIG' });
+      const result = await runGenerate(
+        { cwd: repo.root, dryRun: false },
+        new UpstreamRenderTarget(),
+      );
+      expect(result.targets.map((target) => target.target)).toEqual(['claudecode', 'opencode']);
+      const files = [...result.targets.flatMap((target) => target.files), ...result.files].map(
+        (file) => file.path,
+      );
+      expect(files).toContain('.claude/agents/builder.md');
+      expect(files).toContain('.opencode/agents/builder.md');
     } finally {
       await repo.cleanup();
     }
-  });
+  }, 30_000);
 
   it('refuses a tool allow-list opt-in OpenCode cannot express', async () => {
     const repo = await createTempRepo('opencode');

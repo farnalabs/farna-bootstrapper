@@ -1,11 +1,17 @@
+import { writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { runGenerate } from '../../src/cli/commands/generate.js';
 import {
   assertNoLocationCollisions,
   findLocationCollisions,
   managedLocationsOf,
 } from '../../src/config/collision.js';
-import type { Config } from '../../src/config/schema.js';
+import { loadConfig } from '../../src/config/load.js';
+import { type Config, configSchema } from '../../src/config/schema.js';
 import { FarnaError } from '../../src/core/errors.js';
+import type { RenderTarget } from '../../src/render/port.js';
+import { createTempRepo, hashTree } from '../support/temp-repo.js';
 
 /** A config shaped exactly as the schema produces one. */
 function configOf(targets: Record<string, Record<string, never>>): Config {
@@ -88,5 +94,106 @@ describe('location-collision guard', () => {
     expect(() =>
       assertNoLocationCollisions(configOf({ claudecode: {}, opencode: {} })),
     ).not.toThrow();
+  });
+});
+
+/** Rewrite the committed config of a fixture repository. */
+async function setConfig(root: string, text: string): Promise<void> {
+  await writeFile(join(root, '.farna/config.jsonc'), text, 'utf8');
+}
+
+const TWO_OPENCODE_CONFIG = [
+  '{',
+  '  "schemaVersion": 1,',
+  '  "targets": { "opencode": {}, "opencodev1": {} }',
+  '}',
+  '',
+].join('\n');
+
+const TWO_FAMILIES_CONFIG = [
+  '{',
+  '  "schemaVersion": 1,',
+  '  "targets": { "claudecode": {}, "opencode": {} },',
+  '  "models": {',
+  '    "standard": {',
+  '      "claudecode": "claude-sonnet-4-5",',
+  '      "opencode": "anthropic/claude-sonnet-4-5"',
+  '    }',
+  '  }',
+  '}',
+  '',
+].join('\n');
+
+describe('loaded config and the location rule', () => {
+  it('accepts claudecode plus one OpenCode target', async () => {
+    const repo = await createTempRepo('opencode');
+    try {
+      await setConfig(repo.root, TWO_FAMILIES_CONFIG);
+      const config = await loadConfig(repo.root);
+      expect(Object.keys(config.targets).sort()).toEqual(['claudecode', 'opencode']);
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
+  it('the schema alone accepts two OpenCode targets, so the refusal is the guard', () => {
+    expect(
+      configSchema.safeParse({ schemaVersion: 1, targets: { opencode: {}, opencodev1: {} } })
+        .success,
+    ).toBe(true);
+  });
+
+  it('refuses two OpenCode targets as F005_CONFLICT with exit 2', async () => {
+    const repo = await createTempRepo('opencode');
+    try {
+      await setConfig(repo.root, TWO_OPENCODE_CONFIG);
+      let failure: FarnaError | undefined;
+      try {
+        await loadConfig(repo.root);
+      } catch (error) {
+        expect(error).toBeInstanceOf(FarnaError);
+        failure = error as FarnaError;
+      }
+      expect(failure?.code).toBe('F005_CONFLICT');
+      expect(failure?.exitCode).toBe(2);
+      expect(failure?.message).toContain('.opencode/agents (opencode, opencodev1)');
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
+  it('still refuses an unsupported target with F001, unchanged', async () => {
+    const repo = await createTempRepo('demo');
+    try {
+      await setConfig(repo.root, '{"schemaVersion":1,"targets":{"cursor":{}}}\n');
+      await expect(loadConfig(repo.root)).rejects.toMatchObject({
+        code: 'F001_INVALID_CONFIG',
+        exitCode: 1,
+      });
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
+  it('refuses a collision before a renderer is called and writes nothing', async () => {
+    const repo = await createTempRepo('opencode');
+    try {
+      await setConfig(repo.root, TWO_OPENCODE_CONFIG);
+      const before = await hashTree(repo.root);
+      const exploding: RenderTarget = {
+        identity() {
+          throw new Error('renderer identity must not be read for a refused config');
+        },
+        async generate() {
+          throw new Error('renderer must not be called for a refused config');
+        },
+      };
+      await expect(runGenerate({ cwd: repo.root, dryRun: false }, exploding)).rejects.toMatchObject(
+        { code: 'F005_CONFLICT', exitCode: 2 },
+      );
+      expect(await hashTree(repo.root)).toBe(before);
+    } finally {
+      await repo.cleanup();
+    }
   });
 });

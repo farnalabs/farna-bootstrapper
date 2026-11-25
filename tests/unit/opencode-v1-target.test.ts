@@ -98,7 +98,7 @@ describe('opencodev1 target identity', () => {
     }
   });
 
-  it('refuses opencode and opencodev1 configured in one run', async () => {
+  it('refuses opencode and opencodev1 configured in one run with F005_CONFLICT', async () => {
     const repo = await createTempRepo('profile-v1');
     try {
       const path = join(repo.root, '.farna/config.jsonc');
@@ -111,10 +111,12 @@ describe('opencodev1 target identity', () => {
       const before = await hashTree(repo.root);
       const failure = await expectFailure(
         () => runGenerate({ cwd: repo.root, dryRun: false }, new UpstreamRenderTarget()),
-        'F001_INVALID_CONFIG',
+        'F005_CONFLICT',
       );
-      expect(failure.message).toContain('exactly one configured target');
-      expect(failure.message).toContain('opencodev1');
+      expect(failure.exitCode).toBe(2);
+      // The diagnostic names the shared locations, not a hard-coded target pair.
+      expect(failure.message).toContain('.opencode/agents (opencode, opencodev1)');
+      expect(failure.message).toContain('opencode.jsonc (opencode, opencodev1)');
       expect(await hashTree(repo.root)).toBe(before);
     } finally {
       await repo.cleanup();
