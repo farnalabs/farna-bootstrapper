@@ -952,6 +952,7 @@ describe('reporting', () => {
       ],
       checked: [],
       drift: [],
+      pending: [],
       warnings: [
         {
           code: 'W107_OUTSIDE_OWNERSHIP',

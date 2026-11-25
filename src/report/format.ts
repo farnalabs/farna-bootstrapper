@@ -137,17 +137,25 @@ export function formatCheck(result: CheckResult): string {
       }
     }
   }
-  if (result.drift.length === 0) {
+  // A run-level path is printed only under the status it actually has: a
+  // matched comparison, a drift finding, or a deliberate skip. A pending
+  // version 1 lockfile never appears as "checked".
+  if (result.checked.length > 0 || result.drift.length > 0 || result.pending.length > 0) {
+    lines.push('  run-level');
     if (result.checked.length > 0) {
-      lines.push('  run-level');
       lines.push(`  ${result.checked.length} managed file(s) match a fresh render`);
     }
-  } else {
-    lines.push('  run-level');
-    lines.push(`  ${result.drift.length} drifted path(s)`);
-    for (const item of result.drift) {
+    if (result.drift.length > 0) {
+      lines.push(`  ${result.drift.length} drifted path(s)`);
+      for (const item of result.drift) {
+        lines.push(
+          `  ${item.kind.padEnd(STATUS_WIDTH)} ${escapeControlCharacters(item.path)} (${item.detail})`,
+        );
+      }
+    }
+    for (const item of result.pending) {
       lines.push(
-        `  ${item.kind.padEnd(STATUS_WIDTH)} ${escapeControlCharacters(item.path)} (${item.detail})`,
+        `  ${'pending'.padEnd(STATUS_WIDTH)} ${escapeControlCharacters(item.path)} (${item.detail})`,
       );
     }
   }

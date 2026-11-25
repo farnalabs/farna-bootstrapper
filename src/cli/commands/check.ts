@@ -51,15 +51,30 @@ export type CheckTargetResult = {
   drift: DriftItem[];
 };
 
+/**
+ * A run-level path that was deliberately not compared. It is neither a match
+ * nor drift: a version 1 lockfile is left alone until the next `generate`
+ * upgrades it, so calling it "checked" would claim a comparison that never ran.
+ */
+export type PendingItem = {
+  path: string;
+  detail: string;
+};
+
 export type CheckResult = {
   ok: boolean;
   exitCode: 0 | typeof EXIT.drift;
   /** One entry per configured target, in target-id order. */
   targets: CheckTargetResult[];
-  /** Run-level managed paths outside any target (the lockfile). */
+  /**
+   * Run-level managed paths outside any target (the lockfile) whose bytes were
+   * actually compared and matched.
+   */
   checked: string[];
   /** Run-level drift outside any target: the lockfile digest item. */
   drift: DriftItem[];
+  /** Run-level paths deliberately not compared, with the reason. Never drift. */
+  pending: PendingItem[];
   warnings: Warning[];
 };
 
@@ -255,24 +270,37 @@ export async function runCheck(
     });
   }
 
-  // The lockfile belongs to the run, not to one target: compare its bytes once
-  // unless the digest changed, in which case the digest item reports the cause.
+  // The lockfile belongs to the run, not to one target. Its bytes are compared
+  // once, and the report must say exactly what happened: a path is "checked"
+  // only when its bytes were compared and matched, "pending" only when a
+  // deliberate decision skipped the comparison, and drift otherwise.
+  const runChecked: string[] = [];
   const runDrift: DriftItem[] = [];
+  const runPending: PendingItem[] = [];
   const freshLockfile = prepared.files.find((file) => file.path === LOCK_PATH);
   if (digestChanged) {
+    // The digest names the cause, so the bytes are not compared. The lockfile
+    // is drift, never also "checked" or "pending".
     runDrift.push({
       code: DRIFT_CODE,
       path: LOCK_PATH,
       kind: 'modified',
       detail: 'the source or config changed since the lockfile was written; re-run generate',
     });
-  } else if (lockfile?.readVersion !== 1 && freshLockfile !== undefined) {
-    // A version 1 document is the migration case: `check` continues to pass on
-    // its bytes until the next `generate` rewrites them as version 2, so the
-    // format upgrade itself is never reported as drift.
+  } else if (lockfile?.readVersion === 1) {
+    // The migration case: `check` continues to pass on a version 1 document
+    // until the next `generate` rewrites it as version 2, so the format
+    // upgrade is neither drift nor a comparison that ran.
+    runPending.push({
+      path: LOCK_PATH,
+      detail: 'version 1 record; run generate to upgrade it to version 2',
+    });
+  } else if (freshLockfile !== undefined) {
     const item = await compareFile(freshLockfile);
     if (item !== undefined) {
       runDrift.push(item);
+    } else {
+      runChecked.push(LOCK_PATH);
     }
   }
 
@@ -314,8 +342,9 @@ export async function runCheck(
     ok: allDrift.length === 0,
     exitCode: allDrift.length === 0 ? EXIT.ok : EXIT.drift,
     targets,
-    checked: [LOCK_PATH],
+    checked: runChecked,
     drift: runDrift,
+    pending: runPending,
     warnings: prepared.warnings,
   };
 }

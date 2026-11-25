@@ -91,6 +91,30 @@ async function generated(fixture = 'demo'): Promise<TempRepo> {
   return repo;
 }
 
+/**
+ * Rewrite the generated version 2 lockfile as the version 1 document an
+ * existing repository holds, without changing its content.
+ */
+async function downgradeLock(repo: TempRepo): Promise<void> {
+  const path = join(repo.root, '.farna/lock.json');
+  const version2 = JSON.parse(await readFile(path, 'utf8')) as Record<string, unknown>;
+  const targets = version2['targets'] as Record<string, Record<string, unknown>>;
+  const entry = targets['claudecode'];
+  if (entry === undefined) {
+    throw new Error('expected a claudecode target entry');
+  }
+  const version1 = {
+    schemaVersion: 1,
+    product: version2['product'],
+    target: 'claudecode',
+    ...entry,
+    renderer: version2['renderer'],
+    configDigest: version2['configDigest'],
+    warnings: version2['warnings'],
+  };
+  await writeFile(path, `${JSON.stringify(version1, null, 2)}\n`, 'utf8');
+}
+
 describe('the built CLI', () => {
   beforeAll(async () => {
     await execFileAsync(NPM, ['run', 'build'], { cwd: ROOT, timeout: 180_000 });
@@ -378,6 +402,84 @@ describe('the built CLI', () => {
     // This case renders, writes and then re-renders through the built CLI, so
     // it needs a realistic bound: the 5 s default is marginal on a loaded
     // machine and reports a slow run as a failure.
+  }, 20_000);
+
+  it('reports a clean version 2 lockfile as checked', async () => {
+    const repo = await generated();
+    try {
+      const result = await runCli(repo.root, ['check', '--json']);
+      expect(result.code).toBe(0);
+      const body = parseObject(result.stdout);
+      expect(body['checked']).toEqual(['.farna/lock.json']);
+      expect(body['pending']).toEqual([]);
+      expect(driftOf(body)).toEqual([]);
+    } finally {
+      await repo.cleanup();
+    }
+  }, 20_000);
+
+  it('reports a version 1 lockfile as pending, never as checked or drifted', async () => {
+    const repo = await generated();
+    try {
+      await downgradeLock(repo);
+      const result = await runCli(repo.root, ['check', '--json']);
+      expect(result.code).toBe(0);
+      const body = parseObject(result.stdout);
+      expect(body['checked']).toEqual([]);
+      expect(body['pending']).toEqual([
+        {
+          path: '.farna/lock.json',
+          detail: 'version 1 record; run generate to upgrade it to version 2',
+        },
+      ]);
+      expect(driftOf(body)).toEqual([]);
+      expect(body).toMatchObject({ ok: true, exitCode: 0 });
+
+      const human = await runCli(repo.root, ['check']);
+      expect(human.code).toBe(0);
+      expect(human.stdout).toContain('run-level');
+      expect(human.stdout).toContain(
+        'pending      .farna/lock.json (version 1 record; run generate to upgrade it to version 2)',
+      );
+      // The run-level section reports only the pending entry, never a
+      // "match" claim for the lockfile that was not compared.
+      expect(human.stdout).toMatch(/run-level\n {2}pending {2,}\.farna\/lock\.json/);
+      expect(human.stdout).toContain('check: clean');
+    } finally {
+      await repo.cleanup();
+    }
+  }, 20_000);
+
+  it('reports a lockfile with a changed digest as drift, never as checked or pending', async () => {
+    const repo = await generated();
+    try {
+      const path = join(repo.root, '.farna/lock.json');
+      const lock = JSON.parse(await readFile(path, 'utf8')) as Record<string, unknown>;
+      lock['configDigest'] = '0'.repeat(64);
+      await writeFile(path, `${JSON.stringify(lock, null, 2)}\n`, 'utf8');
+
+      const result = await runCli(repo.root, ['check', '--json']);
+      expect(result.code).toBe(1);
+      const body = parseObject(result.stdout);
+      expect(body['checked']).toEqual([]);
+      expect(body['pending']).toEqual([]);
+      expect(driftOf(body)).toContainEqual({
+        code: 'F007_DRIFT',
+        path: '.farna/lock.json',
+        kind: 'modified',
+        detail: 'the source or config changed since the lockfile was written; re-run generate',
+      });
+
+      const human = await runCli(repo.root, ['check']);
+      expect(human.code).toBe(1);
+      expect(human.stdout).toContain(
+        'modified     .farna/lock.json (the source or config changed since the lockfile was written; re-run generate)',
+      );
+      expect(human.stdout).not.toContain('pending');
+      expect(human.stdout).toContain('check: drift');
+    } finally {
+      await repo.cleanup();
+    }
   }, 20_000);
 
   it('fails F010 with exit 5 when the lockfile names another renderer', async () => {
