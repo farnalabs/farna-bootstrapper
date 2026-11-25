@@ -11,6 +11,7 @@
     "tests/integration/rulesync.test.ts",
     "tests/unit/assert-pack.test.ts",
     "tests/unit/assert-test-count.test.ts",
+    "tests/unit/capability-page.test.ts",
     "tests/unit/capability-report.test.ts",
     "tests/unit/capture.test.ts",
     "tests/unit/check.test.ts",

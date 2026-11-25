@@ -60,6 +60,12 @@ jobs:
       - name: Build
         run: npm run build
 
+      # The page is generated from `report` and the pinned renderer, with no
+      # clock or host input, so two runs produce identical bytes. A source edit
+      # that was never regenerated fails here instead of merging green.
+      - name: Assert the capability page is current
+        run: node scripts/capability-page.mjs --check
+
       # This repository dogfoods itself: `.claude/agents/maintainer.md` and
       # `.farna/lock.json` are generated from `.farna/` and committed. `check`
       # re-renders into a temporary directory and compares, so a source edit
@@ -139,6 +145,12 @@ jobs:
 
       - name: Build
         run: npm run build
+
+      # The page is generated from `report` and the pinned renderer, with no
+      # clock or host input, so two runs produce identical bytes. A source edit
+      # that was never regenerated fails here instead of merging green.
+      - name: Assert the capability page is current
+        run: node scripts/capability-page.mjs --check
 
       # This repository dogfoods itself: `.claude/agents/maintainer.md` and
       # `.farna/lock.json` are generated from `.farna/` and committed. `check`

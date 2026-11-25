@@ -494,9 +494,13 @@ A persona `mode` is documented separately from these seven capabilities: it is n
 OpenCode targets and has no Claude Code field (`W117_PERSONA_MODE_IGNORED`). The opt-in Claude Code
 `tools` allow-list has no OpenCode equivalent and is refused there; see [Permissions](#permissions).
 
-The full 71-target matrix and the generated `docs/capability-matrix.md` page are not in this
-release. `report` prints the measured matrix for the three supported targets today. See
-[What this slice does not do](#what-this-slice-does-not-do).
+The measured matrix is also published as a generated page,
+[`docs/capability-matrix.md`](docs/capability-matrix.md). It is built from `report` and the pinned
+renderer by `scripts/capability-page.mjs`, so it cannot state a claim `report` does not print, and
+CI runs `node scripts/capability-page.mjs --check` so a stale page cannot merge. It carries the
+three measured rows with the test that observes every cell, plus a separate list of the renderer
+target ids this build has not measured, which makes no capability claim. The full 71-target matrix
+is still later work; see [What this slice does not do](#what-this-slice-does-not-do).
 
 ### Output layout
 
@@ -1009,8 +1013,9 @@ Deliberately out of scope:
 
 - `agent with loss` and `refuse` as plan outcomes; profile mode on `claudecode`; every target
   other than `claudecode`, `opencode` and `opencodev1`; a second target within one output-path
-  family; the full 71-target capability matrix and the generated `docs/capability-matrix.md`
-  page (the `report` command prints the measured matrix for the three supported targets today)
+  family; the full 71-target capability matrix (the generated
+  [`docs/capability-matrix.md`](docs/capability-matrix.md) page carries the three measured rows and
+  lists the unmeasured renderer ids without a capability claim for them)
 - model resources (a model is the persona's `model` class in this slice)
 - carrying `mcp`, `skill`, `command` or `hook` on any target in **agent** mode; profile mode is
   where those workspace capabilities belong, and agent mode still refuses them
