@@ -18,8 +18,8 @@
     },
     {
       "matchPackageNames": ["@biomejs/biome"],
-      "allowedVersions": "<2.4",
-      "description": "Biome 2.5.15 fails the suite because it reformats YAML front matter inside the Markdown fixtures, so the 2.3 line is held until a deliberate fixture review adopts the newer formatter."
+      "allowedVersions": "<3",
+      "description": "Biome 2.6 is adopted. The configuration excludes Markdown prose and the renderer-input fixtures from the formatter, because those are not formatter-owned: the repository's docs are hand-maintained prose and the fixtures are test data whose bytes are renderer input."
     }
   ]
 }
