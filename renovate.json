@@ -14,12 +14,12 @@
     {
       "matchPackageNames": ["typescript"],
       "allowedVersions": "<7",
-      "description": "TypeScript 7 is a major compiler change that needs its own migration with a dist-byte comparison, not a dependency bump."
+      "description": "The 6.x line is adopted (currently 6.0.3, verified to emit byte-identical dist output). TypeScript 7 is the deferred major compiler change: it needs its own migration with a dist-byte comparison, not a dependency bump."
     },
     {
       "matchPackageNames": ["@biomejs/biome"],
-      "allowedVersions": "<2.6",
-      "description": "Biome 2.6 reformats YAML front matter in Markdown and rewrites tests/fixtures and examples, so adopting it needs a deliberate fixture-digest and golden review."
+      "allowedVersions": "<2.4",
+      "description": "Biome 2.5.15 fails the suite because it reformats YAML front matter inside the Markdown fixtures, so the 2.3 line is held until a deliberate fixture review adopts the newer formatter."
     }
   ]
 }
