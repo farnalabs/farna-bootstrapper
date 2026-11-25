@@ -279,6 +279,11 @@ describe('the merge writes only the region', () => {
       '  new',
       `  ${regionEndMarker(ID)}`,
     ]);
+    // The block ends with a newline; the human surface drops exactly that one,
+    // so it ends on the end marker rather than an indent-only line.
+    const formatted = error.format().split('\n');
+    expect(formatted.at(-1)).toBe(`  ${regionEndMarker(ID)}`);
+    expect(formatted.every((line) => line === '' || line.trim() !== '')).toBe(true);
   });
 
   it('appends one blank line and the marker pair to an unmarked file on adopt', () => {

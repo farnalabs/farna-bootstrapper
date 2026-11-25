@@ -57,6 +57,12 @@ describe('a diagnostic detail block', () => {
     expect(failureObject('generate', withoutDetail)).toMatchObject({ detail: null });
   });
 
+  it('prints no trailing indent-only line for a block ending in a newline, but keeps it in JSON', () => {
+    const error = new FarnaError('F001_INVALID_CONFIG', 'the message', { detail: 'a\nb\n' });
+    expect(error.format()).toBe('F001_INVALID_CONFIG\n  the message\n  a\n  b');
+    expect(failureObject('generate', error)).toMatchObject({ detail: 'a\nb\n' });
+  });
+
   it('carries detail: null on an untyped failure', () => {
     expect(unexpectedFailureObject('generate', 'boom')).toMatchObject({ detail: null });
   });

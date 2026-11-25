@@ -47,7 +47,9 @@ export class FarnaError extends Error {
    * would rewrite the terminal lines the diagnostic appears on. A detail is
    * printed as one indented line per line of the block — its newlines are
    * structure, so they are preserved, but a control character *inside* a line is
-   * escaped like every other field.
+   * escaped like every other field. One trailing newline is dropped for the
+   * human surface, so a block that ends with one prints no trailing indent-only
+   * line; the stored detail and the JSON field keep the block byte for byte.
    */
   format(): string {
     const subject = this.subject === undefined ? '' : ` ${escapeControlCharacters(this.subject)}`;
@@ -56,7 +58,8 @@ export class FarnaError extends Error {
     if (this.detail === undefined) {
       return line;
     }
-    const detail = this.detail
+    const block = this.detail.endsWith('\n') ? this.detail.slice(0, -1) : this.detail;
+    const detail = block
       .split('\n')
       .map((detailLine) => `  ${escapeControlCharacters(detailLine)}`)
       .join('\n');
