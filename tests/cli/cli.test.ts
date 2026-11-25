@@ -13,6 +13,10 @@ import {
 } from '../support/temp-repo.js';
 
 const execFileAsync = promisify(execFile);
+// Every test in this file spawns the built CLI as a child process, so it is far
+// slower than an in-process unit test; the 5s default was observed to trip under
+// full-suite load (5,028 ms once, then green in isolation).
+vi.setConfig({ testTimeout: 20_000 });
 const ROOT = process.cwd();
 const CLI = join(ROOT, 'dist', 'cli', 'main.js');
 const NPM = process.platform === 'win32' ? 'npm.cmd' : 'npm';
