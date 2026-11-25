@@ -1188,8 +1188,8 @@ the GitHub Release. The publish job waits for approval on the `release` environm
 
 The source of this repository's own agent configuration is `.farna/`: one persona, `maintainer`,
 built from a rule distilled from [CONTRIBUTING.md](CONTRIBUTING.md) and a permission resource.
-`generate` renders it to a committed `.claude/agents/maintainer.md` and records the manifest in
-`.farna/lock.json`.
+`generate` renders it to a committed `.claude/agents/maintainer.md` and
+`.opencode/agents/maintainer.md`, and records the manifest in `.farna/lock.json`.
 
 ```sh
 node dist/cli/main.js generate   # after any change under .farna/
@@ -1199,10 +1199,8 @@ node dist/cli/main.js check      # re-render and compare; drift exits 1
 `check` runs in CI, so a change to `.farna/` that was not regenerated, or a hand-edited generated
 file, fails the build rather than merging quietly.
 
-This is the `claudecode` target in agent mode, and nothing else yet. The tool can render Claude
-Code together with one OpenCode target, but this repository has not extended its own
-`.farna/config.jsonc` to the OpenCode half yet; the dogfood is one target because it has not been
-extended, not because the tool refuses more.
+Both supported targets are configured in agent mode, so every persona gets one whole file per
+target and `check` proves both.
 
 ## Licence
 

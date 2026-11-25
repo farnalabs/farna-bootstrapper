@@ -9,7 +9,9 @@ it is not a promise of dates or a claim of production readiness.
 
 ## Shipped
 
-What 0.1.x does today, all of it covered by the test suite and by CI:
+What `main` does today, all of it covered by the test suite and by CI. The latest published release
+is 0.1.3; multi-target rendering and the two-target self-dogfood below are on `main` and are not yet
+in a published release.
 
 - **Five commands.** `init`, `doctor`, `report`, `generate` and `check`. `doctor` validates a source
   without rendering or writing; `report` prints the measured capability matrix and reads no source;
@@ -35,11 +37,15 @@ What 0.1.x does today, all of it covered by the test suite and by CI:
   and an identical lockfile, and `check` reports drift instead of repairing it silently. The same
   rules are machine-independent: the lockfile records no timestamp, hostname, absolute path, user
   name or process id, and `.gitattributes` pins generated line endings to LF.
-- **One configured target per run.** More than one configured target is refused, and the lockfile
-  and mode plan are per target.
-- **Self-dogfood.** This repository's own `.claude/agents/maintainer.md` is generated from
-  `.farna/`, and `check` runs in CI so an unregenerated source change or a hand-edited generated
-  file fails the build. The dogfood covers the `claudecode` target in agent mode only.
+- **Multi-target rendering in one run.** A single `generate` or `check` resolves, renders and
+  verifies every configured target, with a per-target lockfile entry and mode plan. `claudecode`
+  combines with one OpenCode target; configuring both OpenCode majors is `F005_CONFLICT` (exit 2)
+  because they would own the same locations. A mixed config can run one target in agent mode and
+  another in profile mode, and `--persona` applies to each target that supports it.
+- **Self-dogfood.** This repository's own `.claude/agents/maintainer.md` and
+  `.opencode/agents/maintainer.md` are both generated from the same `.farna/` source, as the
+  `claudecode` and `opencode` targets in agent mode. `check` runs in CI so an unregenerated source
+  change or a hand-edited generated file fails the build.
 - **The same CI steps on macOS.** A second CI job runs on macOS with every step identical to the
   Linux job; it passed on its first run, including the full test suite and the `check` gate, so the
   tool is verified on macOS as well as on Linux.
@@ -57,15 +63,11 @@ The ordered near-term work. Each item is a concrete outcome, not a theme.
    path where the pin matches the published version. When the next renderer version is published,
    confirm that it opens one issue, comments weekly while the pin stays behind, and closes that
    issue when the pin catches up.
-2. **Multi-target rendering in one run, with a per-target lockfile and mode plan.** More than one
-   configured target is refused today, and the lockfile, the mode plan and the write path are all
-   per target. This is the design change that unblocks the OpenCode half of the self-dogfood and
-   the "one source, several harnesses" story. The design is proposed in
-   [the design note](docs/multi-target-design.md), which records the decisions, the data shapes and
-   the four delivery slices.
-3. **Extend the self-dogfood to the OpenCode half.** Generate this repository's OpenCode
-   configuration from the same `.farna/` source it already uses for Claude Code. This follows item
-   2, because it needs more than one target in a single run.
+2. **Cut the next minor release.** The multi-target lockfile format (schema version 2) and the
+   per-target `generate`, `check` and `doctor` payloads are user-visible changes, so the release is
+   a minor rather than a patch. The release pull request bumps the version, adds the CHANGELOG entry
+   with the migration note, and follows [CONTRIBUTING](CONTRIBUTING.md#releasing); the design note
+   works from 0.2.0 by working assumption.
 
 ## Later
 
