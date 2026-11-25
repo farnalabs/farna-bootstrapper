@@ -75,7 +75,8 @@ The larger work, deliberately not next, with the reason each one waits.
   and generating the page from the report.
 - **Region ownership for shared instruction files (`AGENTS.md`, `CLAUDE.md`), and profile mode for
   Claude Code.** Both need a way to own part of a file, or a profile plan, that the current
-  whole-file and `mcp`-key-only ownership model does not have.
+  whole-file and `mcp`-key-only ownership model does not have. [The design note](docs/region-ownership-design.md)
+  covers the region primitive and the Claude Code profile surface.
 - **The remaining declared-but-not-implemented source features** named in the README: per-target
   `exclude` and target filters, `patch`/`replaceWith`, `--strict`, `--accept-config` gating,
   `.farna/local.jsonc` overrides, model resources, and workspace resource kinds in agent mode.
