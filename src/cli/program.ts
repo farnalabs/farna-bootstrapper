@@ -52,6 +52,7 @@ export function failureObject(command: string | null, error: FarnaError): Record
     code: error.code,
     subject: error.subject ?? null,
     message: error.message,
+    detail: error.detail ?? null,
   };
 }
 
@@ -68,6 +69,7 @@ export function unexpectedFailureObject(
     code: null,
     subject: null,
     message,
+    detail: null,
   };
 }
 

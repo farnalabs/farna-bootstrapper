@@ -257,15 +257,28 @@ describe('the merge writes only the region', () => {
     expect(merged).toBe(`${regionBeginMarker(ID)}\nnew\n${regionEndMarker(ID)}\npost`);
   });
 
-  it('refuses an unrecorded marked file without --adopt and names the block to add', () => {
+  it('refuses an unrecorded marked file without --adopt and carries the block as a detail', () => {
     const error = captured(() =>
       mergeRegionText(file('old\n'), ID, 'new', SUBJECT, { owned: false, adopt: false }),
     );
+    const detail = regionBlock(ID, 'new\n');
     expect(error.code).toBe('F007_DRIFT');
     expect(error.subject).toBe(SUBJECT);
-    expect(error.message).toContain(regionBeginMarker(ID));
-    expect(error.message).toContain(regionEndMarker(ID));
+    // The block is structured guidance, never a JSON-quoted fragment of the
+    // single-line message.
+    expect(error.message).not.toContain(JSON.stringify(detail));
+    expect(error.message).toContain(ID);
+    expect(error.message).toContain('not recorded in the committed lockfile');
+    expect(error.detail).toBe(detail);
     expect(error.action).toContain('generate --adopt');
+    const rendered = error.format().split('\n');
+    const begin = rendered.indexOf(`  ${regionBeginMarker(ID)}`);
+    expect(begin).toBeGreaterThan(0);
+    expect(rendered.slice(begin, begin + 3)).toEqual([
+      `  ${regionBeginMarker(ID)}`,
+      '  new',
+      `  ${regionEndMarker(ID)}`,
+    ]);
   });
 
   it('appends one blank line and the marker pair to an unmarked file on adopt', () => {

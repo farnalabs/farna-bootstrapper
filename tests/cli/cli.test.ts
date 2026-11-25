@@ -775,7 +775,7 @@ describe('the built CLI', () => {
       }
     }, 60_000);
 
-    it('refuses --persona naming no persona and names the target and the id', async () => {
+    it('refuses --persona naming no persona and carries detail: null with the single-line-plus-action diagnostic', async () => {
       const repo = await mixedRepo();
       try {
         const before = await hashTree(repo.root);
@@ -787,9 +787,17 @@ describe('the built CLI', () => {
           exitCode: 1,
           code: 'F001_INVALID_CONFIG',
           subject: '--persona',
+          detail: null,
         });
         expect(String(body['message'])).toContain('"ghost"');
         expect(String(body['message'])).toContain('opencode');
+        // No detail block: the human diagnostic is the code+subject line, the
+        // message line and the action line, and nothing more.
+        const lines = result.stderr.trimEnd().split('\n');
+        expect(lines).toHaveLength(3);
+        expect(lines[0]).toBe('F001_INVALID_CONFIG --persona');
+        expect(lines[1]).toBe(`  ${String(body['message'])}`);
+        expect(lines[2]?.startsWith('  ')).toBe(true);
         expect(await hashTree(repo.root)).toBe(before);
       } finally {
         await repo.cleanup();

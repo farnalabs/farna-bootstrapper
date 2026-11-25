@@ -4,6 +4,12 @@ import { escapeControlCharacters } from './text.js';
 export type FarnaErrorOptions = {
   subject?: string;
   action?: string;
+  /**
+   * Structured guidance printed under the action as an indented block. It is the
+   * one field allowed to span lines: a block to paste into a file belongs here,
+   * never inside the single-line message.
+   */
+  detail?: string;
   cause?: unknown;
 };
 
@@ -16,6 +22,7 @@ export class FarnaError extends Error {
   readonly exitCode: number;
   readonly subject?: string;
   readonly action?: string;
+  readonly detail?: string;
 
   constructor(code: DiagnosticCode, message: string, options: FarnaErrorOptions = {}) {
     super(message, options.cause === undefined ? undefined : { cause: options.cause });
@@ -28,18 +35,32 @@ export class FarnaError extends Error {
     if (options.action !== undefined) {
       this.action = options.action;
     }
+    if (options.detail !== undefined) {
+      this.detail = options.detail;
+    }
   }
 
   /**
-   * The one-line form the text reporter prints. The subject, the message and
-   * the action are all escaped: each can embed a source filename, a lockfile
-   * path or a foreign key from a hand-edited document, and a raw control
-   * character would rewrite the terminal lines the diagnostic appears on.
+   * The diagnostic as text. The subject, the message and the action are each a
+   * single line, all escaped: each can embed a source filename, a lockfile path
+   * or a foreign key from a hand-edited document, and a raw control character
+   * would rewrite the terminal lines the diagnostic appears on. A detail is
+   * printed as one indented line per line of the block — its newlines are
+   * structure, so they are preserved, but a control character *inside* a line is
+   * escaped like every other field.
    */
   format(): string {
     const subject = this.subject === undefined ? '' : ` ${escapeControlCharacters(this.subject)}`;
     const action = this.action === undefined ? '' : `\n  ${escapeControlCharacters(this.action)}`;
-    return `${this.code}${subject}\n  ${escapeControlCharacters(this.message)}${action}`;
+    const line = `${this.code}${subject}\n  ${escapeControlCharacters(this.message)}${action}`;
+    if (this.detail === undefined) {
+      return line;
+    }
+    const detail = this.detail
+      .split('\n')
+      .map((detailLine) => `  ${escapeControlCharacters(detailLine)}`)
+      .join('\n');
+    return `${line}\n${detail}`;
   }
 }
 

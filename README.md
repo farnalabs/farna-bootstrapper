@@ -328,7 +328,7 @@ The complete flag surface:
 
 | Command | Flag | Behaviour |
 |---|---|---|
-| all | `--json` | emit one JSON object on stdout and suppress the human report; a typed failure also writes its one human line to stderr |
+| all | `--json` | emit one JSON object on stdout and suppress the human report; a typed failure also writes its human diagnostic to stderr |
 | all | `-v, --version`, `-h, --help` | print the compiled-in version or usage; neither needs the renderer |
 | `init` | `--json` | the created/updated paths and the next step |
 | `doctor` | `--json` | every validation that ran, every resolved persona and resource, and the warnings |
@@ -344,10 +344,14 @@ that supports it and wins over `targets.<target>.active`; see [Profile mode](#pr
 `--json` is a per-command flag: place it after the command
 (`farna-bootstrapper generate --json`), not before it. Every command then emits one machine-readable
 object on stdout and no human report: a success is one object on stdout and nothing on stderr; a
-typed failure is one object on stdout and its single human line on stderr. Every object carries
-`schemaVersion`, `command`, `ok` and `exitCode`; a success object also carries the command's own
-fields (`init` adds `root`, `configPath`, `created`, `updated` and `nextStep`), and a typed failure
-also carries `code`, `subject` and `message`. `--dry-run` compares each managed path with the
+typed failure is one object on stdout and its human diagnostic on stderr. The diagnostic is the
+code and subject line, the message line and the action line; a failure that carries structured
+guidance adds it as an indented block under the action, so it may span several lines. Every object
+carries `schemaVersion`, `command`, `ok` and `exitCode`; a success object also carries the
+command's own fields (`init` adds `root`, `configPath`, `created`, `updated` and `nextStep`), and a
+typed failure also carries `code`, `subject`, `message` and `detail` — `detail` is `null` when the
+failure has none, and when present it is the same multi-line block the human diagnostic prints.
+`--dry-run` compares each managed path with the
 working tree, so `unchanged` and
 `would-write` are distinguished rather than every path being reported as a write. Its summary
 counts the `would-write` files, not the size of the plan: a tree that already matches reports
@@ -817,7 +821,8 @@ is part of the code's definition, never set by a flag.
 as `subject`; drift is a result, not an exception, so it is absent from the exception table. A
 usage error (an unknown command or option) exits `1`. Under `--json` the human report is
 suppressed: a success is one object on stdout and nothing on stderr; a typed failure is one object
-on stdout and its single human line on stderr.
+on stdout and its human diagnostic on stderr (a failure that carries a `detail` block prints it
+across multiple indented lines under the action).
 
 ## Layout
 

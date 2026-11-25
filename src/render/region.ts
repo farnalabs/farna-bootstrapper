@@ -406,11 +406,11 @@ export type RegionMergeOptions = {
 
 function unrecordedRegion(subject: string, regionId: string, body: string): FarnaError {
   return driftRefused(
-    `refusing to write region "${regionId}" in ${subject}: the file exists but is not recorded in the committed lockfile; the block to add is ${JSON.stringify(regionBlock(regionId, body))}`,
+    `refusing to write region "${regionId}" in ${subject}: the file is not recorded in the committed lockfile`,
     {
       subject,
-      action:
-        'run generate --adopt to take ownership of the existing managed output, or move it aside deliberately',
+      action: 'run generate --adopt to append a managed region, or add the marker pair and re-run',
+      detail: regionBlock(regionId, body),
     },
   );
 }
