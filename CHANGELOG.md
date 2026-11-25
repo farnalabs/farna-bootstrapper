@@ -48,7 +48,7 @@ release may contain a breaking change; every change of that kind is listed under
   unchanged. The committed dogfood output is regenerated, and `.farna/lock.json` changes only in
   its recorded renderer version and integrity; its schema stays version 2.
 
-### Migration
+**Migration.**
 
 - **One `generate` upgrades an existing lockfile.** After upgrading, `check` reports the version 1
   lockfile as `pending` and still exits `0`. The first `generate` then rewrites `.farna/lock.json`
