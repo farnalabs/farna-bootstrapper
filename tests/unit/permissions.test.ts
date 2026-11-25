@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { resolveSource } from '../../src/compose/resolve.js';
 import type { Config } from '../../src/config/schema.js';
+import { OPENCODE_TARGET, OPENCODE_V1_TARGET } from '../../src/core/constants.js';
 import { FarnaError } from '../../src/core/errors.js';
 import { personaSourceFile } from '../../src/materialise/source-tree.js';
 import {
@@ -405,6 +406,36 @@ describe('opencode permission records', () => {
     ]).permissions;
     expect(permissionDigest(first, false)).not.toBe(permissionDigest(second, false));
   });
+});
+
+describe('opencode unmapped permission categories', () => {
+  // The capability snapshot's permission-key table names this test for a bare
+  // `mcp` on both OpenCode targets and for `network` on `opencode`: the two
+  // categories share one guard, but until this test existed no test named an
+  // OpenCode target for either refusal.
+  function toolsFor(category: 'network' | 'mcp'): PermissionTools {
+    return category === 'network' ? { network: 'allow' } : { mcp: 'allow' };
+  }
+
+  for (const target of [OPENCODE_TARGET, OPENCODE_V1_TARGET] as const) {
+    for (const category of ['network', 'mcp'] as const) {
+      it(`refuses ${category} on ${target} with F011`, () => {
+        const { permissions } = resolve([
+          { id: 'unmapped', tools: toolsFor(category), patterns: {}, allowlist: false },
+        ]);
+        try {
+          mapOpencodePermissions(permissions, { persona: 'builder', target });
+          throw new Error('expected F011');
+        } catch (error) {
+          expect(error).toBeInstanceOf(FarnaError);
+          const farna = error as FarnaError;
+          expect(farna.code).toBe('F011_PERMISSION_UNMAPPED');
+          expect(farna.subject).toContain(target);
+          expect(farna.subject).toContain(category);
+        }
+      });
+    }
+  }
 });
 
 describe('permission pattern grammar', () => {

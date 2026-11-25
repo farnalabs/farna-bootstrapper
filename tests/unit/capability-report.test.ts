@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { SUPPORTED_TARGETS } from '../../src/core/constants.js';
+import { SUPPORTED_TARGETS, type SupportedTarget } from '../../src/core/constants.js';
 import {
   type CapabilitySnapshot,
   emissionGlyph,
@@ -80,6 +80,25 @@ describe('the capability snapshot', () => {
     expect(() => verifySnapshot(snapshot)).not.toThrow();
   });
 
+  it('refuses a row whose id is not a supported target, naming the id', () => {
+    // The row id is typed `SupportedTarget`, so a foreign row can only arrive
+    // through a cast. The runtime guard is what stops it being published.
+    const snapshot = cloneSnapshot();
+    const template = snapshot.targets[0];
+    if (template === undefined) {
+      throw new Error('expected a target');
+    }
+    snapshot.targets.push({ ...template, id: 'cursor' as unknown as SupportedTarget });
+    try {
+      verifySnapshot(snapshot);
+    } catch (error) {
+      expect(error).toMatchObject({ code: 'F010_RENDERER_MISMATCH' });
+      expect((error as Error).message).toContain('cursor');
+      return;
+    }
+    throw new Error('expected the foreign row to be refused with F010');
+  });
+
   it('gives every non-native capability cell a consequence', () => {
     for (const target of SNAPSHOT.targets) {
       for (const capability of MATRIX_CAPABILITIES) {
@@ -147,6 +166,21 @@ describe('the capability report', () => {
     expect(text).toContain('labels');
     expect(text).toContain('reach subagent');
     expect(text).toContain('report: ok');
+  });
+
+  it('carries a test id for every permission key, in the snapshot and the report', () => {
+    const report = buildCapabilityReport();
+    expect(report.schemaVersion).toBe(1);
+    for (const [index, target] of report.targets.entries()) {
+      const source = SNAPSHOT.targets[index];
+      expect(source).toBeDefined();
+      for (const key of permissionCategories()) {
+        const measured = target.permissionKeys[key];
+        expect(Object.keys(measured)).toContain('testId');
+        expect(measured.testId, `${target.id}/${key}`).toMatch(/^tests\/.+\.test\.ts$/);
+        expect(measured.testId).toBe(source?.permissionKeys[key].testId);
+      }
+    }
   });
 
   it('builds a JSON report that does not share objects with the snapshot', () => {

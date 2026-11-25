@@ -8,6 +8,14 @@ import type { SupportedTarget } from '../core/constants.js';
 
 export type RenderTargetName = SupportedTarget;
 
+/**
+ * A target id the renderer accepts in its `targets` option. It is deliberately
+ * not `SupportedTarget`: the renderer knowing how to write some artefacts for a
+ * harness says nothing about whether this build can plan, verify or describe
+ * them. Only a `SupportedTarget` is ever passed to a render.
+ */
+export type RendererTargetId = string;
+
 /** The renderer features this product can select. Never the `*` wildcard. */
 export type RenderFeature =
   | 'rules'

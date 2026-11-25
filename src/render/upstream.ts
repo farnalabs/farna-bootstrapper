@@ -3,7 +3,13 @@ import { join, relative, sep } from 'node:path';
 import { rendererMismatch, renderFailed } from '../core/errors.js';
 import { compareCodepoints } from '../core/json.js';
 import { installedRendererIdentity, integrityRecordOf } from './identity.js';
-import type { RendererIdentity, RenderRequest, RenderResult, RenderTarget } from './port.js';
+import type {
+  RendererIdentity,
+  RendererTargetId,
+  RenderRequest,
+  RenderResult,
+  RenderTarget,
+} from './port.js';
 
 /**
  * The pinned renderer. This constant is BOTH the identity recorded in the
@@ -90,6 +96,21 @@ export function assertPinned(identity: RendererIdentity): void {
       },
     );
   }
+}
+
+/**
+ * The pinned renderer's own target ids, through the single importer. The
+ * capability page lists every id the renderer accepts that this build has not
+ * measured, so the list has to come from the renderer rather than a typed copy.
+ *
+ * The renderer is loaded lazily as everywhere else in this module: `report`,
+ * `--version` and `init` never call this, so a missing renderer stays a
+ * `generate`-time failure. The list is returned verbatim; a caller that
+ * publishes it sorts it, because the upstream order is not stable.
+ */
+export async function rendererTargetIds(): Promise<RendererTargetId[]> {
+  const renderer = await loadRenderer();
+  return [...renderer.ALL_TOOL_TARGETS];
 }
 
 async function walk(root: string, current = root): Promise<string[]> {

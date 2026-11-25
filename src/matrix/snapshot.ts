@@ -53,6 +53,12 @@ export type PermissionKeyCell = {
   /** The diagnostic a declaration raises, or `null` when it is carried plainly. */
   code: string | null;
   consequence: string | null;
+  /**
+   * The test that observes the key's claim, repository-relative. It follows the
+   * same rule as `CapabilityCell.testId`: a key is edited only in the same
+   * change that moves the test observing it.
+   */
+  testId: string;
 };
 
 export type TargetMatrix = {
@@ -88,6 +94,15 @@ export const MATRIX_CAPABILITIES: readonly Capability[] = [
 const CLAUDE_TEST = 'tests/golden/builder-python.test.ts';
 const OPENCODE_TEST = 'tests/golden/opencode.test.ts';
 const OPENCODE_V1_TEST = 'tests/golden/opencode-v1.test.ts';
+
+/**
+ * The permission-key evidence. `SHARED_PERMISSION_TEST` observes the mapping
+ * guard itself (every unmapped category refuses with F011); the two target
+ * tests observe the emitted per-tool map each harness reads.
+ */
+const SHARED_PERMISSION_TEST = 'tests/unit/permissions.test.ts';
+const OPENCODE_PERMISSION_TEST = 'tests/unit/opencode-target.test.ts';
+const OPENCODE_V1_PERMISSION_TEST = 'tests/unit/opencode-v1-target.test.ts';
 
 function cell(
   agent: Emission,
@@ -134,44 +149,52 @@ function opencodeWorkspaceOnly(kind: string, target: string): string {
 }
 
 const CLAUDE_PERMISSION_KEYS: Record<PermissionCategory, PermissionKeyCell> = {
-  read: { emission: 'native', code: null, consequence: null },
-  write: { emission: 'native', code: null, consequence: null },
-  edit: { emission: 'native', code: null, consequence: null },
-  shell: { emission: 'native', code: null, consequence: null },
-  task: { emission: 'native', code: null, consequence: null },
+  read: { emission: 'native', code: null, consequence: null, testId: SHARED_PERMISSION_TEST },
+  write: { emission: 'native', code: null, consequence: null, testId: SHARED_PERMISSION_TEST },
+  edit: { emission: 'native', code: null, consequence: null, testId: SHARED_PERMISSION_TEST },
+  shell: { emission: 'native', code: null, consequence: null, testId: SHARED_PERMISSION_TEST },
+  task: { emission: 'native', code: null, consequence: null, testId: SHARED_PERMISSION_TEST },
   network: {
     emission: 'dropped',
     code: 'F011_PERMISSION_UNMAPPED',
     consequence:
       'Claude Code has no tool for a bare network category; a declaration is refused with F011',
+    testId: SHARED_PERMISSION_TEST,
   },
   mcp: {
     emission: 'dropped',
     code: 'F011_PERMISSION_UNMAPPED',
     consequence: 'a bare mcp category names no tool; a declaration is refused with F011',
+    testId: SHARED_PERMISSION_TEST,
   },
 };
 
-function opencodePermissionKeys(target: string): Record<PermissionCategory, PermissionKeyCell> {
+function opencodePermissionKeys(
+  target: string,
+  tests: { mapped: string; network: string },
+): Record<PermissionCategory, PermissionKeyCell> {
   return {
-    read: { emission: 'native', code: null, consequence: null },
+    read: { emission: 'native', code: null, consequence: null, testId: tests.mapped },
     write: {
       emission: 'emulated',
       code: 'W112_PERMISSION_LOSSY',
       consequence: `${target} has no write category, so write is emitted as edit; an allow also permits modifying existing files`,
+      testId: tests.mapped,
     },
-    edit: { emission: 'native', code: null, consequence: null },
-    shell: { emission: 'native', code: null, consequence: null },
-    task: { emission: 'native', code: null, consequence: null },
+    edit: { emission: 'native', code: null, consequence: null, testId: tests.mapped },
+    shell: { emission: 'native', code: null, consequence: null, testId: tests.mapped },
+    task: { emission: 'native', code: null, consequence: null, testId: tests.mapped },
     network: {
       emission: 'dropped',
       code: 'F011_PERMISSION_UNMAPPED',
       consequence: `${target} has no mapping for a bare network category; a declaration is refused with F011`,
+      testId: tests.network,
     },
     mcp: {
       emission: 'unknown',
       code: 'F011_PERMISSION_UNMAPPED',
       consequence: `${target}'s bare mcp permission category is not measured in this release; a declaration is refused with F011`,
+      testId: SHARED_PERMISSION_TEST,
     },
   };
 }
@@ -246,7 +269,10 @@ export const SNAPSHOT: CapabilitySnapshot = {
       status: 'promised',
       agentReach: 'primary',
       cells: opencodeCells(OPENCODE_TARGET, OPENCODE_TEST, 'tests/unit/profile-mode.test.ts'),
-      permissionKeys: opencodePermissionKeys(OPENCODE_TARGET),
+      permissionKeys: opencodePermissionKeys(OPENCODE_TARGET, {
+        mapped: OPENCODE_PERMISSION_TEST,
+        network: SHARED_PERMISSION_TEST,
+      }),
     },
     {
       id: OPENCODE_V1_TARGET,
@@ -257,7 +283,10 @@ export const SNAPSHOT: CapabilitySnapshot = {
         OPENCODE_V1_TEST,
         'tests/unit/opencode-v1-target.test.ts',
       ),
-      permissionKeys: opencodePermissionKeys(OPENCODE_V1_TARGET),
+      permissionKeys: opencodePermissionKeys(OPENCODE_V1_TARGET, {
+        mapped: OPENCODE_V1_PERMISSION_TEST,
+        network: OPENCODE_V1_PERMISSION_TEST,
+      }),
     },
   ],
 };
@@ -282,6 +311,24 @@ export function verifySnapshot(snapshot: CapabilitySnapshot, rendererVersion?: s
           'measure the matrix against the pinned renderer and update the snapshot in the same change',
       },
     );
+  }
+  // `TargetMatrix.id` is `SupportedTarget`, so a foreign id can only arrive
+  // through a cast. The type alone is not a runtime guard: without this check
+  // a snapshot with an appended `cursor` row was accepted and the extra row
+  // would have been published as a measured target.
+  const supportedIds: readonly string[] = SUPPORTED_TARGETS;
+  for (const target of snapshot.targets) {
+    if (!supportedIds.includes(target.id)) {
+      throw new FarnaError(
+        'F010_RENDERER_MISMATCH',
+        `the capability snapshot has a row for "${String(target.id)}", which is not a supported target`,
+        {
+          subject: String(target.id),
+          action:
+            'remove the row, or add the target adapter and its union member before measuring it',
+        },
+      );
+    }
   }
   const ids = snapshot.targets.map((target) => target.id);
   for (const supported of SUPPORTED_TARGETS) {
