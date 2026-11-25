@@ -1,5 +1,5 @@
 {
-  "configDigest": "c4fec2136142614e3ca3d477423a3d3dbdb180a46b723938d8977119ead36f0d",
+  "configDigest": "0d9bf023b5c62beae788d5120e762e83ce6fd2a1ca5c602378e31cbfdb5a6053",
   "product": {
     "name": "farna-bootstrapper",
     "version": "0.1.3"
@@ -18,6 +18,39 @@
           "path": ".claude/agents/maintainer.md",
           "sha256": "cde36049fef833f44203f87e5f12b0834e266c993e9c3bbf582327a524fd5f29",
           "size": 1707
+        }
+      ],
+      "mode": "agent",
+      "notLive": [],
+      "personas": [
+        {
+          "digest": "b64942ef759e0ebe0d575655209e674e44f19afdcf1b40bc6d7d2e93928bfa29",
+          "id": "maintainer",
+          "permissionDigest": "b585371acdece637b6c31cd8084c392c84410c9624285652391631c3d316f169",
+          "resources": [
+            {
+              "fromPersona": "maintainer",
+              "id": "maintainer-gates",
+              "kind": "rule",
+              "sha256": "2370ce78e3ea88d735064482de16ef61b0a7fe3826c734e4bc92baaa3d742e25"
+            },
+            {
+              "fromPersona": "maintainer",
+              "id": "maintainer-tools",
+              "kind": "permission",
+              "sha256": "71c32fe1849a2bbdb168298bec1fbfed1f03c7d1193f1bc777d99859f5eab1e5"
+            }
+          ]
+        }
+      ]
+    },
+    "opencode": {
+      "activePersona": null,
+      "files": [
+        {
+          "path": ".opencode/agents/maintainer.md",
+          "sha256": "a7e394d850115e3507f23732013078deb3eefbc4e657f685624367404b0dca5c",
+          "size": 1956
         }
       ],
       "mode": "agent",
