@@ -328,6 +328,10 @@ naming the target and the persona id when the persona does not resolve for that 
 **Consequence.** The resolver is called once per target and keeps its current logic. A configured
 target that does not support profile mode stays in agent mode when `--persona` is passed, and the run
 states that, because otherwise a `claudecode` plus `opencode` config could not use the flag at all.
+The statement is `W118_PERSONA_FLAG_NOT_APPLIED` at info severity, emitted once per configured target
+that ignored the flag, with a message naming the target and the flag. It is invocation-level rather
+than source-derived, so `generate` and `check` report it and it is never written into
+`.farna/lock.json`, which is built from source warnings only.
 If no configured target supports profile mode, the flag is refused as it is today. The refusal
 message changes from `active persona "<id>" names no persona` (which names no target) to a message
 that names the target and the id, because with several targets the reader must know which one failed.
@@ -419,7 +423,9 @@ to join two lists to learn which mode wrote a file.
 **Consequence.** `formatGenerate`, `formatCheck` and `formatDoctor` in `src/report/format.ts` print a
 per-target section, and each target's summary line counts only that target's files. The snapshot
 tests for `formatGenerate` and `formatCheck` gain per-target fixtures in slice 1, including one mixed
-run with an agent target and a profile target.
+run with an agent target and a profile target. The invocation-level
+`W118_PERSONA_FLAG_NOT_APPLIED` stays in the run's warning list rather than a target's section: it
+describes the flag, not a target's rendered state, and it is never recorded in the lockfile.
 
 **Rejected alternative.** One flat file list with a target column. Rejected because the mode, the
 live persona and `notLive` belong to a target rather than a file, so a column would either repeat

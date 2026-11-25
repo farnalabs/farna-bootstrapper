@@ -335,11 +335,11 @@ The complete flag surface:
 | `report` | `--json` | the measured capability matrix for every supported target |
 | `generate` | `--dry-run` | print the plan and write nothing; `would-write` and `unchanged` are counted separately |
 | `generate` | `--adopt` | take ownership of every existing planned managed output; required when the lockfile is missing |
-| `generate` | `--persona <id>` | run profile mode as that persona; wins over `targets.<target>.active` and is not written back |
+| `generate` | `--persona <id>` | run profile mode as that persona on every configured target that supports it; wins over `targets.<target>.active` and is not written back (a target that cannot run profile mode stays in agent mode and reports `W118`) |
 | `check` | `--persona <id>` | check the same selection |
 
-`--persona` is the one CLI selection override. It selects profile mode and wins over
-`targets.<target>.active`; see [Profile mode](#profile-mode).
+`--persona` is the one CLI selection override. It selects profile mode on every configured target
+that supports it and wins over `targets.<target>.active`; see [Profile mode](#profile-mode).
 
 `--json` is a per-command flag: place it after the command
 (`farna-bootstrapper generate --json`), not before it. Every command then emits one machine-readable
@@ -552,9 +552,10 @@ farna-bootstrapper generate --persona reviewer
 farna-bootstrapper check    --persona reviewer
 ```
 
-`--persona` wins over `targets.<target>.active`. A persona that does not exist is
-`F001_INVALID_CONFIG` naming the config field or `--persona`; the tool never picks a persona for
-you. Agent mode is the default when no active persona is set.
+`--persona` wins over `targets.<target>.active` on every configured target that supports profile
+mode; a target that cannot run profile mode keeps its own mode (see below). A persona that does not
+exist is `F001_INVALID_CONFIG` naming the target, the id and the config field or `--persona`; the
+tool never picks a persona for you. Agent mode is the default when no active persona is set.
 
 **The invariant is one persona per workspace.** In profile mode only the active persona is
 materialised and verified: no other persona's agent file, MCP server, skill, command or hook is
@@ -574,9 +575,15 @@ content the target could in principle drop, so it does not force the mode.
 below another config. The exact paths are in [Output layout](#output-layout).
 
 Profile mode is supported for both OpenCode targets (`opencode` and `opencodev1`). `claudecode`
-refuses an `active` value or `--persona` with `F001_INVALID_CONFIG`: its only workspace-only
-capability is `command`, a content capability that does not force a profile, so profile mode there
-is later work. Accepting the setting and ignoring it would be a silent no-op.
+refuses an `active` value with `F001_INVALID_CONFIG`: its only workspace-only capability is
+`command`, a content capability that does not force a profile, so profile mode there is later work.
+Accepting the setting and ignoring it would be a silent no-op.
+
+On a mixed config, `--persona` is broader than `active`. A `claudecode` plus one OpenCode target run
+applies the flag to the OpenCode target only; `claudecode` stays in agent mode with every persona
+live, and the run reports `W118_PERSONA_FLAG_NOT_APPLIED` (info) once for `claudecode`, naming the
+target and the flag. A `claudecode`-only config still refuses the flag with
+`F001_INVALID_CONFIG`, because no configured target can use it.
 
 A hook OpenCode cannot represent (`session-end`, or a matcher on a non-tool event) is reported as
 `W101_CAPABILITY_DROPPED` at `high` severity and is not emitted; it is never silently omitted.
@@ -758,12 +765,15 @@ Only harness-specific category names reach the renderer source tree; a product c
 never written there, and a test asserts it.
 
 Warnings are printed by `generate` and `check`. The warning set covers every resolved persona, not
-only the live one: each warning names its persona, so a declaration an inactive persona makes is
-still visible in profile mode. Source-derived warnings are recorded in `.farna/lock.json`.
+only the live one: each source-derived warning names its persona, so a declaration an inactive
+persona makes is still visible in profile mode. Source-derived warnings are recorded in `.farna/lock.json`.
 `W107_OUTSIDE_OWNERSHIP` is reported by `check` as a drift item rather than a source warning: it
 describes the working tree (an extra skill file), not the source. `W114_RENDERER_INTEGRITY_UNVERIFIED`
 is a runtime verification result about the machine, so it is printed but deliberately not recorded;
 recording it would make two machines with identical sources produce different lockfile bytes.
+`W118_PERSONA_FLAG_NOT_APPLIED` describes the invocation rather than the source: a configured target
+ignored `--persona` because it cannot run profile mode. It is printed by the command and never
+recorded in the lockfile.
 
 ## Warnings and exit codes
 
@@ -786,6 +796,7 @@ is part of the code's definition, never set by a flag.
 | `W115_CREDENTIAL_IN_URL` | high | An MCP `http` URL carries a credential-shaped query parameter (`token`, `api_key`, `apikey`, `access_token`, `secret`, `password`). The value is never echoed. |
 | `W116_SECRET_IN_ARGS` | high | An MCP `args` literal looks like a credential (`sk-`, `ghp_`, `glpat-`, `npm_`, `AKIA`, a JWT, or a long token-shaped string). The value is never echoed; put the credential in `env` or `headers` instead. |
 | `W117_PERSONA_MODE_IGNORED` | info | A persona declares `mode`, which Claude Code cannot carry: it has no primary/subagent mode. The persona and target are named and no `mode` key is written; the agent file is otherwise emitted in full. |
+| `W118_PERSONA_FLAG_NOT_APPLIED` | info | `--persona` was passed on a config that can use it, but this target does not support profile mode, so it stayed in agent mode with every persona live. The target and the flag are named. Invocation-level: printed by the command, never recorded in the lockfile. |
 
 ### Exit codes
 
