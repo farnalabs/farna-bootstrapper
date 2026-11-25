@@ -787,18 +787,35 @@ after a one-byte edit, and the CI step is green on Linux and macOS. No matrix ro
 
 ### Slice 2: the target-adapter groundwork and the first new verified target
 
-The groundwork makes a target one table plus one verifier instead of a new branch: the adapter
-surface is named in one place, `expectedPaths` and `verifyRender` are exercised by a synthetic
-target in tests, and the section 6 checklist is written into `CONTRIBUTING.md` so a future target
-author has the list where changes are described.
+The groundwork makes a target one data table instead of a new branch. `TARGET_FACTS` in
+`src/core/constants.ts` declares one entry per supported target: whether profile mode can select it,
+the directories and files it can own, and the region id it owns inside a shared file. Every
+per-target map and list the planner and the sweep read (`PROFILE_TARGETS`, `MANAGED_OUTPUT_DIRS`,
+`MANAGED_OUTPUT_FILES`, `REGION_OUTPUTS`) is derived from that table rather than written beside it,
+so a target cannot be half-declared and there is no second list to keep in step. A completeness test
+in `tests/unit/target-facts.test.ts` pins each derived value target by target, the region-to-file
+relation, the profile list and the shared OpenCode directories. The section 6 checklist is written
+into `CONTRIBUTING.md` under "Adding a verified target", so a future target author has the list where
+changes are described.
 
-The first target is named in the delivery issue only when decision 4.6's evidence is recorded there.
-If it is not, the slice stops after the groundwork. When it is named, the slice carries every item in
-section 6.1, and the page is regenerated in the same pull request, which moves one id out of the
-not-measured list and adds one measured row.
+The behavioural branches stay code until a target needs different behaviour. `renderFeatures`,
+`assertSupportedRef` and the verifiers (`expectedPaths`, `verifyRender`) are shaped by what a target
+emits and what it refuses; a facts table cannot express a capability the renderer has never been
+measured against, so they change when the target that needs the change arrives, not before. They are
+the section 6 items that target extends.
 
-Exit criterion: the new row's every cell names a test in the manifest, the page's measured set equals
-`SUPPORTED_TARGETS`, and `check` plus the real-renderer suites are green.
+No synthetic target is added. The supported set stays the three targets this build renders and
+verifies, and the slice does not build a test-only fourth member to exercise the table or the
+verifiers. The first target is named in the delivery issue only when decision 4.6's evidence is
+recorded there. If it is not, the slice delivers the table, its completeness test and the checklist
+and stops. When it is named, the slice carries every item in section 6.1, and the page is regenerated
+in the same pull request, which moves that harness's ids out of the not-measured list and adds one
+measured row.
+
+Exit criterion: for the groundwork alone, `TARGET_FACTS` is the only per-target list in the build,
+its completeness test passes and the full gate list is green. When a target is named, the new row's
+every cell names a test in the manifest, the page's measured set equals `SUPPORTED_TARGETS`, and
+`check` plus the real-renderer suites are green.
 
 ### Slice 3: the next two verified targets
 

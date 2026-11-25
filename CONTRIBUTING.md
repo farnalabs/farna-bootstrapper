@@ -152,6 +152,54 @@ file; a change that silently invents product behaviour will be declined.
 - Before opening the pull request, run the gates above from a clean `npm ci` once. A green run
   against a stale `node_modules` is not evidence.
 
+## Adding a verified target
+
+A target is added only when the demand evidence is recorded in the delivery issue: a named
+practitioner request, attributable usage evidence, or repository usage that names the harness. A
+target with no recorded evidence is not started, and a matrix row without a test that observes
+every cell is not allowed. One target is one pull request, and the slice is not done while any item
+below is missing.
+
+1. **Record the demand evidence in the delivery issue.** A direct request from a named practitioner
+   is the strongest evidence and the only kind that explains why. Install volume is aggregate and
+   cannot be attributed to a harness, so it ranks timing across a wave but never selects a target.
+   Repository usage (an issue, discussion, example, pull request or downstream repository naming the
+   harness) is the third kind.
+2. **Add the renderer target id** to `SupportedTarget` and `TARGET_ENUM` in
+   `src/core/constants.ts`. The build then fails until the per-target table below is complete, which
+   is the intended forcing function.
+3. **Add the `TARGET_FACTS` entry** in `src/core/constants.ts`: `profile` (whether profile mode can
+   select the target), `dirs` (managed directories), `files` (managed whole or structured files and
+   region paths) and `regions` (managed path to owned region id, empty when the target owns none).
+   `PROFILE_TARGETS`, `MANAGED_OUTPUT_DIRS`, `MANAGED_OUTPUT_FILES` and `REGION_OUTPUTS` are derived
+   from this table, so do not restate a list beside it. A location another target already owns is
+   refused at config time with `F005_CONFLICT`.
+4. **Record every refusal in `assertSupportedRef`** (`src/compose/resolve.ts`) for every resource
+   kind: which kinds the target refuses in every mode, and which it carries only in profile mode
+   (`workspaceKindsOf`). A kind that is neither carried nor refused is a silent loss, not a decision.
+5. **Teach `renderFeatures`** (`src/materialise/source-tree.ts`) the feature set the target's
+   materialised source needs. It is derived from the source, never `*`.
+6. **Add or extend the materialiser source** (`src/materialise/`) for any shape the renderer needs
+   and the current translation does not produce.
+7. **Extend `expectedPaths` and the verifiers** (`src/verify/containment.ts`: `expectedPaths`,
+   `verifyRender` and the emitted-shape matcher) so the exact managed path set is derived from the
+   plan, and both a missing artefact and an unexpected one are refused.
+8. **Pin the behaviour with tests.** Golden tests pin the emitted bytes, or a real-renderer suite
+   covers what a golden cannot; a planner or loader test proves every refusal the row claims. These
+   supply the row's `testId` values, and each test file is added to
+   `scripts/expected-test-files.json`.
+9. **Add the matrix row** in `src/matrix/snapshot.ts`: `status: 'promised'`, `agentReach`, every
+   capability cell with `basis`, `testId` and a `consequence` where the emission is not `native`,
+   and a `PermissionKeyCell` for all seven permission categories with its code and `testId` where a
+   diagnostic applies.
+10. **Regenerate the capability page** with `node scripts/capability-page.mjs`, then confirm
+    `node scripts/capability-page.mjs --check` exits `0`. CI fails on a stale page, and the new row
+    moves that harness's ids out of the not-measured list.
+11. **Update the user-facing documents**: the README supported-targets section and capability
+    matrix, the `ROADMAP.md` bullet, and a `CHANGELOG.md` entry naming the target and its artefacts.
+12. **Run the full gate list** from [The gates](#the-gates), including
+    `node dist/cli/main.js check` for this repository's own committed output.
+
 ## Releasing
 
 This section is for maintainers. A release is cut from `main` and published by pushing a tag; nobody
