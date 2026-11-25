@@ -51,9 +51,8 @@ It is a compiler in the useful sense, not a loader:
 
 ## Status
 
-The latest published release is 0.2.0. This document describes `main`, which also carries work that
-is not in a release yet: Claude Code profile mode, region ownership and the generated capability
-page. It implements five commands (`init`, `doctor`, `report`, `generate` and `check`), three targets
+The latest published release is 0.3.0. This document describes it. It implements five commands
+(`init`, `doctor`, `report`, `generate` and `check`), three targets
 (`claudecode`, `opencode` for OpenCode 2.x and `opencodev1` for OpenCode 1.x), agent mode plus
 profile mode on all three targets, six resource kinds (`rule`, `permission`, `mcp`, `skill`,
 `command` and `hook`) with a model class, and composition with one base persona per composed
