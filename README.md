@@ -10,7 +10,7 @@ actually reads, and prove that the committed output still matches the source.
 `farna-bootstrapper` is a build-time compiler for coding-agent configuration. You declare personas
 and their resources once, under `.farna/`, and it renders the files a harness reads:
 
-- **`generate`** renders every live persona for exactly one configured target, verifies the bytes
+- **`generate`** renders every live persona for every configured target, verifies the bytes
   the renderer produced, and only then writes them. It also writes `.farna/lock.json`, which records
   what it owns.
 - **`check`** renders the same source into a temporary directory and compares it with the
@@ -42,8 +42,9 @@ It is a compiler in the useful sense, not a loader:
 - **Not a model gateway or a hosted service.** There is no server, no account and no phone-home.
 - **Not a telemetry collector.** There is no analytics package, no usage ping and no crash reporter,
   and no dependency on Farna Control at build time or run time.
-- **Not a multi-target orchestrator in this release.** Exactly one configured target is rendered per
-  run; more than one is refused.
+- **Not a multi-target orchestrator across harness families.** A run renders every configured
+  target, but at most one per output-path family: `claudecode` combines with one OpenCode target,
+  and the two OpenCode majors together are refused (`F005_CONFLICT`, exit 2).
 - **Not a replacement for the harness.** It does not claim runtime behaviour. The README's
   capability matrix states what each target carries; the harness remains the authority on what it
   does with it.
@@ -54,8 +55,8 @@ This is the first public release. It implements five commands (`init`, `doctor`,
 `generate` and `check`), three targets (`claudecode`, `opencode` for OpenCode 2.x and `opencodev1`
 for OpenCode 1.x), agent mode plus OpenCode profile mode, six resource kinds (`rule`, `permission`,
 `mcp`, `skill`, `command` and `hook`) with a model class, and composition with one base persona per
-composed persona. Exactly one configured target is rendered per run. Everything else is
-deliberately deferred; see
+composed persona. A run renders every configured target, at most one per output-path family.
+Everything else is deliberately deferred; see
 [What this slice does not do](#what-this-slice-does-not-do) and
 [Residual risks and known gaps](#residual-risks-and-known-gaps).
 See [ROADMAP.md](ROADMAP.md) for what is shipped, what is next and what is deliberately out of scope.
@@ -76,7 +77,7 @@ one file per resource; [Use](#use) has a complete pair. Then:
 
 ```sh
 npx farna-bootstrapper doctor     # validate the source; write nothing
-npx farna-bootstrapper generate   # render the target and write .farna/lock.json
+npx farna-bootstrapper generate   # render the configured targets and write .farna/lock.json
 npx farna-bootstrapper check      # exit 0 when the tree matches a fresh render
 npx farna-bootstrapper report     # print the measured capability matrix
 ```
@@ -86,10 +87,10 @@ stale render, or a source change that was never regenerated exits `1` and names 
 
 ## The loop
 
-1. You declare personas and their resources under `.farna/`, and select one target in the config.
-   `farna-bootstrapper doctor` validates that declaration without rendering it.
-2. `farna-bootstrapper generate` renders that target's artefacts and records what it wrote in
-   `.farna/lock.json`. Claude Code gets one whole file per persona under `.claude/agents/`; OpenCode
+1. You declare personas and their resources under `.farna/`, and select the target or targets in
+   the config. `farna-bootstrapper doctor` validates that declaration without rendering it.
+2. `farna-bootstrapper generate` renders each configured target's artefacts and records what it
+   wrote in `.farna/lock.json`. Claude Code gets one whole file per persona under `.claude/agents/`; OpenCode
    in agent mode gets one whole file per persona under `.opencode/agents/` and no workspace file;
    OpenCode in profile mode gets the active persona's agent file, its `opencode.jsonc` at the
    repository root, and its skill, command and hook output under `.opencode/`.
@@ -177,11 +178,13 @@ derived `.farna/lock.json`, because npm's record scales with the dependency tree
 | `opencode` | OpenCode | 2.x | `@opencode/cli` | yes | yes |
 | `opencodev1` | OpenCode | 1.x | `opencode-ai` | yes | yes |
 
-Exactly one target is configured per run; configuring `opencode` and `opencodev1` together is
-`F001`. All three targets write different shapes for the same source; switching target is one
-config edit (see [Targets](#targets)). The two OpenCode targets write the **same paths** in each
-major's own shapes, so a switch rewrites the recorded output in place rather than orphaning it. The
-tool never shells out to a harness, so a version is documented rather than detected.
+A config names at most one target per output-path family: `claudecode` combines with one OpenCode
+target, and configuring `opencode` and `opencodev1` together is `F005_CONFLICT` (exit 2) because the
+two write the same locations. All three targets write different shapes for the same source;
+switching target is one config edit (see [Targets](#targets)). The two OpenCode targets write the
+**same paths** in each major's own shapes, so a switch rewrites the recorded output in place rather
+than orphaning it. The tool never shells out to a harness, so a version is documented rather than
+detected.
 
 ### The library entry
 
@@ -364,7 +367,8 @@ reach another persona's artefact.
 
 ## Targets
 
-Exactly one target is configured per run. Switching target is one config edit:
+A run renders every configured target, at most one per output-path family. Switching target is one
+config edit:
 
 ```jsonc
 // .farna/config.jsonc — the OpenCode 2.x target
@@ -389,8 +393,25 @@ Exactly one target is configured per run. Switching target is one config edit:
 ```
 
 A model class maps per target, so a class used on `opencodev1` needs an `opencodev1` mapping (and
-one used on `opencode` needs an `opencode` mapping). Configuring both OpenCode targets at once is
-`F001`: the two write the same paths and one run has one lockfile and one mode plan.
+one used on `opencode` needs an `opencode` mapping); a class used by a target you add needs that
+target's mapping too. `claudecode` may be combined with one OpenCode target in one config:
+
+```jsonc
+// .farna/config.jsonc — Claude Code plus the OpenCode 2.x target
+{
+  "schemaVersion": 1,
+  "targets": { "claudecode": {}, "opencode": {} },
+  "models": {
+    "standard": {
+      "claudecode": "claude-sonnet-4-5",
+      "opencode": "anthropic/claude-sonnet-4-5"
+    }
+  }
+}
+```
+
+Configuring both OpenCode targets at once is `F005_CONFLICT` (exit 2): the two write the same
+locations, so one run could not record which target owned them.
 
 All targets are rendered by the pinned rulesync renderer; the product derives the feature set from
 the materialised source instead of passing `*`, and verifies the bytes the renderer produced before
@@ -788,7 +809,8 @@ on stdout and its single human line on stderr.
 ```text
 src/
   cli/            Commander wiring, the five commands, and the error boundary
-  config/         strict JSONC config schema and loader
+  config/         strict JSONC config schema and loader, and the cross-target
+                  location-collision guard
   source/         YAML personas; markdown rules, skills and commands; JSONC permissions,
                   MCP servers and hooks; strict frontmatter and reference-only secrets
   compose/        mode resolution, extends resolution, resource union, deny-wins merge, digests
@@ -971,9 +993,9 @@ where a change belongs and which gates it must pass.
 
 Deliberately out of scope:
 
-- `agent with loss` and `refuse` as plan outcomes; profile mode on `claudecode`; rendering more
-  than one configured target per run; every target other than `claudecode`, `opencode` and
-  `opencodev1`; the full 71-target capability matrix and the generated `docs/capability-matrix.md`
+- `agent with loss` and `refuse` as plan outcomes; profile mode on `claudecode`; every target
+  other than `claudecode`, `opencode` and `opencodev1`; a second target within one output-path
+  family; the full 71-target capability matrix and the generated `docs/capability-matrix.md`
   page (the `report` command prints the measured matrix for the three supported targets today)
 - model resources (a model is the persona's `model` class in this slice)
 - carrying `mcp`, `skill`, `command` or `hook` on any target in **agent** mode; profile mode is
@@ -1162,9 +1184,10 @@ node dist/cli/main.js check      # re-render and compare; drift exits 1
 `check` runs in CI, so a change to `.farna/` that was not regenerated, or a hand-edited generated
 file, fails the build rather than merging quietly.
 
-This is the `claudecode` target in agent mode, and nothing else. This release renders exactly one
-configured target per run and Claude Code has no profile mode, so the OpenCode half of the dogfood
-waits on multi-target rendering; it is not represented here today.
+This is the `claudecode` target in agent mode, and nothing else yet. The tool can render Claude
+Code together with one OpenCode target, but this repository has not extended its own
+`.farna/config.jsonc` to the OpenCode half yet; the dogfood is one target because it has not been
+extended, not because the tool refuses more.
 
 ## Licence
 

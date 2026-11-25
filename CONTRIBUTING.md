@@ -141,8 +141,9 @@ file; a change that silently invents product behaviour will be declined.
 - **No new subcommand without a design change.** The CLI surface is `init`, `doctor`, `report`,
   `generate` and `check`. `run`, `use`, `list`, `fetch` and the like are deliberately absent (see
   the README's [What this slice does not do](README.md#what-this-slice-does-not-do)).
-- **Exactly one target per run.** A change that renders several targets in one invocation needs a
-  per-target lockfile and mode plan; propose it as a design change first.
+- **At most one target per output-path family.** A run renders every configured target; two targets
+  that would own one location are refused (`F005_CONFLICT`, exit 2). A change that adds a new
+  family, or a second target inside an existing one, needs a design change first.
 - **No change to a golden byte without explaining which source change moved it.**
 - **A change under `.farna/` re-runs `generate` and commits the regenerated files.** The
   repository's own `.claude/agents/maintainer.md` and `.farna/lock.json` are committed output;

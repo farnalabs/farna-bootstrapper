@@ -800,13 +800,22 @@ The config admits a second family. The location-collision guard lands. Agent mod
 selection on any target is a separate slice.
 
 Files: `src/config/schema.ts` (remove the `length === 1` refine, so the location rule is the only
-refusal), `src/compose/resolve.ts` (resolve every configured target), a new module for the guard (a
-pure function plus its diagnostic), `src/cli/commands/generate.ts`, `src/cli/commands/check.ts`,
-`src/lock/lockfile.ts` (the flat recorded union over every target entry), `src/report/format.ts`,
-`README.md` (the exit-code table and the code tables in the Warnings and exit codes section, plus
-every place in Targets and Supported targets that says a two-OpenCode config is `F001`), and the
-unit and integration tests for collisions, for the changed diagnostic and for N renders equal to N
-runs.
+refusal), `src/config/targets.ts` (new: the one `configuredTargets(config)` helper, codepoint
+sorted), `src/config/collision.ts` (new: a pure collision function over a target-to-locations
+table, its application to `MANAGED_OUTPUT_DIRS` and `MANAGED_OUTPUT_FILES`, and its
+`F005_CONFLICT` diagnostic), `src/config/load.ts` (the guard runs after the schema parses and
+before `loadConfig` returns, so every command inherits it before any source is read or any render
+is planned), `src/render/prepare.ts` and `src/cli/commands/doctor.ts` (use the shared helper;
+`prepare.ts`'s copy is removed), `README.md` (the exit-code and code tables, plus every place in
+Targets and Supported targets that says a two-OpenCode config is `F001`, and the statements that
+one target is rendered per run), `CONTRIBUTING.md` (the per-run target rule), and the unit and
+integration tests for collisions, for the changed diagnostic and for N renders equal to N runs.
+
+Placement note: the configured-target helper lives in `src/config/targets.ts`, not in
+`src/compose/resolve.ts` as this note first proposed. The guard runs at config load, so the helper
+must not live in the compose layer; keeping it in `config/` is what lets `loadConfig` enforce the
+rule without depending on composition. `src/compose/resolve.ts` keeps its single-target
+`configuredTarget` for the per-target scoped config slice 1 passes it.
 
 Exit criterion: a config with `claudecode` and `opencode` in agent mode generates both, `check` passes,
 a config with both OpenCode targets is refused as `F005_CONFLICT` with exit 2 and zero writes, the
