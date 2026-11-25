@@ -1,0 +1,25 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "packageRules": [
+    {
+      "matchPackageNames": ["node"],
+      "enabled": false,
+      "description": "Node 22.22.0 is the documented and supported floor; CI must test the floor rather than only the newest runtime."
+    },
+    {
+      "matchPackageNames": ["@types/node"],
+      "allowedVersions": "<23",
+      "description": "@types/node must track the supported floor: engines.node is >=22.22.0, so the types stay on the Node 22 major."
+    },
+    {
+      "matchPackageNames": ["typescript"],
+      "allowedVersions": "<7",
+      "description": "TypeScript 7 is a major compiler change that needs its own migration with a dist-byte comparison, not a dependency bump."
+    },
+    {
+      "matchPackageNames": ["@biomejs/biome"],
+      "allowedVersions": "<2.6",
+      "description": "Biome 2.6 reformats YAML front matter in Markdown and rewrites tests/fixtures and examples, so adopting it needs a deliberate fixture-digest and golden review."
+    }
+  ]
+}
