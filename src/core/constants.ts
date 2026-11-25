@@ -136,35 +136,6 @@ export function isOpencodeTarget(target: SupportedTarget): target is OpencodeTar
   return (OPENCODE_TARGETS as readonly SupportedTarget[]).includes(target);
 }
 
-/**
- * The targets that support profile mode in this build. Profile mode needs a
- * workspace a single persona can own end to end. The OpenCode targets own
- * `opencode.jsonc` plus the `.opencode/` trees; Claude Code owns `.mcp.json`,
- * `.claude/settings.json` and the instruction region of `CLAUDE.md`. Both
- * families carry `mcp` and `hook` only at the workspace level, so profile mode
- * there is forced rather than chosen. A target whose only workspace capability
- * is content would refuse `active` instead of silently ignoring it.
- */
-export const PROFILE_TARGETS: readonly SupportedTarget[] = [
-  DEFAULT_TARGET,
-  OPENCODE_TARGET,
-  OPENCODE_V1_TARGET,
-];
-
-export function targetSupportsProfile(target: SupportedTarget): boolean {
-  return PROFILE_TARGETS.includes(target);
-}
-
-/**
- * The capabilities that *force* profile mode rather than merely being carried
- * by it. Only a boundary capability the target can express at the workspace
- * level and nowhere else forces the mode: on every profile-capable target that
- * is `mcp` and `hook`. A `skill` or `command` is content the target could in
- * principle drop with a loss, so selecting profile mode for it is a choice and
- * is reported as W109.
- */
-export const PROFILE_FORCING_KINDS: readonly Capability[] = ['mcp', 'hook'];
-
 /** The Claude Code directories, relative to the repository root. */
 export const CLAUDE_DIR = '.claude';
 export const CLAUDE_AGENTS_DIR = `${CLAUDE_DIR}/agents`;
@@ -197,10 +168,6 @@ export const REGION_MARKER_SUFFIX = ' -->';
  */
 export const CLAUDE_INSTRUCTIONS_FILE = 'CLAUDE.md';
 export const CLAUDE_INSTRUCTIONS_REGION = 'claude-instructions';
-/** The region id owned at each managed path. A path absent here is not a region. */
-export const REGION_OUTPUTS: Readonly<Record<string, string>> = {
-  [CLAUDE_INSTRUCTIONS_FILE]: CLAUDE_INSTRUCTIONS_REGION,
-};
 
 /**
  * The OpenCode paths this slice writes, relative to the repository root.
@@ -220,12 +187,6 @@ export const RULESYNC_HOOKS_FILE = 'hooks.jsonc';
 /** The root rule file that carries a live persona's instruction text. */
 export const RULESYNC_ROOT_RULE_FILE = 'instructions.md';
 
-/**
- * The locations a target can own. `generate` may delete a lockfile-recorded
- * file only when it lies in one of these locations, is still a regular file,
- * and its bytes still equal the recorded digest. Everything outside them is
- * user content, never swept.
- */
 const OPENCODE_OUTPUT_DIRS: readonly string[] = [
   OPENCODE_AGENTS_DIR,
   OPENCODE_COMMANDS_DIR,
@@ -233,13 +194,73 @@ const OPENCODE_OUTPUT_DIRS: readonly string[] = [
   OPENCODE_PLUGINS_DIR,
 ];
 
-export const MANAGED_OUTPUT_DIRS: Readonly<Record<SupportedTarget, readonly string[]>> = {
-  claudecode: [CLAUDE_AGENTS_DIR],
-  opencode: OPENCODE_OUTPUT_DIRS,
+/**
+ * What one target declares about itself: whether it supports profile mode, the
+ * directories and files it can own, and the region id it owns inside a shared
+ * text file. This is the one table a target is added to. Every per-target map
+ * and list below is derived from it, so there is no second list to keep in step
+ * and a target cannot be half-declared.
+ */
+export type TargetFacts = {
+  /** Whether profile mode can select this target (`PROFILE_TARGETS`). */
+  readonly profile: boolean;
+  /** The managed output directories (`MANAGED_OUTPUT_DIRS`). */
+  readonly dirs: readonly string[];
+  /**
+   * The managed whole or structured files and region paths
+   * (`MANAGED_OUTPUT_FILES`). A region path must also appear here: the guard and
+   * orphan removal are both path-based, so every path the target can own is
+   * claimed in one list.
+   */
+  readonly files: readonly string[];
+  /**
+   * The region id owned inside each managed path, keyed by path
+   * (`REGION_OUTPUTS`). Empty when the target owns no region. A region path is
+   * claimed by one target, so two targets never own two regions of one file.
+   */
+  readonly regions: Readonly<Record<string, string>>;
+};
+
+export const TARGET_FACTS: Readonly<Record<SupportedTarget, TargetFacts>> = {
+  claudecode: {
+    profile: true,
+    dirs: [CLAUDE_AGENTS_DIR],
+    files: [CLAUDE_MCP_FILE, CLAUDE_SETTINGS_FILE, CLAUDE_INSTRUCTIONS_FILE],
+    regions: { [CLAUDE_INSTRUCTIONS_FILE]: CLAUDE_INSTRUCTIONS_REGION },
+  },
+  opencode: {
+    profile: true,
+    dirs: OPENCODE_OUTPUT_DIRS,
+    files: [OPENCODE_CONFIG_FILE],
+    regions: {},
+  },
   // Both OpenCode targets write the same locations, so a target switch rewrites
   // the recorded paths in place rather than orphaning one target's output.
-  opencodev1: OPENCODE_OUTPUT_DIRS,
+  opencodev1: {
+    profile: true,
+    dirs: OPENCODE_OUTPUT_DIRS,
+    files: [OPENCODE_CONFIG_FILE],
+    regions: {},
+  },
 };
+
+/** One entry per supported target, so a derived map cannot omit one. */
+function perTarget<V>(select: (facts: TargetFacts) => V): Record<SupportedTarget, V> {
+  const entries = SUPPORTED_TARGETS.map(
+    (target) => [target, select(TARGET_FACTS[target])] as const,
+  );
+  return Object.fromEntries(entries) as Record<SupportedTarget, V>;
+}
+
+/**
+ * The locations a target can own. `generate` may delete a lockfile-recorded
+ * file only when it lies in one of these locations, is still a regular file,
+ * and its bytes still equal the recorded digest. Everything outside them is
+ * user content, never swept.
+ */
+export const MANAGED_OUTPUT_DIRS: Readonly<Record<SupportedTarget, readonly string[]>> = perTarget(
+  (facts) => facts.dirs,
+);
 
 /**
  * Files a target can own part or all of, claimed for the location-collision
@@ -249,11 +270,49 @@ export const MANAGED_OUTPUT_DIRS: Readonly<Record<SupportedTarget, readonly stri
  * not claimed could be silently shared by two targets and could never be
  * removed as an orphan.
  */
-export const MANAGED_OUTPUT_FILES: Readonly<Record<SupportedTarget, readonly string[]>> = {
-  claudecode: [CLAUDE_MCP_FILE, CLAUDE_SETTINGS_FILE, CLAUDE_INSTRUCTIONS_FILE],
-  opencode: [OPENCODE_CONFIG_FILE],
-  opencodev1: [OPENCODE_CONFIG_FILE],
-};
+export const MANAGED_OUTPUT_FILES: Readonly<Record<SupportedTarget, readonly string[]>> = perTarget(
+  (facts) => facts.files,
+);
+
+/** The union of every target's regions, keyed by managed path. A path absent here is not a region. */
+function regionOutputsOf(
+  facts: Readonly<Record<SupportedTarget, TargetFacts>>,
+): Record<string, string> {
+  const regions: Record<string, string> = {};
+  for (const target of SUPPORTED_TARGETS) {
+    Object.assign(regions, facts[target].regions);
+  }
+  return regions;
+}
+
+export const REGION_OUTPUTS: Readonly<Record<string, string>> = regionOutputsOf(TARGET_FACTS);
+
+/**
+ * The targets that support profile mode in this build. Profile mode needs a
+ * workspace a single persona can own end to end. The OpenCode targets own
+ * `opencode.jsonc` plus the `.opencode/` trees; Claude Code owns `.mcp.json`,
+ * `.claude/settings.json` and the instruction region of `CLAUDE.md`. Both
+ * families carry `mcp` and `hook` only at the workspace level, so profile mode
+ * there is forced rather than chosen. A target whose only workspace capability
+ * is content would refuse `active` instead of silently ignoring it.
+ */
+export const PROFILE_TARGETS: readonly SupportedTarget[] = SUPPORTED_TARGETS.filter(
+  (target) => TARGET_FACTS[target].profile,
+);
+
+export function targetSupportsProfile(target: SupportedTarget): boolean {
+  return PROFILE_TARGETS.includes(target);
+}
+
+/**
+ * The capabilities that *force* profile mode rather than merely being carried
+ * by it. Only a boundary capability the target can express at the workspace
+ * level and nowhere else forces the mode: on every profile-capable target that
+ * is `mcp` and `hook`. A `skill` or `command` is content the target could in
+ * principle drop with a loss, so selecting profile mode for it is a choice and
+ * is reported as W109.
+ */
+export const PROFILE_FORCING_KINDS: readonly Capability[] = ['mcp', 'hook'];
 
 /**
  * Operating-system metadata a checkout can create in a source directory. These

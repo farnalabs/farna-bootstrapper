@@ -48,6 +48,7 @@
     "tests/unit/repo-hygiene.test.ts",
     "tests/unit/stage.test.ts",
     "tests/unit/staging.test.ts",
-    "tests/unit/structured-merge.test.ts"
+    "tests/unit/structured-merge.test.ts",
+    "tests/unit/target-facts.test.ts"
   ]
 }
