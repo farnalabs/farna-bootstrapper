@@ -347,7 +347,7 @@ function assertSupportedRef(
     });
   }
   if (target === 'claudecode' && (OPENCODE_WORKSPACE_KINDS as readonly string[]).includes(kind)) {
-    throw invalidConfig(`the ${kind} resource kind is not carried by claudecode in this slice`, {
+    throw invalidConfig(`the ${kind} resource kind is not carried by ${target} in this slice`, {
       subject: persona.path,
       action: `render this source for the opencode target, or remove the ${kind} reference`,
     });
@@ -363,7 +363,7 @@ function assertSupportedRef(
   ) {
     const { id } = splitRef(ref);
     throw invalidConfig(
-      `${kind}/${id} is declared by persona ${persona.id} and requires profile mode`,
+      `${kind}/${id} is declared by persona ${persona.id} and requires profile mode on ${target}`,
       {
         subject: persona.path,
         action: `set targets.${target}.active to this persona (or pass --persona <id>) to run profile mode, or remove the reference`,
@@ -490,10 +490,10 @@ function resolveOne(
         const permission = byKind.permissions.get(id) ?? missing('permission', id, contributor);
         if (permission.allowlist === true && isOpencodeTarget(target)) {
           throw invalidConfig(
-            'a permission resource opts into a tool allow-list, which OpenCode cannot express',
+            `a permission resource opts into a tool allow-list, which the ${target} target cannot express`,
             {
               subject: permission.path,
-              action: `remove "allowlist" or render this persona for claudecode; OpenCode's permission records are a deny-list`,
+              action: `remove "allowlist" or render this persona for claudecode; ${target} permission records are a deny-list`,
             },
           );
         }
@@ -758,9 +758,9 @@ export function resolveSource(
       });
     }
     if (!byId.has(active)) {
-      throw invalidConfig(`active persona "${active}" names no persona`, {
+      throw invalidConfig(`active persona "${active}" names no persona on ${target}`, {
         subject: selectionSubject,
-        action: 'declare the persona under .farna/personas/, or choose one that exists',
+        action: `declare the persona under .farna/personas/ for ${target}, or choose one that exists`,
       });
     }
   }

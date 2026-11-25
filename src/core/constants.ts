@@ -105,9 +105,10 @@ export const AGENT_FILE_EXT = '.md';
 export const MAX_EXTENDS_DEPTH = 32;
 
 /**
- * The targets this slice renders. Exactly one target is configured per run
- * (`config.md`): rendering several configured targets in one run would need a
- * per-target lockfile and mode plan, which is later work.
+ * The targets this build renders. A config may name several, at most one per
+ * output-path family: the location-collision guard refuses two targets that
+ * would write the same locations, because the lockfile records ownership by
+ * path.
  */
 export const DEFAULT_TARGET = 'claudecode' as const;
 export const OPENCODE_TARGET = 'opencode' as const;
@@ -400,6 +401,7 @@ export const WARNING_CODES = [
   'W115_CREDENTIAL_IN_URL',
   'W116_SECRET_IN_ARGS',
   'W117_PERSONA_MODE_IGNORED',
+  'W118_PERSONA_FLAG_NOT_APPLIED',
 ] as const;
 
 export type WarningCode = (typeof WARNING_CODES)[number];
@@ -437,4 +439,9 @@ export const WARNING_SEVERITY: Record<WarningCode, Severity> = {
   // supports is lost. Claude Code has no primary/subagent mode, and the agent
   // file is still emitted with every capability it can carry.
   W117_PERSONA_MODE_IGNORED: 'info',
+  // W118 is info: the flag was ignored for one configured target, but that
+  // target still renders in its default agent mode with every persona live, so
+  // nothing is lost. It is invocation-level, never source-derived, and is
+  // therefore reported by the command without being recorded in the lockfile.
+  W118_PERSONA_FLAG_NOT_APPLIED: 'info',
 };

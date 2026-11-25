@@ -167,10 +167,116 @@ describe('two configured targets in one run', () => {
     }
   }, 60_000);
 
-  it('refuses --persona on a mixed config as a typed error, with zero writes (slice 3 owns the semantics)', async () => {
+  it('applies --persona to the OpenCode target and leaves claudecode in agent mode', async () => {
     const repo = await repoWith(BOTH_TARGETS);
     try {
-      const before = await hashTree(repo.root);
+      const result = await runGenerate(
+        { cwd: repo.root, dryRun: false, persona: 'builder' },
+        new UpstreamRenderTarget(),
+      );
+      const [claude, opencode] = result.targets;
+      // The flag applies only to the profile-capable target. The agent target
+      // still renders every persona, so a mixed config can use the flag at all.
+      expect(claude).toMatchObject({
+        target: 'claudecode',
+        mode: 'agent',
+        activePersona: null,
+        notLive: [],
+      });
+      expect(claude?.personas).toEqual(['builder', 'reviewer']);
+      expect(opencode).toMatchObject({
+        target: 'opencode',
+        mode: 'profile',
+        activePersona: 'builder',
+        notLive: ['reviewer'],
+      });
+      expect(opencode?.personas).toEqual(['builder']);
+
+      const flagWarnings = result.warnings.filter(
+        (entry) => entry.code === 'W118_PERSONA_FLAG_NOT_APPLIED',
+      );
+      expect(flagWarnings).toHaveLength(1);
+      expect(flagWarnings[0]).toMatchObject({
+        code: 'W118_PERSONA_FLAG_NOT_APPLIED',
+        severity: 'info',
+        persona: '<flag>',
+        target: 'claudecode',
+      });
+      expect(flagWarnings[0]?.message).toContain('--persona');
+      expect(flagWarnings[0]?.message).toContain('"builder"');
+      expect(flagWarnings[0]?.message).toContain('claudecode');
+
+      const files = await listFiles(repo.root);
+      for (const persona of PERSONAS) {
+        expect(files).toContain(`.claude/agents/${persona}.md`);
+      }
+      expect(files).toContain('.opencode/agents/builder.md');
+      expect(files).not.toContain('.opencode/agents/reviewer.md');
+
+      const check = await runCheck(repo.root, new UpstreamRenderTarget(), { persona: 'builder' });
+      expect(check.ok).toBe(true);
+      expect(check.exitCode).toBe(0);
+      expect(check.targets.map((target) => [target.target, target.mode])).toEqual([
+        ['claudecode', 'agent'],
+        ['opencode', 'profile'],
+      ]);
+      // `check` reports the same invocation-level warning, and it is still not
+      // part of the committed record.
+      expect(check.warnings.map((entry) => entry.code)).toContain('W118_PERSONA_FLAG_NOT_APPLIED');
+    } finally {
+      await repo.cleanup();
+    }
+  }, 60_000);
+
+  it('records independent per-target modes and keeps W118 out of the lockfile', async () => {
+    const repo = await repoWith(BOTH_TARGETS);
+    try {
+      await runGenerate(
+        { cwd: repo.root, dryRun: false, persona: 'builder' },
+        new UpstreamRenderTarget(),
+      );
+      const raw = await readText(repo.root, '.farna/lock.json');
+      // The warning describes the invocation, not the source: a lockfile built
+      // from source warnings only must never carry it.
+      expect(raw).not.toContain('W118');
+      const lock = JSON.parse(raw) as {
+        targets: Record<
+          string,
+          {
+            mode: string;
+            activePersona: string | null;
+            notLive: string[];
+            files: Array<{ path: string }>;
+          }
+        >;
+      };
+      expect(Object.keys(lock.targets)).toEqual(['claudecode', 'opencode']);
+      expect(lock.targets['claudecode']).toMatchObject({
+        mode: 'agent',
+        activePersona: null,
+        notLive: [],
+      });
+      expect(lock.targets['opencode']).toMatchObject({
+        mode: 'profile',
+        activePersona: 'builder',
+        notLive: ['reviewer'],
+      });
+      expect(lock.targets['claudecode']?.files.map((file) => file.path)).toEqual([
+        '.claude/agents/builder.md',
+        '.claude/agents/reviewer.md',
+      ]);
+      expect(lock.targets['opencode']?.files.map((file) => file.path)).toEqual([
+        '.opencode/agents/builder.md',
+      ]);
+    } finally {
+      await repo.cleanup();
+    }
+  }, 60_000);
+
+  it('refuses --persona when no configured target supports profile mode, with zero writes', async () => {
+    const repo = await repoWith(CLAUDECODE_ONLY);
+    const before = await hashTree(repo.root);
+    try {
       let failure: FarnaError | undefined;
       try {
         await runGenerate(
@@ -181,10 +287,87 @@ describe('two configured targets in one run', () => {
         expect(error).toBeInstanceOf(FarnaError);
         failure = error as FarnaError;
       }
-      // Today `--persona` is refused on the claudecode target, which does not
-      // support profile mode. It is a typed F001, never an uncaught crash.
       expect(failure?.code).toBe('F001_INVALID_CONFIG');
+      expect(failure?.exitCode).toBe(1);
+      expect(failure?.subject).toBe('--persona');
+      expect(failure?.message).toContain('does not support profile mode');
       expect(failure?.message).toContain('claudecode');
+      expect(await hashTree(repo.root)).toBe(before);
+      expect(await listFiles(repo.root)).not.toContain('.farna/lock.json');
+    } finally {
+      await repo.cleanup();
+    }
+  }, 60_000);
+
+  it('refuses --persona naming no persona on a mixed config, naming the target and the id', async () => {
+    const repo = await repoWith(BOTH_TARGETS);
+    const before = await hashTree(repo.root);
+    try {
+      let failure: FarnaError | undefined;
+      try {
+        await runGenerate(
+          { cwd: repo.root, dryRun: false, persona: 'ghost' },
+          new UpstreamRenderTarget(),
+        );
+      } catch (error) {
+        expect(error).toBeInstanceOf(FarnaError);
+        failure = error as FarnaError;
+      }
+      expect(failure?.code).toBe('F001_INVALID_CONFIG');
+      expect(failure?.exitCode).toBe(1);
+      expect(failure?.subject).toBe('--persona');
+      // One refusal, and it says which target could not resolve the id: the
+      // agent target accepted the same run.
+      expect(failure?.message).toContain('"ghost"');
+      expect(failure?.message).toContain('opencode');
+      expect(await hashTree(repo.root)).toBe(before);
+    } finally {
+      await repo.cleanup();
+    }
+  }, 60_000);
+
+  it('names the profile target when the live persona declares a reference it cannot carry', async () => {
+    // `composed` declares a permission resource that opts into a tool
+    // allow-list, which only Claude Code can express. In a mixed run the
+    // claudecode target accepts it and the profile OpenCode target refuses it,
+    // so the refusal must say which target failed.
+    const repo = await createTempRepo('composed');
+    try {
+      await writeFile(
+        join(repo.root, '.farna/config.jsonc'),
+        [
+          '{',
+          '  "schemaVersion": 1,',
+          '  "targets": { "claudecode": {}, "opencode": {} },',
+          '  "models": {',
+          '    "standard": {',
+          '      "claudecode": "claude-sonnet-4-5",',
+          '      "opencode": "anthropic/claude-sonnet-4-5"',
+          '    },',
+          '    "fast": {',
+          '      "claudecode": "claude-haiku-4-5",',
+          '      "opencode": "anthropic/claude-haiku-4-5"',
+          '    }',
+          '  }',
+          '}',
+          '',
+        ].join('\n'),
+        'utf8',
+      );
+      const before = await hashTree(repo.root);
+      let failure: FarnaError | undefined;
+      try {
+        await runGenerate(
+          { cwd: repo.root, dryRun: false, persona: 'builder-python' },
+          new UpstreamRenderTarget(),
+        );
+      } catch (error) {
+        expect(error).toBeInstanceOf(FarnaError);
+        failure = error as FarnaError;
+      }
+      expect(failure?.code).toBe('F001_INVALID_CONFIG');
+      expect(failure?.message).toContain('allow-list');
+      expect(failure?.message).toContain('opencode');
       expect(await hashTree(repo.root)).toBe(before);
     } finally {
       await repo.cleanup();

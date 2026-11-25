@@ -154,6 +154,8 @@ describe('opencode target', () => {
         expect(failure?.message).toContain(`${kind}/${id}`);
         expect(failure?.message).toContain('builder');
         expect(failure?.message).toContain('requires profile mode');
+        // The refusal names the target whose mode could not carry the reference.
+        expect(failure?.message).toContain('opencode');
         expect(await hashTree(repo.root)).toBe(before);
       } finally {
         await repo.cleanup();
@@ -537,9 +539,17 @@ describe('opencode target', () => {
         ),
         'utf8',
       );
-      await expect(
-        runGenerate({ cwd: repo.root, dryRun: false }, new UpstreamRenderTarget()),
-      ).rejects.toMatchObject({ code: 'F001_INVALID_CONFIG' });
+      let failure: FarnaError | undefined;
+      try {
+        await runGenerate({ cwd: repo.root, dryRun: false }, new UpstreamRenderTarget());
+      } catch (error) {
+        expect(error).toBeInstanceOf(FarnaError);
+        failure = error as FarnaError;
+      }
+      expect(failure?.code).toBe('F001_INVALID_CONFIG');
+      // The refusal must say which target cannot express the opt-in.
+      expect(failure?.message).toContain('opencode target');
+      expect(failure?.message).toContain('allow-list');
     } finally {
       await repo.cleanup();
     }

@@ -292,6 +292,7 @@ describe('opencodev1 profile mode', () => {
       );
       expect(failure.message).toContain('mcp/scan');
       expect(failure.message).toContain('requires profile mode');
+      expect(failure.message).toContain('on opencodev1');
       expect(failure.action).toContain('targets.opencodev1.active');
       expect(await hashTree(repo.root)).toBe(before);
     } finally {
@@ -347,6 +348,8 @@ describe('opencodev1 permission mapping and refusals', () => {
         'F001_INVALID_CONFIG',
       );
       expect(failure.message).toContain('allow-list');
+      // The refusal must say which target cannot express the opt-in.
+      expect(failure.message).toContain('opencodev1 target');
     } finally {
       await repo.cleanup();
     }

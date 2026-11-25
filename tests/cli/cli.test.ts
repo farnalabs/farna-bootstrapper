@@ -634,6 +634,169 @@ describe('the built CLI', () => {
     }
   });
 
+  describe('a mixed config with --persona', () => {
+    const MIXED = [
+      '{',
+      '  "schemaVersion": 1,',
+      '  "targets": { "claudecode": {}, "opencode": {} },',
+      '  "models": {',
+      '    "standard": {',
+      '      "claudecode": "claude-sonnet-4-5",',
+      '      "opencode": "anthropic/claude-sonnet-4-5"',
+      '    }',
+      '  }',
+      '}',
+      '',
+    ].join('\n');
+
+    const CLAUDECODE_ONLY = [
+      '{',
+      '  "schemaVersion": 1,',
+      '  "targets": { "claudecode": {} },',
+      '  "models": { "standard": { "claudecode": "claude-sonnet-4-5" } }',
+      '}',
+      '',
+    ].join('\n');
+
+    async function mixedRepo(config: string = MIXED): Promise<TempRepo> {
+      const repo = await createTempRepo();
+      await writeFile(join(repo.root, '.farna/config.jsonc'), config, 'utf8');
+      return repo;
+    }
+
+    type ModeTarget = JsonTarget & {
+      mode: string;
+      activePersona: string | null;
+      notLive: string[];
+      personas: string[];
+    };
+
+    type JsonWarning = {
+      code: string;
+      severity: string;
+      persona: string;
+      target: string;
+      message: string;
+    };
+
+    function warningsOf(body: Record<string, unknown>): JsonWarning[] {
+      const warnings = body['warnings'];
+      if (!Array.isArray(warnings)) {
+        throw new Error('expected a warnings array');
+      }
+      return warnings as JsonWarning[];
+    }
+
+    it('prints one mode per target and the W118 line in the human report', async () => {
+      const repo = await mixedRepo();
+      try {
+        const result = await runCli(repo.root, ['generate', '--persona', 'builder']);
+        expect(result.code).toBe(0);
+        expect(result.stdout).toContain('target claudecode (agent mode)');
+        expect(result.stdout).toContain('target opencode (profile mode, active builder)');
+        // The agent target keeps every persona; the profile target emits one.
+        expect(result.stdout).toContain('.claude/agents/reviewer.md');
+        expect(result.stdout).not.toContain('.opencode/agents/reviewer.md');
+        expect(result.stdout).toContain('W118_PERSONA_FLAG_NOT_APPLIED info');
+        expect(result.stdout).toContain('--persona "builder"');
+        expect(result.stdout).toContain('not applied to the claudecode target');
+      } finally {
+        await repo.cleanup();
+      }
+    }, 60_000);
+
+    it('carries the two modes and W118 in the JSON payload, and never in the lockfile', async () => {
+      const repo = await mixedRepo();
+      try {
+        const result = await runCli(repo.root, ['generate', '--persona', 'builder', '--json']);
+        expect(result.code).toBe(0);
+        const body = parseObject(result.stdout);
+        const targets = targetsOf(body) as ModeTarget[];
+        expect(targets.map((target) => [target.target, target.mode])).toEqual([
+          ['claudecode', 'agent'],
+          ['opencode', 'profile'],
+        ]);
+        expect(targets[0]).toMatchObject({ activePersona: null, notLive: [] });
+        expect(targets[1]).toMatchObject({
+          activePersona: 'builder',
+          notLive: ['reviewer'],
+          personas: ['builder'],
+        });
+
+        const w118 = warningsOf(body).filter(
+          (warning) => warning.code === 'W118_PERSONA_FLAG_NOT_APPLIED',
+        );
+        expect(w118).toHaveLength(1);
+        expect(w118[0]).toMatchObject({
+          severity: 'info',
+          persona: '<flag>',
+          target: 'claudecode',
+        });
+        expect(w118[0]?.message).toContain('--persona "builder"');
+
+        const raw = await readFile(join(repo.root, '.farna/lock.json'), 'utf8');
+        const lock = JSON.parse(raw) as { targets: Record<string, unknown>; warnings: unknown[] };
+        expect(Object.keys(lock.targets)).toEqual(['claudecode', 'opencode']);
+        // The warning is invocation-level, so it is not part of the committed
+        // record built from source warnings.
+        expect(raw).not.toContain('W118');
+
+        const clean = await runCli(repo.root, ['check', '--persona', 'builder', '--json']);
+        expect(clean.code).toBe(0);
+        const cleanBody = parseObject(clean.stdout);
+        expect(cleanBody).toMatchObject({ ok: true, exitCode: 0 });
+        expect(
+          warningsOf(cleanBody).some((warning) => warning.code === 'W118_PERSONA_FLAG_NOT_APPLIED'),
+        ).toBe(true);
+      } finally {
+        await repo.cleanup();
+      }
+    }, 60_000);
+
+    it('refuses --persona when only claudecode is configured, with zero writes', async () => {
+      const repo = await mixedRepo(CLAUDECODE_ONLY);
+      try {
+        const before = await hashTree(repo.root);
+        const result = await runCli(repo.root, ['generate', '--persona', 'builder', '--json']);
+        expect(result.code).toBe(1);
+        const body = parseObject(result.stdout);
+        expect(body).toMatchObject({
+          command: 'generate',
+          ok: false,
+          exitCode: 1,
+          code: 'F001_INVALID_CONFIG',
+          subject: '--persona',
+        });
+        expect(String(body['message'])).toContain('does not support profile mode');
+        expect(String(body['message'])).toContain('claudecode');
+        expect(await hashTree(repo.root)).toBe(before);
+      } finally {
+        await repo.cleanup();
+      }
+    }, 60_000);
+
+    it('refuses --persona naming no persona and names the target and the id', async () => {
+      const repo = await mixedRepo();
+      try {
+        const before = await hashTree(repo.root);
+        const result = await runCli(repo.root, ['generate', '--persona', 'ghost', '--json']);
+        expect(result.code).toBe(1);
+        const body = parseObject(result.stdout);
+        expect(body).toMatchObject({
+          ok: false,
+          exitCode: 1,
+          code: 'F001_INVALID_CONFIG',
+          subject: '--persona',
+        });
+        expect(String(body['message'])).toContain('"ghost"');
+        expect(String(body['message'])).toContain('opencode');
+        expect(await hashTree(repo.root)).toBe(before);
+      } finally {
+        await repo.cleanup();
+      }
+    }, 60_000);
+  });
+
   it('emits a JSON failure object and exit 1 for an unknown command', async () => {
     const repo = await createTempRepo();
     try {
