@@ -770,9 +770,11 @@ pull requests, as CONTRIBUTING requires.
 
 ### Slice 1: the per-target plan and the version 2 lockfile, with one configured target
 
-The internal shape changes, and the only user-visible difference is the lockfile format. The
-one-target config refine stays in place, so no config that is valid today becomes invalid, and no
-config that is invalid today becomes valid.
+The internal shape changes. The user-visible differences are the lockfile format and the shape of
+the `generate`, `check` and `doctor` results: each loses its single `target`, `mode`,
+`activePersona` and `notLive` fields and gains one per-target entry, in both the `--json` payload
+and the human output. The one-target config refine stays in place, so no config that is valid
+today becomes invalid, and no config that is invalid today becomes valid.
 
 Files: `src/core/constants.ts` (split the config and lockfile schema versions),
 `src/compose/resolve.ts` (a function that returns the configured targets; the single-target path
