@@ -6,7 +6,7 @@
  */
 
 export const PRODUCT_NAME = 'farna-bootstrapper';
-export const PRODUCT_VERSION = '0.1.3';
+export const PRODUCT_VERSION = '0.2.0';
 
 /**
  * The source config format: `.farna/config.jsonc` and the value `init` writes.

@@ -6,10 +6,37 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before 1.0.0, a minor
 release may contain a breaking change; every change of that kind is listed under **Changed**.
 
-## [Unreleased]
+## [0.2.0] - 2026-11-25
+
+### Added
+
+- **Multi-target rendering in one run.** A config may name more than one target, at most one per
+  output-path family: `claudecode` together with one of `opencode` or `opencodev1`. A single
+  `generate` or `check` resolves, renders and verifies every configured target, with a per-target
+  lockfile entry and mode plan. A mixed config can run one target in agent mode and another in
+  profile mode.
+- **A static location-collision guard.** Two targets that would write the same managed location are
+  refused before any render or write, with `F005_CONFLICT` and exit `2`. This is the one existing
+  diagnostic that changes: a config naming both OpenCode targets used to fail as
+  `F001_INVALID_CONFIG` with exit `1`, and now fails as `F005_CONFLICT` with exit `2`.
+- **Per-target modes and `--persona`.** `--persona` applies to every configured target that
+  supports profile mode; a target that does not (Claude Code) stays in agent mode and reports
+  `W118_PERSONA_FLAG_NOT_APPLIED`. That warning is invocation-level and is never written to the
+  lockfile.
+- **The self-dogfood covers both targets.** This repository's `.farna/` configures `claudecode` and
+  `opencode` in agent mode, and `generate` writes `.claude/agents/maintainer.md` and
+  `.opencode/agents/maintainer.md` plus the version 2 lockfile; CI's `check` proves both.
 
 ### Changed
 
+- **Lockfile schema version 2.** `.farna/lock.json` now records a `targets` map keyed by target id,
+  each entry carrying that target's `mode`, `activePersona`, `notLive`, `personas` and `files`;
+  `product`, `renderer`, `configDigest` and `warnings` stay at the top level. A version 1 lockfile is
+  still read and normalised to the version 2 in-memory shape.
+- **A per-target CLI payload.** `generate`, `check` and `doctor` now return a `targets` array (and
+  human output one section per target) instead of the single-target `target`, `mode`,
+  `activePersona` and `notLive` fields. `check` also gained a run-level `pending` list. This is a
+  breaking change to the `--json` payload.
 - **Renderer pin moved to `rulesync` 43.14.0** (from `43.13.0`). One emitted artefact changes: the
   V1 OpenCode hooks plugin (`.opencode/plugins/rulesync-hooks.js`). Its `preToolUse` stdout-result
   parser now returns early when stdout does not parse to an object, reads
@@ -20,6 +47,18 @@ release may contain a breaking change; every change of that kind is listed under
   files, the V1 `opencode.jsonc`, the commands, the skills and the `claudecode` golden are
   unchanged. The committed dogfood output is regenerated, and `.farna/lock.json` changes only in
   its recorded renderer version and integrity; its schema stays version 2.
+
+### Migration
+
+- **One `generate` upgrades an existing lockfile.** After upgrading, `check` reports the version 1
+  lockfile as `pending` and still exits `0`. The first `generate` then rewrites `.farna/lock.json`
+  to schema version 2, so run it once and commit the result.
+- **A JSON consumer reads a `targets` array.** A script that parsed the `--json` payload of
+  `generate`, `check` or `doctor` must now read the `targets` array instead of the single-target
+  `target`, `mode`, `activePersona` and `notLive` fields.
+- **Both OpenCode targets now fail differently.** A config that named both now exits `2` with
+  `F005_CONFLICT` instead of `1` with `F001_INVALID_CONFIG`; configure at most one of the two
+  OpenCode majors.
 
 ## [0.1.3] - 2026-11-24
 
@@ -185,7 +224,7 @@ output still matches the source.
   runner does not grant), the POSIX mode assertions, the FIFO cases and the install-layout suite are
   skipped on Windows; CI runs them on Linux.
 
-[Unreleased]: https://github.com/farnalabs/farna-bootstrapper/compare/v0.1.3...HEAD
+[0.2.0]: https://github.com/farnalabs/farna-bootstrapper/compare/v0.1.3...v0.2.0
 [0.1.3]: https://github.com/farnalabs/farna-bootstrapper/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/farnalabs/farna-bootstrapper/releases/tag/v0.1.2
 [0.1.1]: https://github.com/farnalabs/farna-bootstrapper/releases/tag/v0.1.1

@@ -2,16 +2,14 @@
 
 `farna-bootstrapper` compiles named agent personas and their resources into the configuration a
 coding harness reads, and proves that the committed output still matches the source. The latest
-published release is **0.1.3** (2026-11-24).
+published release is **0.2.0** (2026-11-25).
 
 This is a pre-1.0 project. Everything below describes what exists today and what is intended next;
 it is not a promise of dates or a claim of production readiness.
 
 ## Shipped
 
-What `main` does today, all of it covered by the test suite and by CI. The latest published release
-is 0.1.3; multi-target rendering and the two-target self-dogfood below are on `main` and are not yet
-in a published release.
+What `main` does today, all of it covered by the test suite and by CI.
 
 - **Five commands.** `init`, `doctor`, `report`, `generate` and `check`. `doctor` validates a source
   without rendering or writing; `report` prints the measured capability matrix and reads no source;
