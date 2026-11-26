@@ -868,12 +868,6 @@ persona makes is still visible in profile mode. Source-derived warnings are reco
 describes the working tree (an extra skill file), not the source. `W114_RENDERER_INTEGRITY_UNVERIFIED`
 is a runtime verification result about the machine, so it is printed but deliberately not recorded;
 recording it would make two machines with identical sources produce different lockfile bytes.
-`W118_PERSONA_FLAG_NOT_APPLIED` describes the invocation rather than the source: a configured target
-ignored `--persona` because it could not run profile mode. No currently supported target can trigger
-it, because profile mode is supported on all three. The code is retained because a lockfile may
-already carry the warning and the reader validates every code against the warning vocabulary, and a
-future target without profile mode would need it. It is printed by the command and never written to
-the lockfile.
 
 ## Warnings and exit codes
 
@@ -896,7 +890,6 @@ is part of the code's definition, never set by a flag.
 | `W115_CREDENTIAL_IN_URL` | high | An MCP `http` URL carries a credential-shaped query parameter (`token`, `api_key`, `apikey`, `access_token`, `secret`, `password`). The value is never echoed. |
 | `W116_SECRET_IN_ARGS` | high | An MCP `args` literal looks like a credential (`sk-`, `ghp_`, `glpat-`, `npm_`, `AKIA`, a JWT, or a long token-shaped string). The value is never echoed; put the credential in `env` or `headers` instead. |
 | `W117_PERSONA_MODE_IGNORED` | info | A persona declares `mode`, which Claude Code cannot carry: it has no primary/subagent mode. The persona and target are named and no `mode` key is written; the agent file is otherwise emitted in full. |
-| `W118_PERSONA_FLAG_NOT_APPLIED` | info | `--persona` could not be applied to a configured target because it does not support profile mode; the target and the flag are named. Invocation-level: printed by the command, never written to the lockfile. No currently supported target emits it, because profile mode is supported on all three; the code is retained for a lockfile that may carry it and for a future target without profile mode. |
 
 ### Exit codes
 

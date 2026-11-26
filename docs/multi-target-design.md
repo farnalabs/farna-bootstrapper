@@ -333,6 +333,7 @@ The statement is `W118_PERSONA_FLAG_NOT_APPLIED` at info severity, emitted once 
 that ignored the flag, with a message naming the target and the flag. It is invocation-level rather
 than source-derived, so `generate` and `check` report it and it is never written into
 `.farna/lock.json`, which is built from source warnings only.
+The code was removed after 0.3.0 because no supported target lacks profile mode, so it could never fire.
 If no configured target supports profile mode, the flag is refused as it is today. The refusal
 message changes from `active persona "<id>" names no persona` (which names no target) to a message
 that names the target and the id, because with several targets the reader must know which one failed.
@@ -425,8 +426,9 @@ to join two lists to learn which mode wrote a file.
 per-target section, and each target's summary line counts only that target's files. The snapshot
 tests for `formatGenerate` and `formatCheck` gain per-target fixtures in slice 1, including one mixed
 run with an agent target and a profile target. The invocation-level
-`W118_PERSONA_FLAG_NOT_APPLIED` stays in the run's warning list rather than a target's section: it
-describes the flag, not a target's rendered state, and it is never recorded in the lockfile.
+`W118_PERSONA_FLAG_NOT_APPLIED` was to stay in the run's warning list rather than a target's section:
+it described the flag, not a target's rendered state, and it was never recorded in the lockfile. The
+code was later removed after 0.3.0 (see §3.7).
 
 **Rejected alternative.** One flat file list with a target column. Rejected because the mode, the
 live persona and `notLive` belong to a target rather than a file, so a column would either repeat

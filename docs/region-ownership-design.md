@@ -793,7 +793,8 @@ profile run forced only by a rule is a choice, and the warning says so.
 Two user-visible changes follow. A `claudecode`-only config that passes `--persona` now succeeds
 instead of refusing, because the target supports profile mode. On a mixed config, `--persona`
 applies to `claudecode` as well, so `W118_PERSONA_FLAG_NOT_APPLIED` is no longer emitted for it
-(the flag-ignored path in `src/render/prepare.ts`, line 185, tests `targetSupportsProfile`).
+(the flag-ignored path in `src/render/prepare.ts`, line 185, tests `targetSupportsProfile`). The code
+was later removed for the same reason.
 
 The role of `notLive` is unchanged: it names every resolved persona that is not the live one, so a
 deactivated persona is never silent. The lockfile's target entry records `mode: "profile"`,
