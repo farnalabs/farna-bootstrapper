@@ -167,7 +167,7 @@ describe('two configured targets in one run', () => {
     }
   }, 60_000);
 
-  it('applies --persona to every configured target and emits no W118', async () => {
+  it('applies --persona to every configured target', async () => {
     const repo = await repoWith(BOTH_TARGETS);
     try {
       const result = await runGenerate(
@@ -175,8 +175,7 @@ describe('two configured targets in one run', () => {
         new UpstreamRenderTarget(),
       );
       const [claude, opencode] = result.targets;
-      // Both targets support profile mode now, so the flag applies to both and
-      // the "flag ignored" warning is unreachable.
+      // Both targets support profile mode, so the flag applies to both.
       expect(claude).toMatchObject({
         target: 'claudecode',
         mode: 'profile',
@@ -191,10 +190,6 @@ describe('two configured targets in one run', () => {
         notLive: ['reviewer'],
       });
       expect(opencode?.personas).toEqual(['builder']);
-
-      expect(
-        result.warnings.filter((entry) => entry.code === 'W118_PERSONA_FLAG_NOT_APPLIED'),
-      ).toHaveLength(0);
 
       const files = await listFiles(repo.root);
       expect(files).toContain('.claude/agents/builder.md');
@@ -212,15 +207,12 @@ describe('two configured targets in one run', () => {
         ['claudecode', 'profile'],
         ['opencode', 'profile'],
       ]);
-      expect(check.warnings.map((entry) => entry.code)).not.toContain(
-        'W118_PERSONA_FLAG_NOT_APPLIED',
-      );
     } finally {
       await repo.cleanup();
     }
   }, 60_000);
 
-  it('records the same profile mode for both targets and keeps W118 out of the lockfile', async () => {
+  it('records the same profile mode for both targets in the lockfile', async () => {
     const repo = await repoWith(BOTH_TARGETS);
     try {
       await runGenerate(
@@ -228,9 +220,6 @@ describe('two configured targets in one run', () => {
         new UpstreamRenderTarget(),
       );
       const raw = await readText(repo.root, '.farna/lock.json');
-      // The warning describes the invocation, not the source: a lockfile built
-      // from source warnings only must never carry it.
-      expect(raw).not.toContain('W118');
       const lock = JSON.parse(raw) as {
         targets: Record<
           string,

@@ -2,12 +2,7 @@ import { type ResolvedSource, resolveSource, type SourceSelection } from '../com
 import { loadConfig } from '../config/load.js';
 import type { Config } from '../config/schema.js';
 import { configuredTargets } from '../config/targets.js';
-import {
-  DEFAULT_TARGET,
-  LOCK_PATH,
-  type SupportedTarget,
-  targetSupportsProfile,
-} from '../core/constants.js';
+import { DEFAULT_TARGET, LOCK_PATH, type SupportedTarget } from '../core/constants.js';
 import { rendererMismatch } from '../core/errors.js';
 import { compareCodepoints, sha256Hex } from '../core/json.js';
 import {
@@ -37,13 +32,6 @@ import {
  * persona; angle brackets cannot collide with a valid persona id (`ID_RE`).
  */
 const RENDERER_WARNING_SUBJECT = '<renderer>';
-
-/**
- * The subject an invocation-level warning carries. `--persona` is a flag, not a
- * declaration any persona made, so `W118` has no persona to name; the sentinel
- * keeps that honest and, like `<renderer>`, cannot collide with a persona id.
- */
-const PERSONA_FLAG_WARNING_SUBJECT = '<flag>';
 
 /** One target's resolved source and the verified bytes it produced. */
 export type PreparedTarget = {
@@ -202,36 +190,11 @@ export async function prepareTarget(
     ...config,
     targets: { [target]: config.targets[target] ?? {} },
   };
-  // `--persona` selects profile mode only on a target that supports it. When
-  // this config also names a profile-capable target, a target that does not
-  // support profile mode (claudecode) stays in agent mode and the run reports
-  // that the flag did not apply to it, once per such target. With no
-  // profile-capable target configured the flag is passed through and refused
-  // by the resolver, exactly as a claudecode-only config always has been.
-  const profileCapableConfigured = configuredTargets(config).some(targetSupportsProfile);
-  const requested = selection.persona;
-  const flagIgnored =
-    requested !== undefined && !targetSupportsProfile(target) && profileCapableConfigured;
-  const source = resolveSource(tree, scoped, flagIgnored ? {} : selection);
-  // W118 is invocation-level, not source-derived: it is reported by the
-  // command and never reaches the lockfile, which `prepareRender` builds from
-  // `source.warnings` only.
-  const flagWarnings: Warning[] =
-    requested !== undefined && flagIgnored
-      ? [
-          warning({
-            code: 'W118_PERSONA_FLAG_NOT_APPLIED',
-            persona: PERSONA_FLAG_WARNING_SUBJECT,
-            target,
-            message: `--persona "${requested}" was not applied to the ${target} target: it does not support profile mode, so it stays in agent mode with every persona live`,
-          }),
-        ]
-      : [];
-  const warnings = sortWarnings([
-    ...source.warnings,
-    ...rendererWarnings(renderer, source.target),
-    ...flagWarnings,
-  ]);
+  // `--persona` is passed to the resolver for this target. A target that
+  // cannot run profile mode is refused by the resolver, never silently
+  // downgraded to agent mode.
+  const source = resolveSource(tree, scoped, selection);
+  const warnings = sortWarnings([...source.warnings, ...rendererWarnings(renderer, source.target)]);
 
   return withStage(async (stage) => {
     await materialiseSourceTree(stage.sourceRoot, source);

@@ -675,23 +675,7 @@ describe('the built CLI', () => {
       personas: string[];
     };
 
-    type JsonWarning = {
-      code: string;
-      severity: string;
-      persona: string;
-      target: string;
-      message: string;
-    };
-
-    function warningsOf(body: Record<string, unknown>): JsonWarning[] {
-      const warnings = body['warnings'];
-      if (!Array.isArray(warnings)) {
-        throw new Error('expected a warnings array');
-      }
-      return warnings as JsonWarning[];
-    }
-
-    it('prints one profile mode per target and no W118 line in the human report', async () => {
+    it('prints one profile mode per target in the human report', async () => {
       const repo = await mixedRepo();
       try {
         const result = await runCli(repo.root, ['generate', '--persona', 'builder']);
@@ -703,15 +687,14 @@ describe('the built CLI', () => {
         expect(result.stdout).not.toContain('.opencode/agents/reviewer.md');
         expect(result.stdout).toContain('.claude/agents/builder.md');
         // The profile is forced only by a rule here, so W109 says the mode was
-        // a choice; the flag was applied everywhere and W118 is absent.
+        // a choice.
         expect(result.stdout).toContain('W109_PROFILE_BY_CHOICE info');
-        expect(result.stdout).not.toContain('W118_PERSONA_FLAG_NOT_APPLIED');
       } finally {
         await repo.cleanup();
       }
     }, 60_000);
 
-    it('carries the two profile modes in the JSON payload, and keeps W118 out of the record', async () => {
+    it('carries the two profile modes in the JSON payload', async () => {
       const repo = await mixedRepo();
       try {
         const result = await runCli(repo.root, ['generate', '--persona', 'builder', '--json']);
@@ -730,24 +713,14 @@ describe('the built CLI', () => {
           });
         }
 
-        expect(
-          warningsOf(body).filter((warning) => warning.code === 'W118_PERSONA_FLAG_NOT_APPLIED'),
-        ).toHaveLength(0);
-
         const raw = await readFile(join(repo.root, '.farna/lock.json'), 'utf8');
         const lock = JSON.parse(raw) as { targets: Record<string, unknown>; warnings: unknown[] };
         expect(Object.keys(lock.targets)).toEqual(['claudecode', 'opencode']);
-        // The warning is invocation-level, so it is not part of the committed
-        // record built from source warnings. There is none to record either.
-        expect(raw).not.toContain('W118');
 
         const clean = await runCli(repo.root, ['check', '--persona', 'builder', '--json']);
         expect(clean.code).toBe(0);
         const cleanBody = parseObject(clean.stdout);
         expect(cleanBody).toMatchObject({ ok: true, exitCode: 0 });
-        expect(
-          warningsOf(cleanBody).some((warning) => warning.code === 'W118_PERSONA_FLAG_NOT_APPLIED'),
-        ).toBe(false);
       } finally {
         await repo.cleanup();
       }
